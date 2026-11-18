@@ -18,7 +18,9 @@ WordTail renders subtle inline gray completions (`kn` + gray `ow`) right at your
 | `⌥ ]` / `⌥ [` | Cycle next / previous single-word candidate |
 | `Esc` | Dismiss visible ghost completion |
 | `⌃ ⌥ W` | Toggle WordTail Active / Paused globally |
-| `⌘ ,` | Open WordTail Settings (from menu bar menu) |
+| `⌘ ,` | Open WordTail Settings |
+| `⌘ W` | Close window (keeps WordTail autocomplete active in background) |
+| `⌘ Q` | Quit WordTail |
 
 ---
 

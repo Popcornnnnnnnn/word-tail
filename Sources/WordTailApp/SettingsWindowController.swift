@@ -166,6 +166,19 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var showDockIcon: Bool {
+        didSet {
+            guard !isRefreshing else { return }
+            UserDefaults.standard.set(showDockIcon, forKey: "WordTailShowDockIcon")
+            let windowToKeep = NSApp.windows.first { $0.title == "WordTail" }
+            NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+                windowToKeep?.makeKeyAndOrderFront(nil)
+            }
+        }
+    }
+
     @Published var launchAtLogin: Bool {
         didSet {
             guard !isRefreshing else { return }
@@ -205,6 +218,11 @@ final class SettingsViewModel: ObservableObject {
         self.minPrefix = engine.minimumPrefixLength
         self.minSuffix = engine.minimumSuffixLength
         self.chromiumBridge = engine.enableChromiumBridge
+        if UserDefaults.standard.object(forKey: "WordTailShowDockIcon") == nil {
+            self.showDockIcon = true
+        } else {
+            self.showDockIcon = UserDefaults.standard.bool(forKey: "WordTailShowDockIcon")
+        }
         self.launchAtLogin = (SMAppService.mainApp.status == .enabled)
         refresh(currentApp: currentApp)
     }
@@ -223,6 +241,11 @@ final class SettingsViewModel: ObservableObject {
         minPrefix = engine.minimumPrefixLength
         minSuffix = engine.minimumSuffixLength
         chromiumBridge = engine.enableChromiumBridge
+        if UserDefaults.standard.object(forKey: "WordTailShowDockIcon") == nil {
+            showDockIcon = true
+        } else {
+            showDockIcon = UserDefaults.standard.bool(forKey: "WordTailShowDockIcon")
+        }
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         vocabularyEntries = engine.vocabularyEntries()
 
@@ -1194,6 +1217,25 @@ struct SettingsView: View {
                 LinearCard {
                     HStack {
                         VStack(alignment: .leading, spacing: 1) {
+                            Text("Show Icon in Dock & App Switcher")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Turn off if you prefer running in the top menu bar only")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.showDockIcon)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 50)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
                             Text("Launch at Login")
                                 .font(.system(size: 13, weight: .medium))
                             Text("Start WordTail automatically when you sign in to macOS")
@@ -1283,10 +1325,11 @@ final class SettingsWindowController: NSWindowController {
         )
         let hostingController = NSHostingController(rootView: SettingsView(vm: viewModel))
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "WordTail Settings"
+        window.title = "WordTail"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        window.level = .normal
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.center()
@@ -1301,7 +1344,7 @@ final class SettingsWindowController: NSWindowController {
     func present(for currentApp: (name: String, bundleID: String)?) {
         viewModel.refresh(currentApp: currentApp)
         showWindow(nil)
-        window?.level = .floating
+        window?.level = .normal
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }

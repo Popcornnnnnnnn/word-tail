@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CoreServices
 import ServiceManagement
 import WordTailCore
 
@@ -19,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settingsWindowController: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        applyDockVisibilityPreference()
+        setupMainMenu()
+
         engine.onStateChanged = { [weak self] in
             self?.updateStatusIcon()
         }
@@ -46,15 +50,141 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupStatusBar()
         attemptStartEngine(promptIfNeeded: true)
 
-        if CommandLine.arguments.contains("--open-settings") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self] in
+        // Open main window on interactive launch (or when --open-settings is passed),
+        // unless launched silently at login or with --background.
+        let silentLaunch = CommandLine.arguments.contains("--background")
+            || (wasLaunchedAsLoginItem() && !CommandLine.arguments.contains("--open-settings"))
+        if !silentLaunch {
+            DispatchQueue.main.async { [weak self] in
                 self?.openSettingsClicked()
             }
         }
     }
 
+    private func wasLaunchedAsLoginItem() -> Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventID == kAEOpenApplication else {
+            return false
+        }
+        return event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+    }
+
+    /// Standard macOS behavior: clicking the Dock icon or launching WordTail from Spotlight/Finder
+    /// when no window is visible re-opens the main window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openSettingsClicked()
+        return true
+    }
+
+    /// Standard macOS background-capable app behavior: closing the window (⌘W / red button)
+    /// keeps WordTail's autocomplete engine running until the user quits (⌘Q).
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    private func applyDockVisibilityPreference() {
+        let showDock: Bool
+        if UserDefaults.standard.object(forKey: "WordTailShowDockIcon") == nil {
+            showDock = true
+        } else {
+            showDock = UserDefaults.standard.bool(forKey: "WordTailShowDockIcon")
+        }
+        NSApp.setActivationPolicy(showDock ? .regular : .accessory)
+    }
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // 1. Application Menu ("WordTail")
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu()
+        appMenuItem.submenu = appMenu
+
+        let aboutItem = NSMenuItem(
+            title: "About WordTail",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(aboutItem)
+        appMenu.addItem(.separator())
+
+        let prefsItem = NSMenuItem(
+            title: "Settings…",
+            action: #selector(openSettingsClicked),
+            keyEquivalent: ","
+        )
+        prefsItem.target = self
+        appMenu.addItem(prefsItem)
+        appMenu.addItem(.separator())
+
+        let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        let servicesMenu = NSMenu(title: "Services")
+        servicesItem.submenu = servicesMenu
+        NSApp.servicesMenu = servicesMenu
+        appMenu.addItem(servicesItem)
+        appMenu.addItem(.separator())
+
+        appMenu.addItem(NSMenuItem(
+            title: "Hide WordTail",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        ))
+        let hideOthers = NSMenuItem(
+            title: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h"
+        )
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(NSMenuItem(
+            title: "Show All",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: ""
+        ))
+        appMenu.addItem(.separator())
+
+        let quitItem = NSMenuItem(
+            title: "Quit WordTail",
+            action: #selector(quitClicked),
+            keyEquivalent: "q"
+        )
+        quitItem.target = self
+        appMenu.addItem(quitItem)
+
+        // 2. Edit Menu (enables standard ⌘Z, ⌘X, ⌘C, ⌘V, ⌘A in text fields)
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenuItem.submenu = editMenu
+
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+
+        // 3. Window Menu (enables standard ⌘W, ⌘M, Zoom, Bring All to Front)
+        let windowMenuItem = NSMenuItem()
+        mainMenu.addItem(windowMenuItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowMenuItem.submenu = windowMenu
+
+        windowMenu.addItem(NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        windowMenu.addItem(NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: ""))
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(NSMenuItem(title: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: ""))
+        NSApp.windowsMenu = windowMenu
+
+        NSApp.mainMenu = mainMenu
+    }
+
     private func ensureLoginItemRegisteredOnFirstInstall() {
-        // Auto-register as a macOS Login Item unless the user explicitly turned it off in Settings.
         let userConfigured = UserDefaults.standard.bool(forKey: "WordTailLoginItemUserConfigured")
         guard !userConfigured else { return }
         if Bundle.main.bundlePath.hasPrefix("/Applications/"),
@@ -218,12 +348,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
                 let curOffset = engine.verticalAdjustment(forBundleID: targetApp.bundleID)
                 let nudgeMenu = NSMenu()
-                let upItem = NSMenuItem(title: "Nudge Higher (+0.02 pt)", action: #selector(nudgeCurrentAppHigher(_:)), keyEquivalent: "")
+                let upItem = NSMenuItem(title: "Nudge Higher (+0.10 pt)", action: #selector(nudgeCurrentAppHigher(_:)), keyEquivalent: "")
                 upItem.target = self
                 upItem.representedObject = targetApp.bundleID
                 nudgeMenu.addItem(upItem)
 
-                let downItem = NSMenuItem(title: "Nudge Lower (-0.02 pt)", action: #selector(nudgeCurrentAppLower(_:)), keyEquivalent: "")
+                let downItem = NSMenuItem(title: "Nudge Lower (-0.10 pt)", action: #selector(nudgeCurrentAppLower(_:)), keyEquivalent: "")
                 downItem.target = self
                 downItem.representedObject = targetApp.bundleID
                 nudgeMenu.addItem(downItem)
@@ -245,13 +375,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let settingsItem = NSMenuItem(
-            title: "Settings…",
+        let openWindowItem = NSMenuItem(
+            title: "Open WordTail Window…",
             action: #selector(openSettingsClicked),
             keyEquivalent: ","
         )
-        settingsItem.target = self
-        menu.addItem(settingsItem)
+        openWindowItem.target = self
+        menu.addItem(openWindowItem)
 
         let quitItem = NSMenuItem(
             title: "Quit WordTail",
@@ -295,13 +425,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func nudgeCurrentAppHigher(_ sender: NSMenuItem) {
         guard let bundleID = sender.representedObject as? String else { return }
         let cur = engine.verticalAdjustment(forBundleID: bundleID)
-        engine.setVerticalAdjustment(cur + 0.02, forBundleID: bundleID)
+        engine.setVerticalAdjustment(cur + 0.10, forBundleID: bundleID)
     }
 
     @objc private func nudgeCurrentAppLower(_ sender: NSMenuItem) {
         guard let bundleID = sender.representedObject as? String else { return }
         let cur = engine.verticalAdjustment(forBundleID: bundleID)
-        engine.setVerticalAdjustment(cur - 0.02, forBundleID: bundleID)
+        engine.setVerticalAdjustment(cur - 0.10, forBundleID: bundleID)
     }
 
     @objc private func openSettingsClicked() {
