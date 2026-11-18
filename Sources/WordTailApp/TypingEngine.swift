@@ -343,10 +343,6 @@ final class TypingEngine {
             return Unmanaged.passUnretained(event)
         }
 
-        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Bundle.main.bundleIdentifier {
-            return Unmanaged.passUnretained(event)
-        }
-
         let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
 
@@ -457,13 +453,19 @@ final class TypingEngine {
     }
 
     private func evaluateAndRenderPrediction() {
-        let frontBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let targetApp = axContext.effectiveFocusedApplication()
+        let frontBundle = targetApp?.bundleIdentifier
+        if frontBundle == Bundle.main.bundleIdentifier {
+            overlay.hide()
+            return
+        }
         guard inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle) else {
             overlay.hide()
             return
         }
 
         guard let snapshot = axContext.capture(
+            targetApp: targetApp,
             fallbackBuffer: rollingBuffer,
             enableChromiumBridge: enableChromiumBridge,
             verticalAdjustment: verticalAdjustment(forBundleID: frontBundle)

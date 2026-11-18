@@ -250,7 +250,7 @@ final class SettingsViewModel: ObservableObject {
         vocabularyEntries = engine.vocabularyEntries()
 
         var runningNames: [String: String] = [:]
-        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+        for app in NSWorkspace.shared.runningApplications where Self.isUserFacingRunningApp(app) {
             guard let bid = app.bundleIdentifier,
                   bid != Bundle.main.bundleIdentifier,
                   !InputGuard.defaultExcludedBundleIDs.contains(bid) else {
@@ -381,6 +381,23 @@ final class SettingsViewModel: ObservableObject {
             return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
         }
         return bundleID
+    }
+
+    static func isUserFacingRunningApp(_ app: NSRunningApplication) -> Bool {
+        if app.activationPolicy == .regular {
+            return true
+        }
+        // Also include Dock-less launcher / menu-bar apps in /Applications (e.g. Raycast),
+        // while excluding system XPC services and helper apps nested inside frameworks/bundles.
+        guard app.activationPolicy == .accessory,
+              let url = app.bundleURL,
+              url.pathExtension == "app" else {
+            return false
+        }
+        let path = url.path
+        let inAppsFolder = path.hasPrefix("/Applications/")
+            || path.hasPrefix(NSHomeDirectory() + "/Applications/")
+        return inAppsFolder && !path.contains(".app/Contents/") && !path.contains(".framework/")
     }
 
     static func appIcon(forBundleID bundleID: String) -> NSImage {
@@ -905,30 +922,32 @@ struct SettingsView: View {
                                 showAddAppPopover.toggle()
                             }
                             .popover(isPresented: $showAddAppPopover, arrowEdge: .bottom) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    ForEach(vm.availableAppsToAdd) { app in
-                                        Button {
-                                            vm.addAppOverride(bundleID: app.bundleID)
-                                            showAddAppPopover = false
-                                        } label: {
-                                            HStack(spacing: 8) {
-                                                Image(nsImage: app.icon)
-                                                    .resizable()
-                                                    .frame(width: 18, height: 18)
-                                                Text(app.name)
-                                                    .font(.system(size: 12.5))
-                                                    .foregroundStyle(.primary)
-                                                Spacer()
+                                ScrollView(.vertical, showsIndicators: true) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        ForEach(vm.availableAppsToAdd) { app in
+                                            Button {
+                                                vm.addAppOverride(bundleID: app.bundleID)
+                                                showAddAppPopover = false
+                                            } label: {
+                                                HStack(spacing: 8) {
+                                                    Image(nsImage: app.icon)
+                                                        .resizable()
+                                                        .frame(width: 18, height: 18)
+                                                    Text(app.name)
+                                                        .font(.system(size: 12.5))
+                                                        .foregroundStyle(.primary)
+                                                    Spacer()
+                                                }
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 5)
+                                                .contentShape(Rectangle())
                                             }
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 5)
-                                            .contentShape(Rectangle())
+                                            .buttonStyle(.plain)
                                         }
-                                        .buttonStyle(.plain)
                                     }
+                                    .padding(6)
                                 }
-                                .padding(6)
-                                .frame(minWidth: 190)
+                                .frame(minWidth: 205, maxHeight: 320)
                             }
                         }
 

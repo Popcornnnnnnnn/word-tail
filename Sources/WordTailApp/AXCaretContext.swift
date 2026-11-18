@@ -47,13 +47,40 @@ final class AXCaretContext {
         }
     }
 
+    /// Resolves the application that actually owns keyboard focus—handling non-activating floating
+    /// panels such as Raycast or Spotlight even when another app remains `frontmostApplication`.
+    func effectiveFocusedApplication() -> NSRunningApplication? {
+        if AXIsProcessTrusted() {
+            let sys = AXUIElementCreateSystemWide()
+            var ref: CFTypeRef?
+            if AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &ref) == .success,
+               let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() {
+                var pid: pid_t = 0
+                if AXUIElementGetPid(ref as! AXUIElement, &pid) == .success,
+                   pid > 0,
+                   let ownerApp = NSRunningApplication(processIdentifier: pid),
+                   Self.isStandaloneApplicationBundle(ownerApp) {
+                    return ownerApp
+                }
+            }
+        }
+        return NSWorkspace.shared.frontmostApplication
+    }
+
+    static func isStandaloneApplicationBundle(_ app: NSRunningApplication) -> Bool {
+        guard let url = app.bundleURL, url.pathExtension == "app" else { return false }
+        let path = url.path
+        return !path.contains(".app/Contents/") && !path.contains(".framework/")
+    }
+
     func capture(
+        targetApp: NSRunningApplication? = nil,
         fallbackBuffer: String,
         enableChromiumBridge: Bool,
         verticalAdjustment: CGFloat = ScreenGeometry.defaultVerticalOffset
     ) -> CaretSnapshot? {
         guard AXIsProcessTrusted() else { return nil }
-        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        guard let app = targetApp ?? effectiveFocusedApplication() else { return nil }
 
         warmUpApplication(app, enableChromiumBridge: enableChromiumBridge)
 
