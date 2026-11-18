@@ -8,6 +8,7 @@ final class TypingEngine {
 
     private let completer: WordCompleter
     private let historyStore: UserHistoryStore
+    private let habitTracker: TypingHabitTracker
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
     private let overlay = GhostOverlayWindow()
@@ -16,10 +17,13 @@ final class TypingEngine {
     private var runLoopSource: CFRunLoopSource?
     private var debounceWorkItem: DispatchWorkItem?
     private var rollingBuffer: String = ""
+    private var lastObservedBundleID: String?
+    private var lastKnownRomanLayout: Bool = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
 
     private var activeCandidates: [CompletionMatch] = []
     private var activeCandidateIndex: Int = 0
     private var activeSnapshot: CaretSnapshot?
+    private var activeBundleID: String?
 
     private struct PinnedLiveSample {
         let bundleID: String
@@ -169,6 +173,34 @@ final class TypingEngine {
         historyStore.clearAll()
     }
 
+    var enableHabitLearning: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "WordTailEnableHabitLearning") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "WordTailEnableHabitLearning")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailEnableHabitLearning")
+            if !newValue {
+                habitTracker.resetSessionContext()
+            }
+        }
+    }
+
+    func insightsSnapshot() -> TypingInsightsSnapshot {
+        habitTracker.snapshot()
+    }
+
+    func topBigrams(limit: Int = 8) -> [BigramHabitEntry] {
+        historyStore.topBigrams(limit: limit)
+    }
+
+    func clearInsightsAndContextualHabits() {
+        habitTracker.clearAll()
+        historyStore.clearContextualHabitsOnly()
+    }
+
     var enableChromiumBridge: Bool {
         get {
             if UserDefaults.standard.object(forKey: "WordTailChromiumBridge") == nil {
@@ -184,11 +216,14 @@ final class TypingEngine {
     init(
         completer: WordCompleter,
         historyStore: UserHistoryStore,
+        habitTracker: TypingHabitTracker = TypingHabitTracker(),
         inputGuard: InputGuard
     ) {
         self.completer = completer
         self.historyStore = historyStore
+        self.habitTracker = habitTracker
         self.inputGuard = inputGuard
+        completer.habitTracker = habitTracker
         if UserDefaults.standard.object(forKey: "WordTailMinPrefix") != nil {
             completer.minimumPrefixLength = max(2, UserDefaults.standard.integer(forKey: "WordTailMinPrefix"))
         }
@@ -277,6 +312,8 @@ final class TypingEngine {
                 return
             }
             self.lastLiveSample = nil
+            self.lastObservedBundleID = app?.bundleIdentifier
+            self.habitTracker.resetSessionContext()
             self.dismissOverlay(clearBuffer: true)
             if let app {
                 self.axContext.warmUpApplication(app, enableChromiumBridge: self.enableChromiumBridge)
@@ -288,7 +325,15 @@ final class TypingEngine {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.dismissOverlay(clearBuffer: true)
+            guard let self else { return }
+            let nowRoman = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
+            if nowRoman != self.lastKnownRomanLayout {
+                self.lastKnownRomanLayout = nowRoman
+                if self.enableHabitLearning {
+                    self.habitTracker.recordIMESwitch()
+                }
+            }
+            self.dismissOverlay(clearBuffer: true)
         }
     }
 
@@ -337,6 +382,9 @@ final class TypingEngine {
                     return
                 }
                 let isClick = (type != .scrollWheel)
+                if isClick {
+                    self.habitTracker.resetSessionContext()
+                }
                 self.lastLiveSample = nil
                 self.dismissOverlay(clearBuffer: isClick)
             }
@@ -382,6 +430,10 @@ final class TypingEngine {
            let suffix = overlay.currentSuffix, let fullWord = overlay.currentFullWord {
             debounceWorkItem?.cancel()
             let charAfter = activeSnapshot?.charAfterCursor
+            let prevWord = (activeCandidateIndex < activeCandidates.count)
+                ? activeCandidates[activeCandidateIndex].previousWord
+                : nil
+            let acceptedBundle = activeBundleID ?? lastObservedBundleID
             let shouldAddSpace = appendSpaceOnAccept && WordCompleter.shouldAppendTrailingSpace(charAfterCursor: charAfter)
             let textToInsert = shouldAddSpace ? (suffix + " ") : suffix
 
@@ -394,8 +446,22 @@ final class TypingEngine {
                 rollingBuffer = String(rollingBuffer.suffix(80))
             }
             DispatchQueue.main.async { [weak self] in
-                self?.injectUnicodeString(textToInsert)
-                self?.historyStore.recordAcceptance(of: fullWord)
+                guard let self else { return }
+                self.injectUnicodeString(textToInsert)
+                let learnContext = self.enableHabitLearning
+                let outcome = learnContext
+                    ? self.habitTracker.recordTabAccepted(
+                        fullWord: fullWord,
+                        insertedText: textToInsert,
+                        previousWordFromContext: prevWord,
+                        bundleID: acceptedBundle
+                    )
+                    : nil
+                self.historyStore.recordAcceptance(
+                    of: fullWord,
+                    previousWord: learnContext ? (outcome?.previousWord ?? prevWord) : nil,
+                    bundleID: learnContext ? acceptedBundle : nil
+                )
             }
             return nil
         }
@@ -413,6 +479,15 @@ final class TypingEngine {
             if !rollingBuffer.isEmpty {
                 rollingBuffer.removeLast()
             }
+            if enableHabitLearning {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    let bid = self.activeBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    if bid != Bundle.main.bundleIdentifier && self.inputGuard.shouldAllowPrediction(frontmostBundleID: bid) {
+                        self.habitTracker.recordBackspace()
+                    }
+                }
+            }
             schedulePredictionQuery()
             return Unmanaged.passUnretained(event)
         }
@@ -420,6 +495,7 @@ final class TypingEngine {
         // Navigation / Return / Tab (without suggestion) -> clear buffer and hide.
         if Self.navigationKeyCodes.contains(keyCode) {
             DispatchQueue.main.async { [weak self] in
+                self?.habitTracker.resetSessionContext()
                 self?.dismissOverlay(clearBuffer: true)
             }
             return Unmanaged.passUnretained(event)
@@ -429,6 +505,24 @@ final class TypingEngine {
             rollingBuffer.append(typed)
             if rollingBuffer.count > 80 {
                 rollingBuffer = String(rollingBuffer.suffix(80))
+            }
+
+            if enableHabitLearning {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    let bid = self.activeBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    guard bid != Bundle.main.bundleIdentifier,
+                          self.inputGuard.shouldAllowPrediction(frontmostBundleID: bid) else {
+                        return
+                    }
+                    if let completed = self.habitTracker.recordTypedCharacters(typed, bundleID: bid) {
+                        self.historyStore.recordNaturalWordUsage(
+                            word: completed.word,
+                            previousWord: completed.previousWord,
+                            bundleID: completed.bundleID
+                        )
+                    }
+                }
             }
 
             if let last = typed.last, (last.isLetter && last.isASCII) || last == "'" {
@@ -459,6 +553,7 @@ final class TypingEngine {
             overlay.hide()
             return
         }
+        activeBundleID = frontBundle
         guard inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle) else {
             overlay.hide()
             return
@@ -477,6 +572,7 @@ final class TypingEngine {
         let matches = completer.candidates(
             textBeforeCursor: snapshot.textBeforeCursor,
             charAfterCursor: snapshot.charAfterCursor,
+            bundleID: frontBundle,
             limit: 5
         )
         guard let first = matches.first else {
@@ -490,6 +586,9 @@ final class TypingEngine {
         activeCandidates = matches
         activeCandidateIndex = 0
         activeSnapshot = snapshot
+        if enableHabitLearning {
+            habitTracker.recordSuggestionShownOncePerWord()
+        }
 
         axContext.recordOverlayOutcome(String(
             format: "shown=yes(len=%d,n=%d,x=%.0f,y=%.0f)",

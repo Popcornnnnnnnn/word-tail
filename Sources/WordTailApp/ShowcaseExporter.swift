@@ -1,0 +1,398 @@
+import AppKit
+import SwiftUI
+import WordTailCore
+
+enum ShowcaseExporter {
+    @MainActor
+    static func exportAll(to outputDirPath: String) throws {
+        let outDir = URL(fileURLWithPath: outputDirPath, isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        // Ensure crisp light appearance for clean, high-contrast GitHub README presentation
+        NSApp.appearance = NSAppearance(named: .aqua)
+
+        let sampleBuckets: [HourlyTypingBucket] = [
+            HourlyTypingBucket(hour: 0, typedLetters: 90, backspaces: 9, burstCharacters: 75, burstSeconds: 15),
+            HourlyTypingBucket(hour: 1, typedLetters: 35, backspaces: 4, burstCharacters: 30, burstSeconds: 7),
+            HourlyTypingBucket(hour: 2, typedLetters: 0),
+            HourlyTypingBucket(hour: 3, typedLetters: 0),
+            HourlyTypingBucket(hour: 4, typedLetters: 0),
+            HourlyTypingBucket(hour: 5, typedLetters: 0),
+            HourlyTypingBucket(hour: 6, typedLetters: 0),
+            HourlyTypingBucket(hour: 7, typedLetters: 45, backspaces: 2, burstCharacters: 40, burstSeconds: 7.2),
+            HourlyTypingBucket(hour: 8, typedLetters: 180, backspaces: 6, burstCharacters: 160, burstSeconds: 26),
+            HourlyTypingBucket(hour: 9, typedLetters: 410, backspaces: 11, burstCharacters: 360, burstSeconds: 54),
+            HourlyTypingBucket(hour: 10, typedLetters: 620, backspaces: 15, burstCharacters: 540, burstSeconds: 79),
+            HourlyTypingBucket(hour: 11, typedLetters: 530, backspaces: 16, burstCharacters: 470, burstSeconds: 72),
+            HourlyTypingBucket(hour: 12, typedLetters: 140, backspaces: 5, burstCharacters: 110, burstSeconds: 18),
+            HourlyTypingBucket(hour: 13, typedLetters: 310, backspaces: 10, burstCharacters: 270, burstSeconds: 43),
+            HourlyTypingBucket(hour: 14, typedLetters: 580, backspaces: 18, burstCharacters: 500, burstSeconds: 75),
+            HourlyTypingBucket(hour: 15, typedLetters: 640, backspaces: 19, burstCharacters: 560, burstSeconds: 82),
+            HourlyTypingBucket(hour: 16, typedLetters: 490, backspaces: 17, burstCharacters: 420, burstSeconds: 66),
+            HourlyTypingBucket(hour: 17, typedLetters: 290, backspaces: 11, burstCharacters: 240, burstSeconds: 39),
+            HourlyTypingBucket(hour: 18, typedLetters: 120, backspaces: 5, burstCharacters: 95, burstSeconds: 16),
+            HourlyTypingBucket(hour: 19, typedLetters: 210, backspaces: 8, burstCharacters: 180, burstSeconds: 30),
+            HourlyTypingBucket(hour: 20, typedLetters: 380, backspaces: 15, burstCharacters: 320, burstSeconds: 52),
+            HourlyTypingBucket(hour: 21, typedLetters: 420, backspaces: 19, burstCharacters: 350, burstSeconds: 58),
+            HourlyTypingBucket(hour: 22, typedLetters: 310, backspaces: 24, burstCharacters: 260, burstSeconds: 47),
+            HourlyTypingBucket(hour: 23, typedLetters: 220, backspaces: 21, burstCharacters: 185, burstSeconds: 35)
+        ]
+
+        let sampleInsights = TypingInsightsSnapshot(
+            tabsAccepted: 618,
+            charactersSaved: 3_420,
+            suggestionsShown: 1_490,
+            totalTypedLetters: 5_985,
+            totalBackspaces: 235,
+            averageBurstWPM: 76,
+            peakBurstWPM: 98,
+            imeSwitches: 84,
+            hourlyBuckets: sampleBuckets,
+            typoTraps: [
+                TypoTrapEntry(word: "definitely", commonMistype: "definately", count: 7),
+                TypoTrapEntry(word: "receive", commonMistype: "recieve", count: 5),
+                TypoTrapEntry(word: "separate", commonMistype: "seperate", count: 4),
+                TypoTrapEntry(word: "asynchronous", commonMistype: "asyncronous", count: 3)
+            ],
+            fillerHabits: [
+                FillerHabitEntry(word: "actually", count: 14),
+                FillerHabitEntry(word: "basically", count: 9)
+            ],
+            topSavedWords: [
+                SavedWordEntry(word: "implementation", charsSaved: 168),
+                SavedWordEntry(word: "quantitative", charsSaved: 132)
+            ]
+        )
+
+        let sampleBigrams: [BigramHabitEntry] = [
+            BigramHabitEntry(previousWord: "pull", word: "request", count: 12),
+            BigramHabitEntry(previousWord: "feature", word: "flag", count: 8),
+            BigramHabitEntry(previousWord: "command", word: "line", count: 6)
+        ]
+
+        let sampleApps: [AppOffsetItem] = [
+            AppOffsetItem(
+                bundleID: "com.openai.codex",
+                displayName: "Codex (ChatGPT)",
+                icon: srgbIcon(forBundleID: "com.openai.codex"),
+                offset: 0.70
+            ),
+            AppOffsetItem(
+                bundleID: "com.google.Chrome",
+                displayName: "Google Chrome",
+                icon: srgbIcon(forBundleID: "com.google.Chrome"),
+                offset: 0.55
+            ),
+            AppOffsetItem(
+                bundleID: "com.apple.Notes",
+                displayName: "Notes",
+                icon: srgbIcon(forBundleID: "com.apple.Notes"),
+                offset: 0.70
+            ),
+            AppOffsetItem(
+                bundleID: "com.raycast.macos",
+                displayName: "Raycast",
+                icon: srgbIcon(forBundleID: "com.raycast.macos"),
+                offset: 0.50
+            )
+        ]
+
+        let sampleVocab: [VocabularyEntry] = [
+            VocabularyEntry(word: "TypeScript", count: 19, isCustom: true),
+            VocabularyEntry(word: "idempotent", count: 14, isCustom: false),
+            VocabularyEntry(word: "quantitative", count: 11, isCustom: false)
+        ]
+
+        // 1. Hero inline-ghost banner
+        try renderSwiftUIViewToPNG(
+            ShowcaseHeroBanner(),
+            size: NSSize(width: 860, height: 390),
+            to: outDir.appendingPathComponent("hero-inline-ghost.png")
+        )
+
+        // 2. Insights window screenshot
+        let insightsVM = SettingsViewModel(
+            showcaseSection: .insights,
+            appOffsets: sampleApps,
+            insights: sampleInsights,
+            bigrams: sampleBigrams,
+            vocabulary: sampleVocab
+        )
+        try renderSwiftUIViewToPNG(
+            MacWindowFrameBackdrop {
+                SettingsView(vm: insightsVM)
+            },
+            size: NSSize(width: 760, height: 566),
+            to: outDir.appendingPathComponent("insights-window.png")
+        )
+
+        // 3. Calibration window screenshot
+        let calibrationVM = SettingsViewModel(
+            showcaseSection: .calibration,
+            appOffsets: sampleApps,
+            insights: sampleInsights,
+            bigrams: sampleBigrams,
+            vocabulary: sampleVocab
+        )
+        try renderSwiftUIViewToPNG(
+            MacWindowFrameBackdrop {
+                SettingsView(vm: calibrationVM)
+            },
+            size: NSSize(width: 760, height: 566),
+            to: outDir.appendingPathComponent("calibration-window.png")
+        )
+    }
+
+    private static func srgbIcon(forBundleID bundleID: String) -> NSImage {
+        let src = SettingsViewModel.appIcon(forBundleID: bundleID)
+        let px = 64
+        guard let srgb = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(
+                  data: nil,
+                  width: px,
+                  height: px,
+                  bitsPerComponent: 8,
+                  bytesPerRow: 0,
+                  space: srgb,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return src
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        src.draw(in: NSRect(x: 0, y: 0, width: px, height: px))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let cg = ctx.makeImage() else { return src }
+        return NSImage(cgImage: cg, size: NSSize(width: 32, height: 32))
+    }
+
+    @MainActor
+    private static func renderSwiftUIViewToPNG<V: View>(
+        _ view: V,
+        size: NSSize,
+        to url: URL
+    ) throws {
+        let renderer = ImageRenderer(content: view.environment(\.colorScheme, .light))
+        renderer.scale = 2.0
+        renderer.proposedSize = ProposedViewSize(width: size.width, height: size.height)
+        renderer.isOpaque = true
+        guard let rawCG = renderer.cgImage,
+              let srgb = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(
+                  data: nil,
+                  width: rawCG.width,
+                  height: rawCG.height,
+                  bitsPerComponent: 8,
+                  bytesPerRow: 0,
+                  space: srgb,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            throw NSError(domain: "ShowcaseExporter", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create sRGB context"])
+        }
+        ctx.draw(rawCG, in: CGRect(x: 0, y: 0, width: rawCG.width, height: rawCG.height))
+        guard let srgbCG = ctx.makeImage() else {
+            throw NSError(domain: "ShowcaseExporter", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to render sRGB image"])
+        }
+        let bitmap = NSBitmapImageRep(cgImage: srgbCG)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "ShowcaseExporter", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to encode PNG"])
+        }
+        try png.write(to: url, options: .atomic)
+    }
+}
+
+private struct MacWindowFrameBackdrop<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.91, green: 0.93, blue: 0.98),
+                    Color(red: 0.95, green: 0.95, blue: 0.98),
+                    Color(red: 0.89, green: 0.92, blue: 0.96)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            ZStack(alignment: .topLeading) {
+                content
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .stroke(Color.black.opacity(0.12), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.16), radius: 22, x: 0, y: 12)
+
+                // macOS traffic light window controls
+                HStack(spacing: 8) {
+                    Circle().fill(Color(red: 1.0, green: 0.37, blue: 0.34)).frame(width: 12, height: 12)
+                    Circle().fill(Color(red: 0.99, green: 0.74, blue: 0.18)).frame(width: 12, height: 12)
+                    Circle().fill(Color(red: 0.16, green: 0.78, blue: 0.25)).frame(width: 12, height: 12)
+                }
+                .padding(.leading, 16)
+                .padding(.top, 14)
+            }
+        }
+        .frame(width: 760, height: 566)
+    }
+}
+
+private struct ShowcaseHeroBanner: View {
+    private let indigo = Color(red: 0.37, green: 0.42, blue: 0.89)
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.065, green: 0.072, blue: 0.095),
+                    Color(red: 0.105, green: 0.118, blue: 0.165)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(spacing: 12) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 38, height: 38)
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("WordTail for macOS")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text("Zero-LLM · ~3 ms single-word inline ghost autocomplete · Habit-aware")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.white.opacity(0.65))
+                    }
+                    Spacer()
+
+                    HStack(spacing: 6) {
+                        HeroPill(text: "Zero LLM")
+                        HeroPill(text: "~400 KB")
+                        HeroPill(text: "100% Local")
+                    }
+                }
+
+                // Simulated focused editor cards
+                VStack(spacing: 12) {
+                    HeroTypingRow(
+                        contextTag: "AI Chat / Prose",
+                        typedBefore: "Let's open a pull re",
+                        ghostSuffix: "quest ",
+                        note: "Personal bigram learned: pull → request"
+                    )
+                    HeroTypingRow(
+                        contextTag: "Technical Docs",
+                        typedBefore: "Keep the webhook handler idemp",
+                        ghostSuffix: "otent ",
+                        note: "180+ CS/AI lexicon + per-app vocabulary"
+                    )
+                    HStack(spacing: 12) {
+                        Text("Bilingual Guard")
+                            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .frame(width: 105, alignment: .leading)
+
+                        Text("今天下午讨论架构设计")
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundStyle(.white.opacity(0.92))
+
+                        Spacer()
+
+                        Text("Pinyin / CJK IME active — stays 100% silent")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Color.green.opacity(0.9))
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 50)
+                    .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                    )
+                }
+
+                HStack {
+                    Text("Works across Chrome, Codex, Antigravity, Raycast, Slack, Mail & Notes")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.white.opacity(0.52))
+                    Spacer()
+                    Text("⇥ Tab to accept · ⌥ [ / ] to cycle · Esc to dismiss")
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+            }
+            .padding(34)
+        }
+        .frame(width: 860, height: 390)
+    }
+}
+
+private struct HeroPill: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.88))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Color.white.opacity(0.09), in: Capsule(style: .continuous))
+            .overlay(Capsule(style: .continuous).stroke(Color.white.opacity(0.14), lineWidth: 1))
+    }
+}
+
+private struct HeroTypingRow: View {
+    let contextTag: String
+    let typedBefore: String
+    let ghostSuffix: String
+    let note: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(contextTag)
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.65))
+                .frame(width: 105, alignment: .leading)
+
+            HStack(spacing: 0) {
+                Text(typedBefore)
+                    .font(.system(size: 14.5))
+                    .foregroundStyle(.white.opacity(0.95))
+                Rectangle()
+                    .fill(Color(red: 0.46, green: 0.52, blue: 0.98))
+                    .frame(width: 1.8, height: 17)
+                Text(ghostSuffix)
+                    .font(.system(size: 14.5))
+                    .foregroundStyle(.white.opacity(0.36))
+            }
+
+            Spacer()
+
+            Text(note)
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.52))
+
+            Text("⇥ Tab")
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.85))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                )
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 52)
+        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+        )
+    }
+}

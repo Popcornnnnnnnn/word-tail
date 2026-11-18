@@ -56,6 +56,7 @@ private enum LinearUI {
 
 enum SettingsSection: String, CaseIterable, Identifiable {
     case calibration = "Calibration"
+    case insights = "Insights"
     case dictionary = "Dictionary"
     case preferences = "Preferences"
 
@@ -63,6 +64,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .calibration: return "slider.horizontal.3"
+        case .insights: return "chart.bar.xaxis"
         case .dictionary: return "character.book.closed"
         case .preferences: return "switch.2"
         }
@@ -92,15 +94,16 @@ struct RunningAppChoice: Identifiable, Hashable {
 }
 
 final class SettingsViewModel: ObservableObject {
-    private let engine: TypingEngine
+    private let engine: TypingEngine?
     private let onStateChange: () -> Void
+    let isStaticShowcase: Bool
 
     @Published var selectedSection: SettingsSection = .calibration
 
     @Published var isEnabled: Bool {
         didSet {
-            guard !isRefreshing else { return }
-            engine.isEnabled = isEnabled
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.isEnabled = isEnabled
             onStateChange()
         }
     }
@@ -109,36 +112,43 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var globalOffset: Double {
         didSet {
-            guard !isRefreshing else { return }
-            engine.globalVerticalAdjustment = CGFloat(globalOffset)
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.globalVerticalAdjustment = CGFloat(globalOffset)
         }
     }
 
     @Published var ghostOpacity: Double {
         didSet {
-            guard !isRefreshing else { return }
-            engine.ghostOpacity = CGFloat(ghostOpacity)
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.ghostOpacity = CGFloat(ghostOpacity)
         }
     }
 
     @Published var appendSpaceOnAccept: Bool {
         didSet {
-            guard !isRefreshing else { return }
-            engine.appendSpaceOnAccept = appendSpaceOnAccept
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.appendSpaceOnAccept = appendSpaceOnAccept
+        }
+    }
+
+    @Published var enableHabitLearning: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enableHabitLearning = enableHabitLearning
         }
     }
 
     @Published var enableTechLexicon: Bool {
         didSet {
-            guard !isRefreshing else { return }
-            engine.enableTechLexicon = enableTechLexicon
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enableTechLexicon = enableTechLexicon
         }
     }
 
     @Published var enableGlobalHotkey: Bool {
         didSet {
-            guard !isRefreshing else { return }
-            engine.enableGlobalHotkey = enableGlobalHotkey
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enableGlobalHotkey = enableGlobalHotkey
         }
     }
 
@@ -147,28 +157,28 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var minPrefix: Int {
         didSet {
-            guard !isRefreshing else { return }
-            engine.minimumPrefixLength = minPrefix
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.minimumPrefixLength = minPrefix
         }
     }
 
     @Published var minSuffix: Int {
         didSet {
-            guard !isRefreshing else { return }
-            engine.minimumSuffixLength = minSuffix
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.minimumSuffixLength = minSuffix
         }
     }
 
     @Published var chromiumBridge: Bool {
         didSet {
-            guard !isRefreshing else { return }
-            engine.enableChromiumBridge = chromiumBridge
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enableChromiumBridge = chromiumBridge
         }
     }
 
     @Published var showDockIcon: Bool {
         didSet {
-            guard !isRefreshing else { return }
+            guard !isRefreshing, !isStaticShowcase else { return }
             UserDefaults.standard.set(showDockIcon, forKey: "WordTailShowDockIcon")
             let windowToKeep = NSApp.windows.first { $0.title == "WordTail" }
             NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
@@ -181,7 +191,7 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var launchAtLogin: Bool {
         didSet {
-            guard !isRefreshing else { return }
+            guard !isRefreshing, !isStaticShowcase else { return }
             UserDefaults.standard.set(true, forKey: "WordTailLoginItemUserConfigured")
             do {
                 if launchAtLogin {
@@ -199,6 +209,8 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var vocabularyEntries: [VocabularyEntry] = []
     @Published var newCustomWordInput: String = ""
+    @Published var insights: TypingInsightsSnapshot = TypingInsightsSnapshot()
+    @Published var learnedBigrams: [BigramHabitEntry] = []
 
     private var isRefreshing = false
 
@@ -209,10 +221,12 @@ final class SettingsViewModel: ObservableObject {
     ) {
         self.engine = engine
         self.onStateChange = onStateChange
+        self.isStaticShowcase = false
         self.isEnabled = engine.isEnabled
         self.globalOffset = Double(engine.globalVerticalAdjustment)
         self.ghostOpacity = Double(engine.ghostOpacity)
         self.appendSpaceOnAccept = engine.appendSpaceOnAccept
+        self.enableHabitLearning = engine.enableHabitLearning
         self.enableTechLexicon = engine.enableTechLexicon
         self.enableGlobalHotkey = engine.enableGlobalHotkey
         self.minPrefix = engine.minimumPrefixLength
@@ -227,7 +241,42 @@ final class SettingsViewModel: ObservableObject {
         refresh(currentApp: currentApp)
     }
 
+    /// Isolated showcase initializer for generating documentation screenshots without touching user defaults or live state.
+    init(
+        showcaseSection: SettingsSection,
+        appOffsets: [AppOffsetItem],
+        insights: TypingInsightsSnapshot,
+        bigrams: [BigramHabitEntry],
+        vocabulary: [VocabularyEntry]
+    ) {
+        self.engine = nil
+        self.onStateChange = {}
+        self.isStaticShowcase = true
+        self.selectedSection = showcaseSection
+        self.isEnabled = true
+        self.isTrusted = true
+        self.globalOffset = 0.70
+        self.ghostOpacity = 0.38
+        self.appendSpaceOnAccept = true
+        self.enableHabitLearning = true
+        self.enableTechLexicon = true
+        self.enableGlobalHotkey = true
+        self.minPrefix = 2
+        self.minSuffix = 2
+        self.chromiumBridge = true
+        self.showDockIcon = true
+        self.launchAtLogin = true
+        self.appOffsets = appOffsets
+        self.availableAppsToAdd = [
+            RunningAppChoice(bundleID: "com.apple.mail", name: "Mail", icon: NSImage(size: NSSize(width: 18, height: 18)))
+        ]
+        self.insights = insights
+        self.learnedBigrams = bigrams
+        self.vocabularyEntries = vocabulary
+    }
+
     func refresh(currentApp: (name: String, bundleID: String)?) {
+        guard let engine, !isStaticShowcase else { return }
         isRefreshing = true
         defer { isRefreshing = false }
 
@@ -236,6 +285,7 @@ final class SettingsViewModel: ObservableObject {
         globalOffset = Double(engine.globalVerticalAdjustment)
         ghostOpacity = Double(engine.ghostOpacity)
         appendSpaceOnAccept = engine.appendSpaceOnAccept
+        enableHabitLearning = engine.enableHabitLearning
         enableTechLexicon = engine.enableTechLexicon
         enableGlobalHotkey = engine.enableGlobalHotkey
         minPrefix = engine.minimumPrefixLength
@@ -248,6 +298,8 @@ final class SettingsViewModel: ObservableObject {
         }
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         vocabularyEntries = engine.vocabularyEntries()
+        insights = engine.insightsSnapshot()
+        learnedBigrams = engine.topBigrams(limit: 8)
 
         var runningNames: [String: String] = [:]
         for app in NSWorkspace.shared.runningApplications where Self.isUserFacingRunningApp(app) {
@@ -296,12 +348,25 @@ final class SettingsViewModel: ObservableObject {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    func refreshInsights() {
+        guard let engine, !isStaticShowcase else { return }
+        insights = engine.insightsSnapshot()
+        learnedBigrams = engine.topBigrams(limit: 8)
+    }
+
+    func clearInsights() {
+        guard let engine, !isStaticShowcase else { return }
+        engine.clearInsightsAndContextualHabits()
+        insights = engine.insightsSnapshot()
+        learnedBigrams = []
+    }
+
     func updateOffset(for bundleID: String, to newValue: Double) {
         let clamped = min(max((newValue * 20).rounded() / 20.0, -5.0), 5.0)
         if let idx = appOffsets.firstIndex(where: { $0.bundleID == bundleID }) {
             appOffsets[idx].offset = clamped
         }
-        engine.setVerticalAdjustment(CGFloat(clamped), forBundleID: bundleID)
+        engine?.setVerticalAdjustment(CGFloat(clamped), forBundleID: bundleID)
     }
 
     func setGlobalOffsetClamped(_ newValue: Double) {
@@ -309,6 +374,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func addAppOverride(bundleID: String) {
+        guard let engine else { return }
         let startOffset = Double(engine.verticalAdjustment(forBundleID: bundleID))
         engine.setVerticalAdjustment(CGFloat(startOffset), forBundleID: bundleID)
         refresh(currentApp: nil)
@@ -333,7 +399,7 @@ final class SettingsViewModel: ObservableObject {
         if let builtIn = ScreenGeometry.builtInAppVerticalOffsets[bundleID] {
             updateOffset(for: bundleID, to: Double(builtIn))
         } else {
-            engine.setVerticalAdjustment(nil, forBundleID: bundleID)
+            engine?.setVerticalAdjustment(nil, forBundleID: bundleID)
             appOffsets.removeAll { $0.bundleID == bundleID }
             refresh(currentApp: nil)
         }
@@ -348,19 +414,22 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func submitNewCustomWord() {
-        guard engine.addCustomWord(newCustomWordInput) else { return }
+        guard let engine, engine.addCustomWord(newCustomWordInput) else { return }
         newCustomWordInput = ""
         vocabularyEntries = engine.vocabularyEntries()
     }
 
     func removeVocabularyWord(_ word: String) {
+        guard let engine else { return }
         engine.removeVocabularyWord(word)
         vocabularyEntries = engine.vocabularyEntries()
     }
 
     func clearLearnedVocabulary() {
+        guard let engine else { return }
         engine.clearLearnedWords()
         vocabularyEntries = []
+        learnedBigrams = []
     }
 
     func openAccessibilitySettings() {
@@ -719,7 +788,7 @@ struct SettingsView: View {
                 .frame(width: 1)
             detailPane
         }
-        .frame(width: 660, height: 470)
+        .frame(width: 680, height: 490)
         .background(LinearUI.windowBg(scheme))
     }
 
@@ -758,6 +827,9 @@ struct SettingsView: View {
                         symbol: section.symbol,
                         isSelected: vm.selectedSection == section
                     ) {
+                        if section == .insights {
+                            vm.refreshInsights()
+                        }
                         vm.selectedSection = section
                     }
                 }
@@ -806,23 +878,34 @@ struct SettingsView: View {
 
     // MARK: Right Content Pane
 
+    @ViewBuilder
     private var detailPane: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 20) {
-                switch vm.selectedSection {
-                case .calibration:
-                    calibrationContent
-                case .dictionary:
-                    dictionaryContent
-                case .preferences:
-                    preferencesContent
-                }
+        let content = VStack(alignment: .leading, spacing: 20) {
+            switch vm.selectedSection {
+            case .calibration:
+                calibrationContent
+            case .insights:
+                insightsContent
+            case .dictionary:
+                dictionaryContent
+            case .preferences:
+                preferencesContent
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 26)
-            .padding(.bottom, 24)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 24)
+        .padding(.top, 26)
+        .padding(.bottom, 24)
+
+        if vm.isStaticShowcase {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipped()
+        } else {
+            ScrollView(.vertical, showsIndicators: false) {
+                content
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
     }
 
     // MARK: Calibration Section
@@ -888,8 +971,8 @@ struct SettingsView: View {
 
                         Spacer()
 
-                        LinearSlider(value: $vm.globalOffset, range: -4.0...4.0)
-                            .frame(width: 130)
+                                LinearSlider(value: $vm.globalOffset, range: -4.0...4.0)
+                            .frame(width: 118)
 
                         LinearOffsetStepper(
                             value: vm.globalOffset,
@@ -918,36 +1001,40 @@ struct SettingsView: View {
 
                     HStack(spacing: 6) {
                         if !vm.availableAppsToAdd.isEmpty {
-                            LinearActionButton(title: "Add Open App", icon: "plus") {
-                                showAddAppPopover.toggle()
-                            }
-                            .popover(isPresented: $showAddAppPopover, arrowEdge: .bottom) {
-                                ScrollView(.vertical, showsIndicators: true) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        ForEach(vm.availableAppsToAdd) { app in
-                                            Button {
-                                                vm.addAppOverride(bundleID: app.bundleID)
-                                                showAddAppPopover = false
-                                            } label: {
-                                                HStack(spacing: 8) {
-                                                    Image(nsImage: app.icon)
-                                                        .resizable()
-                                                        .frame(width: 18, height: 18)
-                                                    Text(app.name)
-                                                        .font(.system(size: 12.5))
-                                                        .foregroundStyle(.primary)
-                                                    Spacer()
-                                                }
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 5)
-                                                .contentShape(Rectangle())
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                    .padding(6)
+                            if vm.isStaticShowcase {
+                                LinearActionButton(title: "Add Open App", icon: "plus") {}
+                            } else {
+                                LinearActionButton(title: "Add Open App", icon: "plus") {
+                                    showAddAppPopover.toggle()
                                 }
-                                .frame(minWidth: 205, maxHeight: 320)
+                                .popover(isPresented: $showAddAppPopover, arrowEdge: .bottom) {
+                                    ScrollView(.vertical, showsIndicators: true) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            ForEach(vm.availableAppsToAdd) { app in
+                                                Button {
+                                                    vm.addAppOverride(bundleID: app.bundleID)
+                                                    showAddAppPopover = false
+                                                } label: {
+                                                    HStack(spacing: 8) {
+                                                        Image(nsImage: app.icon)
+                                                            .resizable()
+                                                            .frame(width: 18, height: 18)
+                                                        Text(app.name)
+                                                            .font(.system(size: 12.5))
+                                                            .foregroundStyle(.primary)
+                                                        Spacer()
+                                                    }
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 5)
+                                                    .contentShape(Rectangle())
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                        .padding(6)
+                                    }
+                                    .frame(minWidth: 205, maxHeight: 320)
+                                }
                             }
                         }
 
@@ -984,7 +1071,7 @@ struct SettingsView: View {
                                 ),
                                 range: -4.0...4.0
                             )
-                            .frame(width: 130)
+                            .frame(width: 118)
 
                             LinearOffsetStepper(
                                 value: item.offset,
@@ -1005,6 +1092,215 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    // MARK: Insights Section
+
+    private var insightsContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Typing Insights")
+                        .font(.system(size: 16, weight: .semibold))
+                    HStack(spacing: 5) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text("100% local aggregate counters · Zero sentences or raw text logged")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if vm.insights.totalTypedLetters > 0 || vm.insights.tabsAccepted > 0 || !vm.learnedBigrams.isEmpty {
+                    LinearActionButton(title: "Reset", icon: "arrow.counterclockwise") {
+                        vm.clearInsights()
+                    }
+                }
+            }
+
+            // 4 Compact KPI Tiles
+            HStack(spacing: 8) {
+                let savedTimeLabel: String = {
+                    let secs = vm.insights.estimatedSecondsSaved
+                    if secs >= 60 {
+                        return "~\(secs / 60)m · \(vm.insights.tabsAccepted) Tabs"
+                    }
+                    return secs > 0 ? "~\(secs)s · \(vm.insights.tabsAccepted) Tabs" : "\(vm.insights.tabsAccepted) Tabs"
+                }()
+                LinearMetricTile(
+                    label: "CHARS SAVED",
+                    value: "\(vm.insights.charactersSaved)",
+                    subtitle: savedTimeLabel
+                )
+                LinearMetricTile(
+                    label: "TAB HIT RATE",
+                    value: "\(vm.insights.hitRatePercent)%",
+                    subtitle: "\(vm.insights.tabsAccepted) of \(vm.insights.suggestionsShown)"
+                )
+                LinearMetricTile(
+                    label: "BURST SPEED",
+                    value: vm.insights.averageBurstWPM > 0 ? "\(vm.insights.averageBurstWPM) WPM" : "—",
+                    subtitle: vm.insights.peakBurstWPM > 0 ? "Peak \(vm.insights.peakBurstWPM) WPM" : "English prose"
+                )
+                LinearMetricTile(
+                    label: "ACCURACY",
+                    value: String(format: "%.1f%%", vm.insights.cleanAccuracyPercent),
+                    subtitle: "\(vm.insights.imeSwitches) IME switches"
+                )
+            }
+
+            // 24-Hour Rhythm Card
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline) {
+                    LinearSectionHeader(title: "24-Hour Typing Rhythm")
+                    Spacer()
+                    Text(hourlySummaryCaption)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                LinearCard {
+                    HourlyRhythmChart(buckets: vm.insights.hourlyBuckets)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                }
+            }
+
+            // Two Side-by-Side Habit Cards
+            HStack(alignment: .top, spacing: 10) {
+                // Personal Typo Traps
+                VStack(alignment: .leading, spacing: 7) {
+                    LinearSectionHeader(
+                        title: "Personal Typo Traps",
+                        subtitle: "Backspace-corrected words (auto-boosted)"
+                    )
+
+                    LinearCard {
+                        if vm.insights.typoTraps.isEmpty {
+                            Text("Words you repeatedly mistype and backspace will appear here—and get boosted automatically.")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                        } else {
+                            ForEach(Array(vm.insights.typoTraps.prefix(5).enumerated()), id: \.element.id) { idx, trap in
+                                if idx > 0 {
+                                    Rectangle()
+                                        .fill(LinearUI.hairline(scheme))
+                                        .frame(height: 1)
+                                        .padding(.leading, 12)
+                                }
+                                HStack(spacing: 6) {
+                                    Text(trap.commonMistype)
+                                        .font(.system(size: 11.5, design: .monospaced))
+                                        .strikethrough(true, color: .secondary)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                    Image(systemName: "arrow.right")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                    Text(trap.word)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text("\(trap.count)×")
+                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 12)
+                                .frame(height: 32)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+
+                // Learned Word Pairs & Crutches
+                VStack(alignment: .leading, spacing: 7) {
+                    LinearSectionHeader(
+                        title: "Word Pairs & Prose Crutches",
+                        subtitle: "Learned 2-word habits & filler frequency"
+                    )
+
+                    LinearCard {
+                        if vm.learnedBigrams.isEmpty && vm.insights.fillerHabits.isEmpty {
+                            Text("Common 2-word collocations (e.g. pull → request) and filler words build as you write.")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                        } else {
+                            let pairs = Array(vm.learnedBigrams.prefix(3))
+                            ForEach(Array(pairs.enumerated()), id: \.element.id) { idx, pair in
+                                if idx > 0 {
+                                    Rectangle()
+                                        .fill(LinearUI.hairline(scheme))
+                                        .frame(height: 1)
+                                        .padding(.leading, 12)
+                                }
+                                HStack(spacing: 5) {
+                                    Text(pair.previousWord)
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(.secondary)
+                                    Image(systemName: "arrow.right")
+                                        .font(.system(size: 8.5, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                    Text(pair.word)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(LinearUI.accent)
+                                    Spacer()
+                                    Text("\(pair.count)×")
+                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 12)
+                                .frame(height: 31)
+                            }
+
+                            let fillers = Array(vm.insights.fillerHabits.prefix(pairs.isEmpty ? 4 : 2))
+                            ForEach(Array(fillers.enumerated()), id: \.element.id) { fIdx, filler in
+                                if !pairs.isEmpty || fIdx > 0 {
+                                    Rectangle()
+                                        .fill(LinearUI.hairline(scheme))
+                                        .frame(height: 1)
+                                        .padding(.leading, 12)
+                                }
+                                HStack(spacing: 6) {
+                                    Text("“\(filler.word)”")
+                                        .font(.system(size: 11.5, weight: .medium))
+                                        .foregroundStyle(.primary.opacity(0.85))
+                                    LinearKbd(label: "Filler")
+                                    Spacer()
+                                    Text("\(filler.count)×")
+                                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 12)
+                                .frame(height: 31)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var hourlySummaryCaption: String {
+        let activeHours = vm.insights.hourlyBuckets.filter { $0.typedLetters >= 25 }
+        guard !activeHours.isEmpty else {
+            return "Builds automatically as you type in English"
+        }
+        var parts: [String] = []
+        if let fastest = activeHours.filter({ $0.averageWPM > 0 }).max(by: { $0.averageWPM < $1.averageWPM }) {
+            parts.append(String(format: "Peak %02d:00 (%d WPM)", fastest.hour, fastest.averageWPM))
+        }
+        if let roughest = activeHours.filter({ $0.backspaces >= 3 }).max(by: { $0.backspaceRate < $1.backspaceRate }) {
+            parts.append(String(format: "Most edits %02d:00 (%.1f%%)", roughest.hour, roughest.backspaceRate * 100.0))
+        }
+        return parts.isEmpty ? "Active across \(activeHours.count)h" : parts.joined(separator: " · ")
     }
 
     // MARK: Dictionary Section
@@ -1120,6 +1416,25 @@ struct SettingsView: View {
                         }
                         Spacer()
                         LinearSwitch(isOn: $vm.appendSpaceOnAccept)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Learn Word Habits & Insights")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Learns 2-word pairs, per-app vocabulary, typo traps, and local speed stats")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.enableHabitLearning)
                     }
                     .padding(.horizontal, 14)
                     .frame(height: 52)
@@ -1287,6 +1602,93 @@ struct SettingsView: View {
                     .frame(height: 50)
                 }
             }
+        }
+    }
+}
+
+private struct LinearMetricTile: View {
+    @Environment(\.colorScheme) private var scheme
+    let label: String
+    let value: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 9.5, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+
+            Text(value)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text(subtitle)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
+        .background(LinearUI.cardBg(scheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(LinearUI.hairline(scheme), lineWidth: 1)
+        )
+    }
+}
+
+private struct HourlyRhythmChart: View {
+    @Environment(\.colorScheme) private var scheme
+    let buckets: [HourlyTypingBucket]
+
+    var body: some View {
+        let maxLetters = max(40, buckets.map(\.typedLetters).max() ?? 40)
+        VStack(spacing: 6) {
+            HStack(alignment: .bottom, spacing: 4) {
+                ForEach(buckets) { bucket in
+                    let ratio = CGFloat(bucket.typedLetters) / CGFloat(maxLetters)
+                    let barH = bucket.typedLetters == 0 ? 3.0 : max(6.0, ratio * 48.0)
+                    let highError = bucket.typedLetters >= 35 && bucket.backspaceRate >= 0.075
+
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                            .fill(
+                                bucket.typedLetters == 0
+                                    ? LinearUI.subtleFill(scheme)
+                                    : (highError ? Color.orange.opacity(0.85) : LinearUI.accent.opacity(0.85))
+                            )
+                            .frame(height: barH)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 50, maxHeight: 50, alignment: .bottom)
+                    .help(
+                        bucket.typedLetters > 0
+                            ? String(
+                                format: "%02d:00 — %d chars, %d WPM, %.1f%% backspace",
+                                bucket.hour, bucket.typedLetters, bucket.averageWPM, bucket.backspaceRate * 100.0
+                            )
+                            : String(format: "%02d:00 — No English typing", bucket.hour)
+                    )
+                }
+            }
+
+            HStack {
+                Text("00:00")
+                Spacer()
+                Text("06:00")
+                Spacer()
+                Text("12:00")
+                Spacer()
+                Text("18:00")
+                Spacer()
+                Text("23:00")
+            }
+            .font(.system(size: 9.5, design: .monospaced))
+            .foregroundStyle(.tertiary)
         }
     }
 }

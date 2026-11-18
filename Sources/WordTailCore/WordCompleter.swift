@@ -5,11 +5,17 @@ public struct CompletionMatch: Equatable {
     public let prefix: String
     public let fullWord: String
     public let suffix: String
+    public let previousWord: String?
 
-    public init(prefix: String, fullWord: String, suffix: String) {
+    public init(prefix: String, fullWord: String, suffix: String, previousWord: String? = nil) {
         self.prefix = prefix
         self.fullWord = fullWord
         self.suffix = suffix
+        self.previousWord = previousWord
+    }
+
+    public static func == (lhs: CompletionMatch, rhs: CompletionMatch) -> Bool {
+        lhs.prefix == rhs.prefix && lhs.fullWord == rhs.fullWord && lhs.suffix == rhs.suffix
     }
 }
 
@@ -36,6 +42,7 @@ public final class WordCompleter {
 
     private let spellCompleter: SpellCompleting
     private let historyStore: UserHistoryStore
+    public weak var habitTracker: TypingHabitTracker?
     public var minimumPrefixLength: Int
     public var minimumSuffixLength: Int
     public var enableTechLexicon: Bool
@@ -43,12 +50,14 @@ public final class WordCompleter {
     public init(
         spellCompleter: SpellCompleting = SystemSpellCompleter(),
         historyStore: UserHistoryStore = UserHistoryStore(),
+        habitTracker: TypingHabitTracker? = nil,
         minimumPrefixLength: Int = 2,
         minimumSuffixLength: Int = 2,
         enableTechLexicon: Bool = true
     ) {
         self.spellCompleter = spellCompleter
         self.historyStore = historyStore
+        self.habitTracker = habitTracker
         self.minimumPrefixLength = minimumPrefixLength
         self.minimumSuffixLength = minimumSuffixLength
         self.enableTechLexicon = enableTechLexicon
@@ -61,13 +70,23 @@ public final class WordCompleter {
         return after == "\n" || after == "\r"
     }
 
-    public func complete(textBeforeCursor: String, charAfterCursor: Character? = nil) -> CompletionMatch? {
-        candidates(textBeforeCursor: textBeforeCursor, charAfterCursor: charAfterCursor, limit: 1).first
+    public func complete(
+        textBeforeCursor: String,
+        charAfterCursor: Character? = nil,
+        bundleID: String? = nil
+    ) -> CompletionMatch? {
+        candidates(
+            textBeforeCursor: textBeforeCursor,
+            charAfterCursor: charAfterCursor,
+            bundleID: bundleID,
+            limit: 1
+        ).first
     }
 
     public func candidates(
         textBeforeCursor: String,
         charAfterCursor: Character? = nil,
+        bundleID: String? = nil,
         limit: Int = 5
     ) -> [CompletionMatch] {
         guard limit > 0 else { return [] }
@@ -108,11 +127,17 @@ public final class WordCompleter {
             return []
         }
 
+        let prevWord = Self.extractImmediatePreviousWord(chars: chars, beforeIndex: wordStart)
+
         let nsLine = line as NSString
         let prefixNSLength = (prefix as NSString).length
         let nsRange = NSRange(location: nsLine.length - prefixNSLength, length: prefixNSLength)
 
-        let historyCandidates = historyStore.matchingWords(forPrefix: prefix).map(\.word)
+        let historyCandidates = historyStore.matchingWords(
+            forPrefix: prefix,
+            previousWord: prevWord,
+            bundleID: bundleID
+        ).map(\.word)
         let systemCandidates = spellCompleter.completions(
             forPartialWordRange: nsRange,
             in: line,
@@ -123,11 +148,13 @@ public final class WordCompleter {
             ? TechLexicon.words.filter { $0.hasPrefix(lowerPrefix) }
             : []
 
-        // Order: user custom/accepted words -> macOS grammar-ranked completions -> curated Tech/AI lexicon fallback.
+        // Order: user contextual/pinned words -> macOS grammar-ranked completions -> curated Tech/AI lexicon fallback.
         var seen = Set<String>()
         var combined: [String] = []
         for raw in historyCandidates + systemCandidates + techCandidates {
-            guard let adapted = adaptCandidate(raw, toPrefix: prefix) else { continue }
+            guard let adapted = adaptCandidate(raw, toPrefix: prefix, previousWord: prevWord, bundleID: bundleID) else {
+                continue
+            }
             let key = adapted.lowercased()
             if seen.insert(key).inserted {
                 combined.append(adapted)
@@ -136,12 +163,12 @@ public final class WordCompleter {
 
         guard !combined.isEmpty else { return [] }
 
-        // Stable-boost any candidate previously accepted or pinned by the user; keep natural order otherwise.
+        // Contextual ranking: custom pinned -> personal bigrams -> per-app vocabulary -> typo-trap rescue -> global accepts -> system grammar order.
         let ranked = combined.enumerated().sorted { lhs, rhs in
-            let lCount = historyStore.count(for: lhs.element)
-            let rCount = historyStore.count(for: rhs.element)
-            if lCount != rCount {
-                return lCount > rCount
+            let lScore = contextualPriority(for: lhs.element, previousWord: prevWord, bundleID: bundleID)
+            let rScore = contextualPriority(for: rhs.element, previousWord: prevWord, bundleID: bundleID)
+            if lScore != rScore {
+                return lScore > rScore
             }
             return lhs.offset < rhs.offset
         }
@@ -149,11 +176,50 @@ public final class WordCompleter {
         return ranked.prefix(limit).map { entry in
             let full = entry.element
             let suffix = String(full.dropFirst(prefix.count))
-            return CompletionMatch(prefix: prefix, fullWord: full, suffix: suffix)
+            return CompletionMatch(prefix: prefix, fullWord: full, suffix: suffix, previousWord: prevWord)
         }
     }
 
-    private func adaptCandidate(_ candidate: String, toPrefix prefix: String) -> String? {
+    private func contextualPriority(for word: String, previousWord: String?, bundleID: String?) -> Int {
+        let base = historyStore.contextualScore(for: word, previousWord: previousWord, bundleID: bundleID)
+        let trapCount = habitTracker?.typoBoostCount(for: word) ?? 0
+        return base + (trapCount * 10)
+    }
+
+    public static func extractImmediatePreviousWord(chars: [Character], beforeIndex wordStart: Int) -> String? {
+        var idx = wordStart
+        var sawWhitespace = false
+        while idx > 0 && (chars[idx - 1] == " " || chars[idx - 1] == "\t") {
+            sawWhitespace = true
+            idx -= 1
+        }
+        guard sawWhitespace, idx > 0 else { return nil }
+        // Do not cross sentence boundaries (e.g. "done. re" should not treat "done" as previous word).
+        let prevEnd = idx
+        while idx > 0 {
+            let ch = chars[idx - 1]
+            if isASCIILetter(ch) || (ch == "'" && idx >= 2 && isASCIILetter(chars[idx - 2])) {
+                idx -= 1
+            } else {
+                break
+            }
+        }
+        guard prevEnd - idx >= 2 else { return nil }
+        if idx > 0 {
+            let lead = chars[idx - 1]
+            if !allowedLeadingBoundaryChars.contains(lead) {
+                return nil
+            }
+        }
+        return String(chars[idx..<prevEnd]).lowercased()
+    }
+
+    private func adaptCandidate(
+        _ candidate: String,
+        toPrefix prefix: String,
+        previousWord: String?,
+        bundleID: String?
+    ) -> String? {
         guard candidate.count >= prefix.count + minimumSuffixLength else { return nil }
         guard candidate.allSatisfy({ Self.isASCIILetter($0) || $0 == "'" }) else { return nil }
 
@@ -168,11 +234,9 @@ public final class WordCompleter {
         } else if let first = prefix.first, first.isUppercase, prefix.dropFirst().allSatisfy({ !$0.isLetter || $0.isLowercase }) {
             adapted = candidate.prefix(1).uppercased() + candidate.dropFirst()
         } else {
-            // Allow custom user words (e.g. "TypeScript") to adapt to lowercase prefix ("typesc" -> "ript") ONLY if lowercase matches,
-            // while still blocking random proper nouns from NSSpellChecker when typing lowercase prose.
             if candidate.hasPrefix(prefix) {
                 adapted = candidate
-            } else if historyStore.count(for: candidate) > 0 {
+            } else if historyStore.contextualScore(for: candidate, previousWord: previousWord, bundleID: bundleID) > 0 {
                 adapted = prefix + candidate.dropFirst(prefix.count)
             } else {
                 return nil

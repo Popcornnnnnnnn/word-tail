@@ -139,4 +139,114 @@ final class WordCompleterTests: XCTestCase {
         let pTight = ScreenGeometry.baselinePlacement(forAXCharRect: tightChromiumRect, primaryScreenHeight: 1080, font: font)
         XCTAssertGreaterThan(pTight.baselineY, 1080 - 200 - font.ascender)
     }
+
+    func testPersonalBigramsAndSentenceBoundaryIsolation() {
+        let history = makeTempHistory()
+        let mock = MockSpellCompleter { _, _ in ["really", "recent", "request", "reason"] }
+        let completer = WordCompleter(spellCompleter: mock, historyStore: history, enableTechLexicon: false)
+
+        // Default order before learning bigram
+        XCTAssertEqual(completer.complete(textBeforeCursor: "pull re")?.fullWord, "really")
+
+        // Learn "pull -> request" passively from natural typing
+        history.recordNaturalWordUsage(word: "request", previousWord: "pull", bundleID: "com.openai.codex", persistAsync: false)
+
+        // After "pull ", "re" ranks "request" #1!
+        let bigramMatch = completer.complete(textBeforeCursor: "open a pull re")
+        XCTAssertEqual(bigramMatch, CompletionMatch(prefix: "re", fullWord: "request", suffix: "quest"))
+        XCTAssertEqual(bigramMatch?.previousWord, "pull")
+
+        // Sentence boundary ("pull. re") must NOT trigger the "pull" bigram
+        XCTAssertEqual(completer.complete(textBeforeCursor: "push and pull. re")?.fullWord, "really")
+    }
+
+    func testPerAppVocabularyAffinitySeparatesCodeChatFromMail() {
+        let history = makeTempHistory()
+        let mock = MockSpellCompleter { _, _ in ["impact", "important", "implementation"] }
+        let completer = WordCompleter(spellCompleter: mock, historyStore: history, enableTechLexicon: false)
+
+        history.recordAcceptance(of: "implementation", previousWord: nil, bundleID: "com.openai.codex", persistAsync: false)
+        history.recordAcceptance(of: "important", previousWord: nil, bundleID: "com.apple.mail", persistAsync: false)
+
+        XCTAssertEqual(
+            completer.complete(textBeforeCursor: "check the imp", bundleID: "com.openai.codex")?.fullWord,
+            "implementation"
+        )
+        XCTAssertEqual(
+            completer.complete(textBeforeCursor: "check the imp", bundleID: "com.apple.mail")?.fullWord,
+            "important"
+        )
+    }
+
+    func testTypingHabitTrackerTypoTrapsBurstWPMAndPrivacyGuard() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailHabits-\(UUID().uuidString)", isDirectory: true)
+        var simulatedTime = Date(timeIntervalSince1970: 1_700_000_000)
+        let validSet: Set<String> = ["definitely", "receive", "actually", "pull", "request"]
+
+        let tracker = TypingHabitTracker(
+            fileURL: tempDir.appendingPathComponent("insights.json"),
+            nowProvider: { simulatedTime },
+            validWordChecker: { validSet.contains($0.lowercased()) }
+        )
+        let history = UserHistoryStore(fileURL: tempDir.appendingPathComponent("accepted.json"))
+        let mock = MockSpellCompleter { _, _ in ["define", "definition", "definitely"] }
+        let completer = WordCompleter(spellCompleter: mock, historyStore: history, habitTracker: tracker, enableTechLexicon: false)
+
+        // 1. Simulate mistyping "definately", backspacing "ately", and finishing "definitely "
+        for ch in "definately" {
+            simulatedTime.addTimeInterval(0.14)
+            tracker.recordTypedCharacters(String(ch), bundleID: "com.apple.Notes", persistAsync: false)
+        }
+        for _ in 0..<5 {
+            simulatedTime.addTimeInterval(0.10)
+            tracker.recordBackspace()
+        }
+        var lastOutcome: WordCompletionOutcome?
+        for ch in "itely " {
+            simulatedTime.addTimeInterval(0.14)
+            if let out = tracker.recordTypedCharacters(String(ch), bundleID: "com.apple.Notes", persistAsync: false) {
+                lastOutcome = out
+            }
+        }
+
+        XCTAssertEqual(lastOutcome?.word, "definitely")
+        XCTAssertEqual(lastOutcome?.detectedTypoMistype, "definately")
+
+        // Typo trap automatically boosts "definitely" to #1 ahead of "define" / "definition"!
+        XCTAssertEqual(completer.complete(textBeforeCursor: "I defi")?.fullWord, "definitely")
+
+        // 2. Privacy check: non-dictionary / secret token mistypes must NEVER be stored
+        for ch in "mySecretKey" {
+            simulatedTime.addTimeInterval(0.12)
+            tracker.recordTypedCharacters(String(ch), bundleID: "com.apple.Notes", persistAsync: false)
+        }
+        tracker.recordBackspace()
+        let rejected = tracker.recordTypedCharacters("z ", bundleID: "com.apple.Notes", persistAsync: false)
+        XCTAssertNil(rejected)
+
+        // 3. Suggestion opportunity deduplication + Tab acceptance + IME switch
+        tracker.recordSuggestionShownOncePerWord()
+        tracker.recordSuggestionShownOncePerWord() // duplicate within same word stem ignored
+        _ = tracker.recordTabAccepted(
+            fullWord: "actually",
+            insertedText: "ally ",
+            previousWordFromContext: nil,
+            bundleID: "com.apple.Notes",
+            persistAsync: false
+        )
+        tracker.recordIMESwitch(persistAsync: false)
+
+        let snap = tracker.snapshot()
+        XCTAssertEqual(snap.typoTraps.count, 1)
+        XCTAssertEqual(snap.typoTraps.first?.word, "definitely")
+        XCTAssertEqual(snap.typoTraps.first?.commonMistype, "definately")
+        XCTAssertEqual(snap.tabsAccepted, 1)
+        XCTAssertEqual(snap.suggestionsShown, 1)
+        XCTAssertEqual(snap.hitRatePercent, 100)
+        XCTAssertEqual(snap.charactersSaved, 5)
+        XCTAssertGreaterThan(snap.averageBurstWPM, 40)
+        XCTAssertEqual(snap.imeSwitches, 1)
+        XCTAssertTrue(snap.fillerHabits.contains(where: { $0.word == "actually" }))
+    }
 }

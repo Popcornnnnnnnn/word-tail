@@ -7,11 +7,18 @@ import WordTailCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let historyStore = UserHistoryStore()
+    private lazy var habitTracker = TypingHabitTracker(validWordChecker: { [weak self] word in
+        if self?.historyStore.isCustomWord(word) == true {
+            return true
+        }
+        return TypingHabitTracker.defaultValidEnglishWordCheck(word)
+    })
     private let inputGuard = InputGuard()
-    private lazy var completer = WordCompleter(historyStore: historyStore)
+    private lazy var completer = WordCompleter(historyStore: historyStore, habitTracker: habitTracker)
     private lazy var engine = TypingEngine(
         completer: completer,
         historyStore: historyStore,
+        habitTracker: habitTracker,
         inputGuard: inputGuard
     )
 

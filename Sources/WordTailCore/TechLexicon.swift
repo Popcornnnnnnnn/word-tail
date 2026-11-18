@@ -47,4 +47,6 @@ public enum TechLexicon {
         "validation", "vectorization", "verification", "virtualization", "visualization", "volatility", "vulnerability", "vulnerabilities",
         "webhook", "webhooks", "websocket", "websockets", "workflow", "workflows", "workspace", "worktree", "worktrees"
     ].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.contains("-") && !$0.isEmpty }
+
+    public static let wordSet: Set<String> = Set(words)
 }

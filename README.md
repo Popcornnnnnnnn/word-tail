@@ -1,21 +1,59 @@
 # WordTail
 
-**Zero-LLM, single-word inline ghost-text autocomplete for macOS.**
+<p align="center">
+  <img src="docs/images/hero-inline-ghost.png" alt="WordTail inline ghost-text autocomplete on macOS" width="820" />
+</p>
 
-WordTail renders subtle inline gray completions (`kn` + gray `ow`) right at your cursor across macOS apps—Chrome, Electron apps, AI chat interfaces, Slack, WeChat, and native Cocoa apps—and completes **only the current English word** when you press `Tab`.
+<p align="center">
+  <strong>Zero-LLM, habit-aware, single-word inline ghost-text autocomplete for macOS.</strong><br/>
+  Sub-millisecond ranking · ~400 KB native app · 100% offline &amp; privacy-preserving.
+</p>
 
-- **Zero LLM, ~3 ms latency, ~350 KB app bundle:** Powered by macOS's native grammar-aware `NSSpellChecker`, a curated **180+ CS/AI English lexicon**, and your personal accepted-word history. No gigabyte model downloads, no GPU drain, no chatty multi-sentence hallucinations.
-- **Built for bilingual & technical typists:** Automatically stays silent whenever you switch to a non-Roman input method (Chinese Pinyin, Rime, Doubao, Japanese, Korean), focus a password field (`SecureEventInput` / `AXSecureTextField`), or edit code buffers inside IDEs and terminals.
-- **Sub-Retina-pixel baseline calibration:** Linear-inspired settings UI with live in-place preview and independent per-application vertical baseline sliders (`0.05 pt` precision).
+<p align="center">
+  <a href="https://github.com/Popcornnnnnnnn/word-tail/actions"><img src="https://github.com/Popcornnnnnnnn/word-tail/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/Popcornnnnnnnn/word-tail/releases"><img src="https://img.shields.io/github/v/release/Popcornnnnnnnn/word-tail?label=release" alt="Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/macOS-14.0%2B-black" alt="macOS 14+" />
+</p>
 
 ---
 
-## Shortcuts
+## Why WordTail?
+
+Most modern macOS autocomplete utilities wrap multi-gigabyte local or cloud LLMs that drain battery and hallucinate entire chatty paragraphs when all you wanted was to finish spelling `quantitative` or `idempotent`.
+
+**WordTail** does one thing with surgical precision: it draws a subtle inline gray suffix (`kn` + gray `ow`) right at your cursor across macOS apps—**Chrome, Electron apps, Codex, Antigravity, Raycast, Slack, Mail, Notes, and WeChat**—and completes **only the current English word** when you press `Tab`.
+
+- **Zero LLM, ~3 ms latency:** Combines macOS's grammar-aware `NSSpellChecker`, a curated **180+ CS/AI/quant lexicon**, **personal 2-word bigrams**, **per-app vocabulary**, and **typo-trap rescue**.
+- **Built for bilingual & technical typists:** Stays **100% silent** whenever you switch to a non-Roman input method (Chinese Pinyin, Rime, Doubao, Japanese, Korean), focus a password field (`SecureEventInput` / `AXSecureTextField`), or edit code files inside IDEs and terminals.
+- **Knows your typing habits—without logging text:** Tracks saved keystrokes, `Tab` hit rate, burst WPM, 24-hour accuracy rhythm, personal typo traps, and prose crutches using **strictly local aggregate counters**.
+
+---
+
+## Screenshots
+
+### Typing Insights & Habit Learning
+WordTail learns your 2-word collocations (`pull → request`, `feature → flag`), weights vocabulary per app (`implementation` in Codex vs `important` in Mail), and automatically boosts words you frequently mistype and backspace (`definately → definitely`).
+
+<p align="center">
+  <img src="docs/images/insights-window.png" alt="WordTail Typing Insights window" width="760" />
+</p>
+
+### Sub-Retina-Pixel Baseline Calibration
+Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electron, floating `NSPanel` launchers like Raycast) report slightly different caret bounds. WordTail uses CoreText + `CGImage` sub-pixel interpolation (`0.05 pt` steps) with live 60 fps preview so gray ghost text sits flush on every app's baseline.
+
+<p align="center">
+  <img src="docs/images/calibration-window.png" alt="WordTail Baseline Calibration window" width="760" />
+</p>
+
+---
+
+## Keyboard Shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| `Tab` | Accept current word completion (with optional smart trailing space) |
-| `⌥ ]` / `⌥ [` | Cycle next / previous single-word candidate |
+| `Tab` | Accept visible word completion (with optional smart trailing space) |
+| `⌥ ]` / `⌥ [` | Cycle next / previous single-word candidate (top 5 matches) |
 | `Esc` | Dismiss visible ghost completion |
 | `⌃ ⌥ W` | Toggle WordTail Active / Paused globally |
 | `⌘ ,` | Open WordTail Settings |
@@ -24,29 +62,27 @@ WordTail renders subtle inline gray completions (`kn` + gray `ow`) right at your
 
 ---
 
-## Features
+## Key Architecture & Privacy Design
 
-- **Universal Caret Engine (`AXUIElement` + `AXTextMarker`):**
-  - Supports both standard AppKit character ranges (`AXSelectedTextRange` / `AXBoundsForRange`) and WebKit/Chromium/Electron rich `contenteditable` editors (`AXSelectedTextMarkerRange` / `AXBoundsForTextMarkerRange`).
-  - Automatically wakes lazy Chromium & Electron accessibility trees while skipping Monaco code-editor tabs so `Tab` in code files keeps indenting/completing code.
-- **Smart Context & Prose Guards:**
-  - Grammar-aware ranking (`"I kn"` → `know`, `"She kn"` → `knows`, `"quantitative inv"` → `investment`).
-  - Automatically ignores URLs, file paths, emails, CLI flags (`--flag`), `snake_case` identifiers, and mid-word cursor positions.
-  - Optional **Insert Space After Tab** setting with automatic punctuation/space deduplication.
-- **Personal & Technical Dictionary:**
-  - Built-in software engineering, AI, and quantitative vocabulary (`TypeScript`, `Kubernetes`, `PyTorch`, `quantization`, `idempotent`, etc.).
-  - Pin custom words or let WordTail automatically prioritize words you accept with `Tab`.
-
----
-
-## Requirements
-
-- **macOS 14.0 (Sonoma)** or later (Apple Silicon or Intel)
-- **Swift 5.10+** / Xcode Command Line Tools (to build from source)
+1. **Universal Caret Engine (`AXUIElement` + `AXTextMarker`):**
+   - Reads caret coordinates via standard AppKit character ranges (`AXSelectedTextRange` / `AXBoundsForRange`) and WebKit/Chromium/Electron rich `contenteditable` markers (`AXSelectedTextMarkerRange` / `AXBoundsForTextMarkerRange`).
+   - Resolves non-activating floating panels (like **Raycast** and **Spotlight**) by inspecting the Accessibility-focused UI element's owning bundle rather than relying solely on `NSWorkspace.frontmostApplication`.
+   - Automatically skips Monaco code-editor tabs inside hybrid Electron apps so `Tab` keeps indenting/completing code while AI chat panels still get prose completion.
+2. **Habit-Aware Contextual Ranking (`< 1 ms`, Zero Network):**
+   - **Pinned Custom Words** → **Personal Bigrams (`prevWord → word`)** → **Per-App Vocabulary (`bundleID → word`)** → **Typo-Trap Auto-Rescue** → **Accepted Word Frequency** → **macOS Grammar Completion** → **CS/AI Lexicon**.
+3. **Strict Privacy Boundary:**
+   - Zero network calls, zero telemetry, zero raw sentence storage.
+   - Passive habit counters (`word_bigrams.json`, `app_vocabulary.json`, `typing_insights.json`) accept **only** dictionary/lexicon-verified single English words and aggregate hourly counts—and can be disabled or cleared in one click.
 
 ---
 
-## Build & Install
+## Install
+
+### Option A: Download Prebuilt Release
+Download the latest `WordTail-*-macOS.zip` from [**Releases**](https://github.com/Popcornnnnnnnn/word-tail/releases), unzip, and drag **`WordTail.app`** to `/Applications`.
+
+### Option B: Build from Source
+Requires **macOS 14.0 (Sonoma)+** and **Swift 5.10+ / Xcode Command Line Tools**:
 
 ```bash
 git clone https://github.com/Popcornnnnnnnn/word-tail.git
@@ -64,20 +100,27 @@ On first launch, grant **Accessibility** (and **Input Monitoring** if prompted) 
 
 ---
 
-## Project Structure
+## Project Layout
 
-- `Sources/WordTailCore/`
-  - `WordCompleter.swift` — Context-aware single-word completion, case adaptation, and token guards
-  - `TechLexicon.swift` — Curated CS, AI, and quantitative English lexicon
-  - `UserHistoryStore.swift` — Local accepted-word frequency counter and custom pinned dictionary
-  - `InputGuard.swift` — Roman keyboard layout check, `SecureEventInput` guard, and IDE/terminal exclusions
-  - `ScreenGeometry.swift` — Quartz-to-Cocoa baseline geometry
-- `Sources/WordTailApp/`
-  - `AXCaretContext.swift` — Multi-path macOS Accessibility & Chromium/Electron `AXTextMarker` caret reader
-  - `GhostOverlayWindow.swift` — Click-through `NSPanel` with CoreText sub-Retina-pixel vertical interpolation
-  - `TypingEngine.swift` — Non-blocking `CGEventTap`, candidate cycling, and clipboard-free tagged Unicode injection
-  - `SettingsWindowController.swift` — Linear-style macOS settings window
-  - `AppDelegate.swift` — Menu bar status item and `SMAppService` Login Item registration
+```text
+word-tail/
+├── Sources/
+│   ├── WordTailCore/
+│   │   ├── WordCompleter.swift        # Contextual single-word completion & token guards
+│   │   ├── UserHistoryStore.swift     # Accepted words, custom dictionary, bigrams & per-app vocab
+│   │   ├── TypingHabitTracker.swift   # Local WPM, accuracy, hourly rhythm & typo-trap detector
+│   │   ├── TechLexicon.swift          # 180+ CS, AI, and quantitative English vocabulary
+│   │   ├── InputGuard.swift           # Roman keyboard layout, SecureEventInput & IDE exclusions
+│   │   └── ScreenGeometry.swift       # Quartz-to-Cocoa typography baseline math
+│   └── WordTailApp/
+│       ├── AXCaretContext.swift       # Multi-path macOS Accessibility & Chromium/Electron caret reader
+│       ├── GhostOverlayWindow.swift   # Click-through NSPanel with CoreText sub-Retina interpolation
+│       ├── TypingEngine.swift         # Non-blocking CGEventTap & tagged Unicode suffix injection
+│       ├── SettingsWindowController.swift # Linear-style Calibration, Insights, Dictionary & Preferences UI
+│       └── AppDelegate.swift          # Native macOS lifecycle, Dock/menu bar & Login Item setup
+├── Tests/WordTailTests/               # Unit tests for grammar, bigrams, per-app vocab & habit tracking
+└── scripts/build_app.sh               # Clean-tree release builder & code-signing script
+```
 
 ---
 
