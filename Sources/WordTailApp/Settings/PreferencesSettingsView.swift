@@ -10,6 +10,92 @@ struct PreferencesSettingsView: View {
                 .font(.system(size: 16, weight: .semibold))
 
             VStack(alignment: .leading, spacing: 8) {
+                LinearSectionHeader(title: "Multi-Device Sync & Updates")
+
+                LinearCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Multi-Device Sync")
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(vm.syncSubtitleText)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(vm.syncStatus.lastError == nil ? Color.secondary : Color.orange)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            LinearSwitch(isOn: $vm.syncEnabled)
+                        }
+
+                        HStack(spacing: 6) {
+                            if vm.hasICloudDriveAvailable {
+                                LinearActionButton(
+                                    title: vm.syncStatus.isICloudDrive && vm.syncEnabled ? "Using iCloud Drive" : "Use iCloud Drive",
+                                    icon: "icloud"
+                                ) {
+                                    vm.useICloudDriveSync()
+                                }
+                            }
+                            LinearActionButton(title: "Choose Folder…", icon: "folder") {
+                                vm.chooseCustomSyncFolder()
+                            }
+                            if vm.syncEnabled {
+                                LinearActionButton(
+                                    title: vm.isSyncingNow ? "Syncing…" : "Sync Now",
+                                    icon: "arrow.triangle.2.circlepath"
+                                ) {
+                                    vm.syncNowClicked()
+                                }
+                                if vm.syncStatus.folderPath != nil {
+                                    LinearIconButton(symbol: "arrow.up.forward.app", helpText: "Show sync folder in Finder") {
+                                        vm.revealSyncFolderInFinder()
+                                    }
+                                }
+                            }
+                            Spacer()
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Automatic Update Checks")
+                                .font(.system(size: 13, weight: .medium))
+                            Text(vm.updateStatusText.isEmpty ? "Checks GitHub Releases and prompts before restarting" : vm.updateStatusText)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        if let rel = vm.availableRelease {
+                            LinearActionButton(
+                                title: vm.isInstallingUpdate ? "Updating…" : "Update to v\(rel.version)",
+                                icon: "arrow.down.circle"
+                            ) {
+                                vm.installAvailableUpdateClicked()
+                            }
+                        } else {
+                            LinearActionButton(
+                                title: vm.isCheckingUpdates ? "Checking…" : "Check Now",
+                                icon: "arrow.clockwise"
+                            ) {
+                                vm.checkForUpdatesClicked()
+                            }
+                        }
+                        LinearSwitch(isOn: $vm.autoCheckUpdates)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
                 LinearSectionHeader(title: "Typing & Acceptance")
 
                 LinearCard {

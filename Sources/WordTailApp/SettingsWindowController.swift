@@ -104,6 +104,41 @@ struct SettingsView: View {
     @ViewBuilder
     private var detailPane: some View {
         let content = VStack(alignment: .leading, spacing: 20) {
+            if let release = vm.availableRelease {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(LinearUI.accent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("WordTail v\(release.version) is available")
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Text(vm.isInstallingUpdate ? "Downloading, verifying signature & restarting…" : "Signed update ready to download and restart automatically.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        vm.installAvailableUpdateClicked()
+                    } label: {
+                        Text(vm.isInstallingUpdate ? "Updating…" : "Update & Restart")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 11)
+                            .frame(height: 26)
+                            .background(LinearUI.accent, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(vm.isInstallingUpdate)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .background(LinearUI.accent.opacity(scheme == .dark ? 0.14 : 0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(LinearUI.accent.opacity(0.32), lineWidth: 1)
+                )
+            }
+
             switch vm.selectedSection {
             case .calibration:
                 CalibrationSettingsView(vm: vm)
@@ -134,17 +169,20 @@ struct SettingsView: View {
     }
 }
 
+@MainActor
 final class SettingsWindowController: NSWindowController {
     private var viewModel: SettingsViewModel!
 
     init(
         engine: TypingEngine,
+        autoUpdater: AutoUpdateManager,
         currentApp: (name: String, bundleID: String)?,
         onStateChange: @escaping () -> Void
     ) {
         super.init(window: nil)
         self.viewModel = SettingsViewModel(
             engine: engine,
+            autoUpdater: autoUpdater,
             currentApp: currentApp,
             onStateChange: onStateChange
         )
@@ -175,5 +213,9 @@ final class SettingsWindowController: NSWindowController {
         window?.level = .normal
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func refreshUpdateAndSyncStatus() {
+        viewModel.refreshUpdateAndSyncStatus()
     }
 }

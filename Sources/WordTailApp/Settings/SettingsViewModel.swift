@@ -47,6 +47,7 @@ struct RunningAppChoice: Identifiable, Hashable {
 
 final class SettingsViewModel: ObservableObject {
     private let engine: TypingEngine?
+    private let autoUpdater: AutoUpdateManager?
     private let onStateChange: () -> Void
     let isStaticShowcase: Bool
 
@@ -213,14 +214,58 @@ final class SettingsViewModel: ObservableObject {
     @Published var keyStats: KeyStatsAggregateSnapshot = KeyStatsAggregateSnapshot()
     @Published var showcaseAppIcons: [String: NSImage] = [:]
 
+    @Published var syncStatus: SyncStatusSnapshot = SyncStatusSnapshot(
+        isEnabled: false,
+        folderPath: nil,
+        isICloudDrive: false,
+        deviceID: "",
+        peers: [],
+        lastSyncedAt: nil,
+        lastError: nil
+    )
+    @Published var syncEnabled: Bool = false {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase, let engine else { return }
+            if syncEnabled {
+                if let existingPath = syncStatus.folderPath, !existingPath.isEmpty {
+                    applySyncResult(engine.syncEngine.enableSync(folderURL: URL(fileURLWithPath: existingPath, isDirectory: true)))
+                } else if let icloudURL = SyncEngine.defaultICloudDriveFolderURL() {
+                    applySyncResult(engine.syncEngine.enableSync(folderURL: icloudURL))
+                } else {
+                    chooseCustomSyncFolder()
+                }
+            } else {
+                applySyncResult(engine.syncEngine.disableSync())
+            }
+        }
+    }
+    @Published var isSyncingNow: Bool = false
+
+    @Published var autoCheckUpdates: Bool = true {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.autoUpdater?.autoCheckEnabled = self.autoCheckUpdates
+            }
+        }
+    }
+    @Published var availableRelease: AvailableRelease? = nil
+    @Published var isCheckingUpdates: Bool = false
+    @Published var isInstallingUpdate: Bool = false
+    @Published var updateStatusText: String = ""
+
     private var isRefreshing = false
 
+    @MainActor
     init(
         engine: TypingEngine,
+        autoUpdater: AutoUpdateManager? = nil,
         currentApp: (name: String, bundleID: String)?,
         onStateChange: @escaping () -> Void
     ) {
         self.engine = engine
+        self.autoUpdater = autoUpdater
         self.onStateChange = onStateChange
         self.isStaticShowcase = false
         self.isEnabled = engine.isEnabled
@@ -244,6 +289,18 @@ final class SettingsViewModel: ObservableObject {
             self.showDockIcon = UserDefaults.standard.bool(forKey: "WordTailShowDockIcon")
         }
         self.launchAtLogin = (SMAppService.mainApp.status == .enabled)
+        let initialSync = engine.syncEngine.statusSnapshot()
+        self.syncStatus = initialSync
+        self.syncEnabled = initialSync.isEnabled
+        if let autoUpdater {
+            self.autoCheckUpdates = autoUpdater.autoCheckEnabled
+            self.availableRelease = autoUpdater.availableRelease
+            self.isCheckingUpdates = autoUpdater.isChecking
+            self.isInstallingUpdate = autoUpdater.isInstalling
+            self.updateStatusText = autoUpdater.statusMessage
+        } else {
+            self.updateStatusText = "Current version v\(AutoUpdateManager.currentAppVersion())"
+        }
         refresh(currentApp: currentApp)
     }
 
@@ -258,6 +315,7 @@ final class SettingsViewModel: ObservableObject {
         showcaseAppIcons: [String: NSImage] = [:]
     ) {
         self.engine = nil
+        self.autoUpdater = nil
         self.onStateChange = {}
         self.isStaticShowcase = true
         self.selectedSection = showcaseSection
@@ -324,6 +382,20 @@ final class SettingsViewModel: ObservableObject {
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
         keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        let curSync = engine.syncEngine.statusSnapshot()
+        syncStatus = curSync
+        syncEnabled = curSync.isEnabled
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                if let autoUpdater {
+                    autoCheckUpdates = autoUpdater.autoCheckEnabled
+                    availableRelease = autoUpdater.availableRelease
+                    isCheckingUpdates = autoUpdater.isChecking
+                    isInstallingUpdate = autoUpdater.isInstalling
+                    updateStatusText = autoUpdater.statusMessage
+                }
+            }
+        }
 
         var runningNames: [String: String] = [:]
         for app in NSWorkspace.shared.runningApplications where Self.isUserFacingRunningApp(app) {
@@ -492,12 +564,14 @@ final class SettingsViewModel: ObservableObject {
         guard let engine, engine.addCustomWord(newCustomWordInput) else { return }
         newCustomWordInput = ""
         vocabularyEntries = engine.vocabularyEntries()
+        pushSyncInBackgroundIfEnabled()
     }
 
     func removeVocabularyWord(_ word: String) {
         guard let engine else { return }
         engine.removeVocabularyWord(word)
         vocabularyEntries = engine.vocabularyEntries()
+        pushSyncInBackgroundIfEnabled()
     }
 
     func clearLearnedVocabulary() {
@@ -507,6 +581,7 @@ final class SettingsViewModel: ObservableObject {
         phraseEntries = []
         correctionRules = []
         learnedBigrams = []
+        pushSyncInBackgroundIfEnabled()
     }
 
     func submitNewCustomPhrase() {
@@ -516,12 +591,14 @@ final class SettingsViewModel: ObservableObject {
         }
         newCustomPhraseInput = ""
         phraseEntries = engine.phrasePredictor.allEntries()
+        pushSyncInBackgroundIfEnabled()
     }
 
     func removePhraseEntry(_ entry: PhraseEntry) {
         guard let engine else { return }
         engine.phrasePredictor.removeEntry(entry)
         phraseEntries = engine.phrasePredictor.allEntries()
+        pushSyncInBackgroundIfEnabled()
     }
 
     func submitNewCorrectionRule() {
@@ -536,12 +613,147 @@ final class SettingsViewModel: ObservableObject {
         newRuleTrigger = ""
         newRuleReplacement = ""
         correctionRules = engine.adaptiveStore.allEntries()
+        pushSyncInBackgroundIfEnabled()
     }
 
     func removeCorrectionRule(_ trigger: String) {
         guard let engine else { return }
         engine.adaptiveStore.removeRuleOrUnmute(trigger: trigger)
         correctionRules = engine.adaptiveStore.allEntries()
+        pushSyncInBackgroundIfEnabled()
+    }
+
+    var hasICloudDriveAvailable: Bool {
+        SyncEngine.defaultICloudDriveFolderURL() != nil
+    }
+
+    var syncSubtitleText: String {
+        if let err = syncStatus.lastError, !err.isEmpty {
+            return err
+        }
+        guard syncStatus.isEnabled else {
+            return "Off · Syncs dictionary, rules, phrases, Insights & KeyStats across Macs"
+        }
+        let locLabel: String
+        if syncStatus.isICloudDrive {
+            locLabel = "iCloud Drive"
+        } else if let path = syncStatus.folderPath {
+            locLabel = (path as NSString).abbreviatingWithTildeInPath
+        } else {
+            locLabel = "Folder"
+        }
+        let peerPart: String
+        if syncStatus.syncedPeerCount == 0 {
+            peerPart = "1 Mac connected"
+        } else {
+            peerPart = "\(syncStatus.syncedPeerCount + 1) Macs merged"
+        }
+        if let last = syncStatus.lastSyncedAt {
+            let tf = DateFormatter()
+            tf.dateFormat = "HH:mm"
+            return "\(locLabel) · \(peerPart) · Synced \(tf.string(from: last))"
+        }
+        return "\(locLabel) · \(peerPart)"
+    }
+
+    func useICloudDriveSync() {
+        guard let engine, let url = SyncEngine.defaultICloudDriveFolderURL() else { return }
+        applySyncResult(engine.syncEngine.enableSync(folderURL: url))
+    }
+
+    func chooseCustomSyncFolder() {
+        guard let engine else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose WordTail Sync Folder"
+        panel.message = "Pick an iCloud Drive, Dropbox, Syncthing, or shared folder to sync across your Macs."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if let existing = syncStatus.folderPath {
+            panel.directoryURL = URL(fileURLWithPath: existing, isDirectory: true)
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            applySyncResult(engine.syncEngine.enableSync(folderURL: url))
+        } else if syncStatus.folderPath == nil {
+            isRefreshing = true
+            syncEnabled = false
+            isRefreshing = false
+        }
+    }
+
+    func revealSyncFolderInFinder() {
+        guard let path = syncStatus.folderPath, !path.isEmpty else { return }
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    }
+
+    func syncNowClicked() {
+        guard let engine, !isSyncingNow else { return }
+        isSyncingNow = true
+        engine.syncEngine.syncAsync { [weak self] snap in
+            guard let self else { return }
+            self.isSyncingNow = false
+            self.applySyncResult(snap)
+        }
+    }
+
+    @MainActor
+    func refreshUpdateAndSyncStatus() {
+        guard let engine, !isStaticShowcase else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        let snap = engine.syncEngine.statusSnapshot()
+        syncStatus = snap
+        syncEnabled = snap.isEnabled
+        vocabularyEntries = engine.vocabularyEntries()
+        phraseEntries = engine.phrasePredictor.allEntries()
+        correctionRules = engine.adaptiveStore.allEntries()
+        insights = engine.insightsSnapshot()
+        learnedBigrams = engine.topBigrams(limit: 8)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        if let autoUpdater {
+            autoCheckUpdates = autoUpdater.autoCheckEnabled
+            availableRelease = autoUpdater.availableRelease
+            isCheckingUpdates = autoUpdater.isChecking
+            isInstallingUpdate = autoUpdater.isInstalling
+            updateStatusText = autoUpdater.statusMessage
+        }
+    }
+
+    @MainActor
+    func checkForUpdatesClicked() {
+        autoUpdater?.checkForUpdates(userInitiated: true)
+    }
+
+    @MainActor
+    func installAvailableUpdateClicked() {
+        if let rel = availableRelease {
+            autoUpdater?.installReleaseNow(rel)
+        } else {
+            autoUpdater?.promptAndInstallCurrentRelease()
+        }
+    }
+
+    private func applySyncResult(_ snap: SyncStatusSnapshot) {
+        guard let engine else { return }
+        isRefreshing = true
+        syncStatus = snap
+        syncEnabled = snap.isEnabled
+        vocabularyEntries = engine.vocabularyEntries()
+        phraseEntries = engine.phrasePredictor.allEntries()
+        correctionRules = engine.adaptiveStore.allEntries()
+        insights = engine.insightsSnapshot()
+        learnedBigrams = engine.topBigrams(limit: 8)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        isRefreshing = false
+        onStateChange()
+    }
+
+    func pushSyncInBackgroundIfEnabled() {
+        guard let engine, engine.syncEngine.statusSnapshot().isEnabled else { return }
+        engine.syncEngine.syncAsync { [weak self] snap in
+            self?.syncStatus = snap
+        }
     }
 
     func openAccessibilitySettings() {

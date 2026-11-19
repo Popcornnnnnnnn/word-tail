@@ -27,6 +27,7 @@ Most modern macOS autocomplete utilities wrap multi-gigabyte local or cloud LLMs
 - **Zero LLM, ~3 ms latency:** Combines macOS's grammar-aware `NSSpellChecker`, a curated **180+ CS/AI/quant lexicon**, **personal 2-word bigrams**, **per-app vocabulary**, and **typo-trap rescue**.
 - **Built for bilingual & technical typists:** Stays **100% silent** whenever you switch to a non-Roman input method (Chinese Pinyin, Rime, Doubao, Japanese, Korean), focus a password field (`SecureEventInput` / `AXSecureTextField`), or edit code files inside IDEs and terminals.
 - **Built-in KeyStats + Linguistic Insights (100% local, zero telemetry):** Includes a complete hardware & habit studio—daily/7D/30D/all-time keystrokes, peak KPS/CPS, Left/Right hand balance, Roman vs CJK ratio, mouse travel (`Marathons`), scroll distance (`Everests`), a 65-key MacBook ANSI heatmap, 14-week activity calendar, per-app breakdowns, top shortcuts, saved keystrokes, burst WPM, and personal typo traps—plus JSON export & `KeyStats` backup import.
+- **Conflict-Free Multi-Device Sync & Signed 1-Click Updates:** Optionally sync your custom dictionary, shorthand rules, learned phrases, Typing Insights, and KeyStats across all your Macs via **iCloud Drive** or any shared folder (Dropbox, Syncthing) using per-device CRDT shards—while keeping per-display baseline calibration local. Background update checks verify Apple `Developer ID` code signatures and update `/Applications/WordTail.app` in one click.
 
 ---
 
@@ -84,7 +85,7 @@ Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electr
    - **Learnable Patterns:** Built-in contractions (`im` → `I'm`, `dont` → `don't`, `alot` → `a lot`, sentence-start `lets` → `Let's`), sentence-start & standalone-`"I"` capitalization (skipping CLI/dev commands like `git`, `kubectl`, `macOS`), positive graduation from your own repairs (`2×`), and automatic muting when undone twice with `⌫`.
    - **Conservative Phrase Mode (`< 1 ms`, zero LLM):** Suggests high-certainty English idioms after 2–3 anchor words (`"as far "` → `as I'm concerned` / `as I know`, `"on the other "` → `hand`) and personal phrases you repeat `3×+` with `>= 50%` consistency (keeping one-off sequences in RAM only so unique sentences never touch disk). `Tab` accepts the full phrase; `⌥ →` accepts one word at a time.
 3. **Strict Privacy Boundary:**
-   - Zero network calls, zero telemetry, zero raw sentence storage.
+   - Zero telemetry, zero analytics, zero raw sentence storage. Typing never leaves your Mac unless you opt into Multi-Device Sync (your own iCloud Drive or chosen folder); optional GitHub Release update checks send zero user data and can be toggled off anytime.
    - Passive habit counters (`word_bigrams.json`, `app_vocabulary.json`, `typing_insights.json`) accept **only** dictionary/lexicon-verified single English words and aggregate hourly counts—and can be disabled or cleared in one click.
 
 ---
@@ -125,6 +126,7 @@ word-tail/
 │   │   ├── UserHistoryStore.swift     # Accepted words, custom dictionary, bigrams & per-app vocab
 │   │   ├── TypingHabitTracker.swift   # Local WPM, accuracy, hourly rhythm & cached spellcheck
 │   │   ├── KeyStatsStore.swift        # Local hardware telemetry, heatmap & JSON import/export
+│   │   ├── SyncEngine.swift           # Conflict-free per-device CRDT shard sync (iCloud Drive / folder)
 │   │   ├── KeyCodeMapper.swift        # 65-key MacBook ANSI physical layout & shortcut formatting
 │   │   ├── TechLexicon.swift          # Indexed CS, AI, and quantitative English vocabulary
 │   │   ├── InputGuard.swift           # Roman keyboard layout, SecureEventInput & IDE exclusions
@@ -133,6 +135,7 @@ word-tail/
 │       ├── AXCaretContext.swift       # Windowed O(1) Accessibility & Chromium/Electron caret reader
 │       ├── GhostOverlayWindow.swift   # Click-through NSPanel with inline suffix & mid-sentence pill
 │       ├── TypingEngine.swift         # Non-blocking CGEventTap & tagged Unicode suffix injection
+│       ├── AutoUpdateManager.swift    # Signed GitHub Release checker, verifier & atomic updater
 │       ├── SettingsWindowController.swift # Main window shell & NSWindowController
 │       ├── Settings/                  # Modular SwiftUI views & SettingsViewModel per tab
 │       └── AppDelegate.swift          # Native macOS lifecycle, Dock/menu bar & Login Item setup

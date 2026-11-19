@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-public struct HourlyTypingBucket: Codable, Equatable, Identifiable {
+public struct HourlyTypingBucket: Codable, Equatable, Identifiable, Sendable {
     public var id: Int { hour }
     public let hour: Int
     public var typedLetters: Int
@@ -36,7 +36,7 @@ public struct HourlyTypingBucket: Codable, Equatable, Identifiable {
     }
 }
 
-public struct TypoTrapEntry: Codable, Equatable, Identifiable {
+public struct TypoTrapEntry: Codable, Equatable, Identifiable, Sendable {
     public var id: String { word }
     public let word: String
     public var commonMistype: String
@@ -147,21 +147,25 @@ public final class TypingHabitTracker {
         "definitely", "simply", "really", "essentially", "perhaps", "maybe", "obviously"
     ]
 
-    private struct PersistedState: Codable {
-        var tabsAccepted: Int = 0
-        var charactersSaved: Int = 0
-        var suggestionsShown: Int = 0
-        var totalTypedLetters: Int = 0
-        var totalBackspaces: Int = 0
-        var totalBurstCharacters: Int = 0
-        var totalBurstSeconds: Double = 0
-        var peakBurstWPM: Int = 0
-        var imeSwitches: Int = 0
-        var hourlyBuckets: [HourlyTypingBucket] = (0..<24).map { HourlyTypingBucket(hour: $0) }
-        var typoTraps: [String: TypoTrapEntry] = [:]
-        var fillerCounts: [String: Int] = [:]
-        var savedByWord: [String: Int] = [:]
+    public struct SyncShard: Codable, Equatable, Sendable {
+        public var tabsAccepted: Int = 0
+        public var charactersSaved: Int = 0
+        public var suggestionsShown: Int = 0
+        public var totalTypedLetters: Int = 0
+        public var totalBackspaces: Int = 0
+        public var totalBurstCharacters: Int = 0
+        public var totalBurstSeconds: Double = 0
+        public var peakBurstWPM: Int = 0
+        public var imeSwitches: Int = 0
+        public var hourlyBuckets: [HourlyTypingBucket] = (0..<24).map { HourlyTypingBucket(hour: $0) }
+        public var typoTraps: [String: TypoTrapEntry] = [:]
+        public var fillerCounts: [String: Int] = [:]
+        public var savedByWord: [String: Int] = [:]
+
+        public init() {}
     }
+
+    private typealias PersistedState = SyncShard
 
     private let fileURL: URL
     private let nowProvider: () -> Date
@@ -169,6 +173,7 @@ public final class TypingHabitTracker {
     private let queue = DispatchQueue(label: "app.wordtail.macos.habits", qos: .utility)
 
     private var state = PersistedState()
+    private var remoteShards: [String: SyncShard] = [:]
 
     // Ephemeral in-progress word & burst tracking (never persisted to disk)
     private var inProgressChars: String = ""
@@ -254,10 +259,58 @@ public final class TypingHabitTracker {
         }
     }
 
+    public func exportLocalShard() -> SyncShard {
+        queue.sync { state }
+    }
+
+    public func applyRemoteShards(_ shards: [String: SyncShard]) {
+        queue.sync {
+            remoteShards = shards
+        }
+    }
+
+    private func combinedStateLocked() -> SyncShard {
+        guard !remoteShards.isEmpty else { return state }
+        var combined = state
+        for remote in remoteShards.values {
+            combined.tabsAccepted += remote.tabsAccepted
+            combined.charactersSaved += remote.charactersSaved
+            combined.suggestionsShown += remote.suggestionsShown
+            combined.totalTypedLetters += remote.totalTypedLetters
+            combined.totalBackspaces += remote.totalBackspaces
+            combined.totalBurstCharacters += remote.totalBurstCharacters
+            combined.totalBurstSeconds += remote.totalBurstSeconds
+            combined.peakBurstWPM = max(combined.peakBurstWPM, remote.peakBurstWPM)
+            combined.imeSwitches += remote.imeSwitches
+
+            for h in 0..<min(24, remote.hourlyBuckets.count) {
+                combined.hourlyBuckets[h].typedLetters += remote.hourlyBuckets[h].typedLetters
+                combined.hourlyBuckets[h].backspaces += remote.hourlyBuckets[h].backspaces
+                combined.hourlyBuckets[h].burstCharacters += remote.hourlyBuckets[h].burstCharacters
+                combined.hourlyBuckets[h].burstSeconds += remote.hourlyBuckets[h].burstSeconds
+            }
+            for (word, trap) in remote.typoTraps {
+                if var existing = combined.typoTraps[word] {
+                    existing.count += trap.count
+                    combined.typoTraps[word] = existing
+                } else {
+                    combined.typoTraps[word] = trap
+                }
+            }
+            for (word, cnt) in remote.fillerCounts {
+                combined.fillerCounts[word, default: 0] += cnt
+            }
+            for (word, saved) in remote.savedByWord {
+                combined.savedByWord[word, default: 0] += saved
+            }
+        }
+        return combined
+    }
+
     public func typoBoostCount(for word: String) -> Int {
         let lower = word.lowercased()
         return queue.sync {
-            state.typoTraps[lower]?.count ?? 0
+            combinedStateLocked().typoTraps[lower]?.count ?? 0
         }
     }
 
@@ -265,7 +318,8 @@ public final class TypingHabitTracker {
     public func learnedAutoFix(forMistype mistype: String) -> String? {
         let lower = mistype.lowercased()
         return queue.sync {
-            let match = state.typoTraps.values
+            let merged = combinedStateLocked()
+            let match = merged.typoTraps.values
                 .filter { $0.count >= 2 && $0.commonMistype == lower && $0.word != lower }
                 .max(by: { $0.count < $1.count })
             return match?.word
@@ -277,13 +331,14 @@ public final class TypingHabitTracker {
         let lower = typedPrefix.lowercased()
         guard lower.count >= 3 else { return nil }
         return queue.sync {
-            if let exact = state.typoTraps.values
+            let merged = combinedStateLocked()
+            if let exact = merged.typoTraps.values
                 .filter({ $0.commonMistype == lower && $0.word != lower })
                 .max(by: { $0.count < $1.count }) {
                 return exact.word
             }
             guard lower.count >= 4 else { return nil }
-            let prefixMatches = state.typoTraps.values.filter {
+            let prefixMatches = merged.typoTraps.values.filter {
                 $0.commonMistype.hasPrefix(lower) && !$0.word.hasPrefix(lower)
             }
             let distinct = Set(prefixMatches.map(\.word))
@@ -293,22 +348,23 @@ public final class TypingHabitTracker {
 
     public func snapshot() -> TypingInsightsSnapshot {
         queue.sync {
+            let merged = combinedStateLocked()
             let avgWPM: Int
-            if state.totalBurstSeconds >= 2.5, state.totalBurstCharacters >= 12 {
-                let raw = (Double(state.totalBurstCharacters) / 5.0) / (state.totalBurstSeconds / 60.0)
+            if merged.totalBurstSeconds >= 2.5, merged.totalBurstCharacters >= 12 {
+                let raw = (Double(merged.totalBurstCharacters) / 5.0) / (merged.totalBurstSeconds / 60.0)
                 avgWPM = Int(min(max(raw.rounded(), 0), 240))
             } else {
                 avgWPM = 0
             }
 
-            let traps = state.typoTraps.values
+            let traps = merged.typoTraps.values
                 .sorted { lhs, rhs in
                     if lhs.count != rhs.count { return lhs.count > rhs.count }
                     return lhs.word < rhs.word
                 }
                 .prefix(12)
 
-            let fillers = state.fillerCounts
+            let fillers = merged.fillerCounts
                 .map { FillerHabitEntry(word: $0.key, count: $0.value) }
                 .sorted { lhs, rhs in
                     if lhs.count != rhs.count { return lhs.count > rhs.count }
@@ -316,7 +372,7 @@ public final class TypingHabitTracker {
                 }
                 .prefix(8)
 
-            let saved = state.savedByWord
+            let saved = merged.savedByWord
                 .map { SavedWordEntry(word: $0.key, charsSaved: $0.value) }
                 .sorted { lhs, rhs in
                     if lhs.charsSaved != rhs.charsSaved { return lhs.charsSaved > rhs.charsSaved }
@@ -325,15 +381,15 @@ public final class TypingHabitTracker {
                 .prefix(8)
 
             return TypingInsightsSnapshot(
-                tabsAccepted: state.tabsAccepted,
-                charactersSaved: state.charactersSaved,
-                suggestionsShown: state.suggestionsShown,
-                totalTypedLetters: state.totalTypedLetters,
-                totalBackspaces: state.totalBackspaces,
+                tabsAccepted: merged.tabsAccepted,
+                charactersSaved: merged.charactersSaved,
+                suggestionsShown: merged.suggestionsShown,
+                totalTypedLetters: merged.totalTypedLetters,
+                totalBackspaces: merged.totalBackspaces,
                 averageBurstWPM: avgWPM,
-                peakBurstWPM: state.peakBurstWPM,
-                imeSwitches: state.imeSwitches,
-                hourlyBuckets: state.hourlyBuckets,
+                peakBurstWPM: merged.peakBurstWPM,
+                imeSwitches: merged.imeSwitches,
+                hourlyBuckets: merged.hourlyBuckets,
                 typoTraps: Array(traps),
                 fillerHabits: Array(fillers),
                 topSavedWords: Array(saved)

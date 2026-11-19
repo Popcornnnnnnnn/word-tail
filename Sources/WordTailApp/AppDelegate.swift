@@ -4,6 +4,7 @@ import CoreServices
 import ServiceManagement
 import WordTailCore
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let historyStore = UserHistoryStore()
@@ -29,9 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keyStatsStore: keyStatsStore,
         inputGuard: inputGuard
     )
+    private let autoUpdater = AutoUpdateManager()
 
     private var permissionPollTimer: Timer?
     private var menuBarCounterTimer: Timer?
+    private var syncTimer: Timer?
     private var lastObservedApp: (name: String, bundleID: String)?
     private var settingsWindowController: SettingsWindowController?
 
@@ -42,7 +45,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.onStateChanged = { [weak self] in
             self?.updateStatusIcon()
         }
+        autoUpdater.onBeforeTerminateForUpdate = { [weak self] in
+            self?.engine.flushAllTelemetry()
+        }
+        autoUpdater.onUpdateStateChanged = { [weak self] in
+            self?.settingsWindowController?.refreshUpdateAndSyncStatus()
+        }
         ensureLoginItemRegisteredOnFirstInstall()
+        setupBackgroundSyncAndUpdates()
 
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -54,7 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   bundleID != Bundle.main.bundleIdentifier else {
                 return
             }
-            self?.lastObservedApp = (app.localizedName ?? bundleID, bundleID)
+            let name = app.localizedName ?? bundleID
+            MainActor.assumeIsolated {
+                self?.lastObservedApp = (name, bundleID)
+            }
         }
 
         if let front = NSWorkspace.shared.frontmostApplication,
@@ -136,6 +149,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         prefsItem.target = self
         appMenu.addItem(prefsItem)
+
+        let checkUpdatesMainItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdatesClicked),
+            keyEquivalent: ""
+        )
+        checkUpdatesMainItem.target = self
+        appMenu.addItem(checkUpdatesMainItem)
         appMenu.addItem(.separator())
 
         let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
@@ -252,9 +273,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func ensureMenuBarCounterTimerRunning() {
         guard menuBarCounterTimer == nil else { return }
         menuBarCounterTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
-            guard let self, self.engine.showMenuBarKeyCount, let button = self.statusItem.button else { return }
-            let counts = self.keyStatsStore.todayMenuBarCounts()
-            button.title = " " + KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)
+            MainActor.assumeIsolated {
+                guard let self, self.engine.showMenuBarKeyCount, let button = self.statusItem.button else { return }
+                let counts = self.keyStatsStore.todayMenuBarCounts()
+                button.title = " " + KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)
+            }
         }
     }
 
@@ -315,11 +338,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             updateStatusIcon()
         } else if permissionPollTimer == nil {
             permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                if AXIsProcessTrusted() && self.engine.start() {
-                    self.permissionPollTimer?.invalidate()
-                    self.permissionPollTimer = nil
-                    self.updateStatusIcon()
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if AXIsProcessTrusted() && self.engine.start() {
+                        self.permissionPollTimer?.invalidate()
+                        self.permissionPollTimer = nil
+                        self.updateStatusIcon()
+                    }
                 }
             }
         }
@@ -427,6 +452,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        if let release = autoUpdater.availableRelease {
+            let installItem = NSMenuItem(
+                title: "⬆ Update to v\(release.version) & Restart…",
+                action: #selector(installAvailableUpdateClicked),
+                keyEquivalent: ""
+            )
+            installItem.target = self
+            menu.addItem(installItem)
+        }
+
         let openKeyStatsItem = NSMenuItem(
             title: "KeyStats & Heatmap…",
             action: #selector(openKeyStatsClicked),
@@ -443,6 +478,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openWindowItem.target = self
         menu.addItem(openWindowItem)
 
+        let checkUpdatesStatusItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdatesClicked),
+            keyEquivalent: ""
+        )
+        checkUpdatesStatusItem.target = self
+        menu.addItem(checkUpdatesStatusItem)
+
         let quitItem = NSMenuItem(
             title: "Quit WordTail",
             action: #selector(quitClicked),
@@ -450,6 +493,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         quitItem.target = self
         menu.addItem(quitItem)
+    }
+
+    private func setupBackgroundSyncAndUpdates() {
+        autoUpdater.startLifecycle()
+
+        if engine.syncEngine.statusSnapshot().isEnabled {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.runBackgroundSyncPass()
+            }
+        }
+
+        syncTimer = Timer.scheduledTimer(withTimeInterval: 45.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.runBackgroundSyncPass()
+            }
+        }
+    }
+
+    private func runBackgroundSyncPass() {
+        guard engine.syncEngine.statusSnapshot().isEnabled else { return }
+        engine.syncEngine.syncAsync { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.updateStatusIcon()
+                self?.settingsWindowController?.refreshUpdateAndSyncStatus()
+            }
+        }
     }
 
     private func currentTargetApp() -> (name: String, bundleID: String)? {
@@ -502,11 +571,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         presentMainWindow(section: .keyStats)
     }
 
+    @objc private func checkForUpdatesClicked() {
+        autoUpdater.checkForUpdates(userInitiated: true)
+    }
+
+    @objc private func installAvailableUpdateClicked() {
+        autoUpdater.promptAndInstallCurrentRelease()
+    }
+
     private func presentMainWindow(section: SettingsSection?) {
         let target = currentTargetApp()
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 engine: engine,
+                autoUpdater: autoUpdater,
                 currentApp: target,
                 onStateChange: { [weak self] in self?.updateStatusIcon() }
             )
@@ -515,6 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quitClicked() {
+        engine.flushAllTelemetry()
         engine.stop()
         NSApplication.shared.terminate(nil)
     }

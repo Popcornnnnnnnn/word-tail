@@ -127,16 +127,38 @@ public final class PhrasePredictor {
         "turns out": ["that"]
     ]
 
+    public struct PhraseSyncRecord: Codable, Equatable, Sendable {
+        public var phrase: String
+        public var isDeleted: Bool
+        public var updatedAt: TimeInterval
+
+        public init(phrase: String, isDeleted: Bool, updatedAt: TimeInterval) {
+            self.phrase = phrase
+            self.isDeleted = isDeleted
+            self.updatedAt = updatedAt
+        }
+    }
+
+    public struct SyncShard: Codable, Equatable, Sendable {
+        public var syncRecords: [String: PhraseSyncRecord] = [:]
+        public var anchorTotals: [String: Int] = [:]
+        public var continuations: [String: [String: Int]] = [:]
+
+        public init() {}
+    }
+
     private struct PersistedData: Codable {
         var customPhrases: [String] = []
         var anchorTotals: [String: Int] = [:]
         var continuations: [String: [String: Int]] = [:] // only count >= 2 persisted for privacy!
+        var syncRecords: [String: PhraseSyncRecord]? = [:]
     }
 
     private let fileURL: URL
     private let queue = DispatchQueue(label: "app.wordtail.macos.phrases", qos: .utility)
 
     private var persisted = PersistedData()
+    private var remoteShards: [String: SyncShard] = [:]
     // Ephemeral RAM-only probation table for first-time sequences so one-off private sentences NEVER hit disk!
     private var probationAnchorTotals: [String: Int] = [:]
     private var probationContinuations: [String: [String: Int]] = [:]
@@ -156,10 +178,84 @@ public final class PhrasePredictor {
 
     private func loadSynchronously() {
         guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode(PersistedData.self, from: data) else {
+              var decoded = try? JSONDecoder().decode(PersistedData.self, from: data) else {
             return
         }
+        var records = decoded.syncRecords ?? [:]
+        for phrase in decoded.customPhrases {
+            let key = phrase.lowercased()
+            if records[key] == nil {
+                records[key] = PhraseSyncRecord(phrase: phrase, isDeleted: false, updatedAt: 1)
+            }
+        }
+        decoded.syncRecords = records
         persisted = decoded
+    }
+
+    public func exportLocalShard() -> SyncShard {
+        queue.sync {
+            var shard = SyncShard()
+            shard.syncRecords = persisted.syncRecords ?? [:]
+            shard.anchorTotals = persisted.anchorTotals
+            shard.continuations = persisted.continuations
+            return shard
+        }
+    }
+
+    public func applyRemoteShards(_ shards: [String: SyncShard]) {
+        queue.sync {
+            remoteShards = shards
+            var records = persisted.syncRecords ?? [:]
+            var changed = false
+
+            for shard in shards.values {
+                for (rawKey, remoteRec) in shard.syncRecords {
+                    let key = rawKey.lowercased()
+                    let localUpdated = records[key]?.updatedAt ?? 0
+                    if remoteRec.updatedAt > localUpdated {
+                        records[key] = remoteRec
+                        persisted.customPhrases.removeAll { $0.caseInsensitiveCompare(remoteRec.phrase) == .orderedSame || $0.lowercased() == key }
+                        if !remoteRec.isDeleted {
+                            persisted.customPhrases.append(remoteRec.phrase)
+                        }
+                        changed = true
+                    }
+                }
+            }
+
+            if changed {
+                persisted.syncRecords = records
+                persistLocked()
+            }
+        }
+    }
+
+    private func mergedContinuationsLocked() -> (anchorTotals: [String: Int], continuations: [String: [String: Int]]) {
+        guard !remoteShards.isEmpty else {
+            return (persisted.anchorTotals, persisted.continuations)
+        }
+        let records = persisted.syncRecords ?? [:]
+        var totals = persisted.anchorTotals
+        var conts = persisted.continuations
+        for shard in remoteShards.values {
+            for (anchor, t) in shard.anchorTotals {
+                totals[anchor, default: 0] += t
+            }
+            for (anchor, cMap) in shard.continuations {
+                var cur = conts[anchor] ?? [:]
+                for (cont, c) in cMap {
+                    let fullKey = "\(anchor) \(cont)".lowercased()
+                    if records[fullKey]?.isDeleted == true && persisted.continuations[anchor]?[cont] == nil {
+                        continue
+                    }
+                    cur[cont, default: 0] += c
+                }
+                if !cur.isEmpty {
+                    conts[anchor] = cur
+                }
+            }
+        }
+        return (totals, conts)
     }
 
     // MARK: - Queries
@@ -333,21 +429,29 @@ public final class PhrasePredictor {
             return false
         }
         let normalized = tokens.joined(separator: " ")
+        let now = Date().timeIntervalSince1970
         let work = {
-            if !self.persisted.customPhrases.contains(where: { $0.caseInsensitiveCompare(normalized) == .orderedSame }) {
-                self.persisted.customPhrases.append(normalized)
-                self.persistLocked()
-            }
+            self.persisted.customPhrases.removeAll { $0.caseInsensitiveCompare(normalized) == .orderedSame }
+            self.persisted.customPhrases.append(normalized)
+            var records = self.persisted.syncRecords ?? [:]
+            records[normalized.lowercased()] = PhraseSyncRecord(
+                phrase: normalized,
+                isDeleted: false,
+                updatedAt: now
+            )
+            self.persisted.syncRecords = records
+            self.persistLocked()
         }
         if persistAsync { queue.async(execute: work) } else { queue.sync(execute: work) }
         return true
     }
 
     public func removeEntry(_ entry: PhraseEntry) {
+        let now = Date().timeIntervalSince1970
         queue.sync {
+            let full = entry.fullPhrase
             switch entry.source {
             case .custom:
-                let full = entry.fullPhrase
                 persisted.customPhrases.removeAll { $0.caseInsensitiveCompare(full) == .orderedSame }
             case .learned:
                 persisted.continuations[entry.anchor]?.removeValue(forKey: entry.continuation)
@@ -355,6 +459,13 @@ public final class PhrasePredictor {
                     persisted.continuations.removeValue(forKey: entry.anchor)
                 }
             }
+            var records = persisted.syncRecords ?? [:]
+            records[full.lowercased()] = PhraseSyncRecord(
+                phrase: full,
+                isDeleted: true,
+                updatedAt: now
+            )
+            persisted.syncRecords = records
             persistLocked()
         }
     }
@@ -370,8 +481,9 @@ public final class PhrasePredictor {
                     list.append(PhraseEntry(anchor: anchor, continuation: cont, count: 0, source: .custom))
                 }
             }
-            for (anchor, contMap) in persisted.continuations {
-                let total = max(1, persisted.anchorTotals[anchor, default: 1])
+            let merged = mergedContinuationsLocked()
+            for (anchor, contMap) in merged.continuations {
+                let total = max(1, merged.anchorTotals[anchor, default: 1])
                 let is3Word = anchor.split(separator: " ").count >= 3
                 if !is3Word && Self.genericTwoWordAnchors.contains(anchor) {
                     continue
@@ -476,8 +588,9 @@ public final class PhrasePredictor {
         if !allowGeneric2Word && Self.genericTwoWordAnchors.contains(anchor) {
             return []
         }
-        guard let contMap = persisted.continuations[anchor] else { return [] }
-        let total = max(1, persisted.anchorTotals[anchor, default: 1])
+        let merged = mergedContinuationsLocked()
+        guard let contMap = merged.continuations[anchor] else { return [] }
+        let total = max(1, merged.anchorTotals[anchor, default: 1])
 
         // Prefer longer multi-word matches when counts are similar, sorted by count descending
         return contMap

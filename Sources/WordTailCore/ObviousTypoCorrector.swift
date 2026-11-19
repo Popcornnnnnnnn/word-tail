@@ -44,11 +44,34 @@ public struct CorrectionRuleEntry: Identifiable, Equatable, Sendable {
 
 /// Persistent, self-learning store for user shorthand rules, auto-learned typo pairs, and undo-muted triggers.
 public final class AdaptiveCorrectionStore {
+    public struct RuleSyncRecord: Codable, Equatable, Sendable {
+        public var replacement: String?
+        public var isMuted: Bool
+        public var isDeleted: Bool
+        public var updatedAt: TimeInterval
+
+        public init(replacement: String?, isMuted: Bool, isDeleted: Bool, updatedAt: TimeInterval) {
+            self.replacement = replacement
+            self.isMuted = isMuted
+            self.isDeleted = isDeleted
+            self.updatedAt = updatedAt
+        }
+    }
+
+    public struct SyncShard: Codable, Equatable, Sendable {
+        public var syncRecords: [String: RuleSyncRecord] = [:]
+        public var candidatePairs: [String: [String: Int]] = [:]
+        public var undoCounts: [String: Int] = [:]
+
+        public init() {}
+    }
+
     private struct PersistedData: Codable {
         var customRules: [String: String] = [:]          // user-defined trigger -> replacement
         var candidatePairs: [String: [String: Int]] = [:] // observed mistype -> target -> count (graduates at >= 2)
         var undoCounts: [String: Int] = [:]               // trigger -> number of Backspace undos (mutes at >= 2)
         var mutedTriggers: Set<String> = []
+        var syncRecords: [String: RuleSyncRecord]? = [:]
     }
 
     public static let graduationThreshold = 2
@@ -57,6 +80,7 @@ public final class AdaptiveCorrectionStore {
     private let fileURL: URL
     private let queue = DispatchQueue(label: "app.wordtail.macos.corrections", qos: .utility)
     private var state = PersistedData()
+    private var remoteShards: [String: SyncShard] = [:]
 
     public init(fileURL: URL? = nil) {
         if let fileURL {
@@ -72,15 +96,100 @@ public final class AdaptiveCorrectionStore {
 
     private func loadSynchronously() {
         guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode(PersistedData.self, from: data) else {
+              var decoded = try? JSONDecoder().decode(PersistedData.self, from: data) else {
             return
         }
+        var records = decoded.syncRecords ?? [:]
+        for (trig, rep) in decoded.customRules where records[trig] == nil {
+            records[trig] = RuleSyncRecord(replacement: rep, isMuted: false, isDeleted: false, updatedAt: 1)
+        }
+        for muted in decoded.mutedTriggers where records[muted] == nil {
+            records[muted] = RuleSyncRecord(replacement: nil, isMuted: true, isDeleted: false, updatedAt: 1)
+        }
+        decoded.syncRecords = records
         state = decoded
+    }
+
+    public func exportLocalShard() -> SyncShard {
+        queue.sync {
+            var shard = SyncShard()
+            shard.syncRecords = state.syncRecords ?? [:]
+            shard.candidatePairs = state.candidatePairs
+            shard.undoCounts = state.undoCounts
+            return shard
+        }
+    }
+
+    public func applyRemoteShards(_ shards: [String: SyncShard]) {
+        queue.sync {
+            remoteShards = shards
+            var records = state.syncRecords ?? [:]
+            var changed = false
+
+            for shard in shards.values {
+                for (rawKey, remoteRec) in shard.syncRecords {
+                    let key = rawKey.lowercased()
+                    let localUpdated = records[key]?.updatedAt ?? 0
+                    if remoteRec.updatedAt > localUpdated {
+                        records[key] = remoteRec
+                        if remoteRec.isDeleted {
+                            state.customRules.removeValue(forKey: key)
+                            state.mutedTriggers.remove(key)
+                            state.undoCounts.removeValue(forKey: key)
+                            state.candidatePairs.removeValue(forKey: key)
+                        } else if remoteRec.isMuted {
+                            state.customRules.removeValue(forKey: key)
+                            state.mutedTriggers.insert(key)
+                        } else if let rep = remoteRec.replacement {
+                            state.mutedTriggers.remove(key)
+                            state.undoCounts.removeValue(forKey: key)
+                            state.customRules[key] = rep
+                        }
+                        changed = true
+                    }
+                }
+            }
+
+            if changed {
+                state.syncRecords = records
+                persistLocked()
+            }
+        }
+    }
+
+    private func mergedCandidatePairsLocked() -> [String: [String: Int]] {
+        guard !remoteShards.isEmpty else { return state.candidatePairs }
+        let records = state.syncRecords ?? [:]
+        var merged = state.candidatePairs
+        for shard in remoteShards.values {
+            for (mistype, targetMap) in shard.candidatePairs {
+                if records[mistype]?.isDeleted == true && state.candidatePairs[mistype] == nil {
+                    continue
+                }
+                var cur = merged[mistype] ?? [:]
+                for (target, c) in targetMap {
+                    cur[target, default: 0] += c
+                }
+                merged[mistype] = cur
+            }
+        }
+        return merged
+    }
+
+    private func isMutedLocked(_ key: String) -> Bool {
+        if state.mutedTriggers.contains(key) { return true }
+        if state.customRules[key] != nil { return false }
+        if state.syncRecords?[key]?.isDeleted == true { return false }
+        var totalUndos = state.undoCounts[key, default: 0]
+        for shard in remoteShards.values {
+            totalUndos += shard.undoCounts[key, default: 0]
+        }
+        return totalUndos >= Self.muteUndoThreshold
     }
 
     public func isMuted(_ rawTrigger: String) -> Bool {
         let key = rawTrigger.lowercased()
-        return queue.sync { state.mutedTriggers.contains(key) }
+        return queue.sync { isMutedLocked(key) }
     }
 
     public func customOrLearnedReplacement(for rawTrigger: String) -> String? {
@@ -89,10 +198,11 @@ public final class AdaptiveCorrectionStore {
             if let custom = state.customRules[key] {
                 return custom
             }
-            if state.mutedTriggers.contains(key) {
+            if isMutedLocked(key) {
                 return nil
             }
-            if let targets = state.candidatePairs[key],
+            let mergedPairs = mergedCandidatePairsLocked()
+            if let targets = mergedPairs[key],
                let best = targets.max(by: { $0.value < $1.value }),
                best.value >= Self.graduationThreshold {
                 return best.key
@@ -108,15 +218,16 @@ public final class AdaptiveCorrectionStore {
             if let custom = state.customRules[lower] {
                 return custom
             }
-            guard !state.mutedTriggers.contains(lower) else { return nil }
-            if let targets = state.candidatePairs[lower],
+            guard !isMutedLocked(lower) else { return nil }
+            let mergedPairs = mergedCandidatePairsLocked()
+            if let targets = mergedPairs[lower],
                let best = targets.max(by: { $0.value < $1.value }),
                best.value >= 1 {
                 return best.key
             }
             guard lower.count >= 4 else { return nil }
             var foundTargets = Set<String>()
-            for (mistype, targetMap) in state.candidatePairs where mistype.hasPrefix(lower) && !state.mutedTriggers.contains(mistype) {
+            for (mistype, targetMap) in mergedPairs where mistype.hasPrefix(lower) && !isMutedLocked(mistype) {
                 if let best = targetMap.max(by: { $0.value < $1.value }), best.value >= 1, !best.key.lowercased().hasPrefix(lower) {
                     foundTargets.insert(best.key)
                 }
@@ -139,7 +250,7 @@ public final class AdaptiveCorrectionStore {
         }
 
         let work = {
-            guard !self.state.mutedTriggers.contains(mistype) else { return }
+            guard !self.isMutedLocked(mistype) else { return }
             var map = self.state.candidatePairs[mistype] ?? [:]
             map[corrected, default: 0] += 1
             self.state.candidatePairs[mistype] = map
@@ -161,9 +272,17 @@ public final class AdaptiveCorrectionStore {
         let key = rawTrigger.lowercased()
         return queue.sync {
             state.undoCounts[key, default: 0] += 1
-            let nowMuted = state.undoCounts[key, default: 0] >= Self.muteUndoThreshold
+            let nowMuted = isMutedLocked(key)
             if nowMuted {
                 state.mutedTriggers.insert(key)
+                var records = state.syncRecords ?? [:]
+                records[key] = RuleSyncRecord(
+                    replacement: nil,
+                    isMuted: true,
+                    isDeleted: false,
+                    updatedAt: Date().timeIntervalSince1970
+                )
+                state.syncRecords = records
             }
             if persistAsync {
                 let snap = state
@@ -185,10 +304,19 @@ public final class AdaptiveCorrectionStore {
               trigger.allSatisfy({ ($0.isASCII && $0.isLetter) || $0 == "'" }) else {
             return false
         }
+        let now = Date().timeIntervalSince1970
         let work = {
             self.state.mutedTriggers.remove(trigger)
             self.state.undoCounts.removeValue(forKey: trigger)
             self.state.customRules[trigger] = replacement
+            var records = self.state.syncRecords ?? [:]
+            records[trigger] = RuleSyncRecord(
+                replacement: replacement,
+                isMuted: false,
+                isDeleted: false,
+                updatedAt: now
+            )
+            self.state.syncRecords = records
             self.persistLocked()
         }
         if persistAsync { queue.async(execute: work) } else { queue.sync(execute: work) }
@@ -197,31 +325,51 @@ public final class AdaptiveCorrectionStore {
 
     public func removeRuleOrUnmute(trigger rawTrigger: String) {
         let key = rawTrigger.lowercased()
+        let now = Date().timeIntervalSince1970
         queue.sync {
             state.customRules.removeValue(forKey: key)
             state.candidatePairs.removeValue(forKey: key)
             state.mutedTriggers.remove(key)
             state.undoCounts.removeValue(forKey: key)
+            var records = state.syncRecords ?? [:]
+            records[key] = RuleSyncRecord(
+                replacement: nil,
+                isMuted: false,
+                isDeleted: true,
+                updatedAt: now
+            )
+            state.syncRecords = records
             persistLocked()
         }
     }
 
     public func allEntries() -> [CorrectionRuleEntry] {
         queue.sync {
+            let mergedPairs = mergedCandidatePairsLocked()
             var list: [CorrectionRuleEntry] = []
             for (trig, rep) in state.customRules {
                 list.append(CorrectionRuleEntry(trigger: trig, replacement: rep, count: 0, source: .custom))
             }
-            for (trig, targetMap) in state.candidatePairs where state.customRules[trig] == nil && !state.mutedTriggers.contains(trig) {
+            for (trig, targetMap) in mergedPairs where state.customRules[trig] == nil && !isMutedLocked(trig) {
                 if let best = targetMap.max(by: { $0.value < $1.value }), best.value >= Self.graduationThreshold {
                     list.append(CorrectionRuleEntry(trigger: trig, replacement: best.key, count: best.value, source: .learned))
                 }
             }
-            for muted in state.mutedTriggers where state.customRules[muted] == nil {
+            var mutedSet = state.mutedTriggers
+            for shard in remoteShards.values {
+                for trig in shard.undoCounts.keys where isMutedLocked(trig) {
+                    mutedSet.insert(trig)
+                }
+            }
+            for muted in mutedSet where state.customRules[muted] == nil {
                 let origTarget = ObviousTypoCorrector.unambiguousTypos[muted]
-                    ?? state.candidatePairs[muted]?.max(by: { $0.value < $1.value })?.key
+                    ?? mergedPairs[muted]?.max(by: { $0.value < $1.value })?.key
                     ?? "auto-fix"
-                list.append(CorrectionRuleEntry(trigger: muted, replacement: origTarget, count: state.undoCounts[muted, default: 2], source: .muted))
+                var totalUndos = state.undoCounts[muted, default: 0]
+                for shard in remoteShards.values {
+                    totalUndos += shard.undoCounts[muted, default: 0]
+                }
+                list.append(CorrectionRuleEntry(trigger: muted, replacement: origTarget, count: max(2, totalUndos), source: .muted))
             }
             return list.sorted { lhs, rhs in
                 if lhs.source != rhs.source {

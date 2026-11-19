@@ -41,16 +41,21 @@ rm -rf "$(dirname "$ICONSET_TMP")"
 cp "$ROOT_DIR/.build/release/WordTail" "$APP_DIR/Contents/MacOS/WordTail"
 cp "$ROOT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 
-# Prefer a stable local Apple Development identity so macOS TCC Accessibility permissions persist across rebuilds.
-SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development:/ {print $2; exit}')"
-if [[ -z "$SIGN_IDENTITY" ]]; then
-    SIGN_IDENTITY="-"
-    echo "==> Signing with ad-hoc identity (-)"
-else
-    echo "==> Signing with Apple Development certificate..."
-fi
+# Prefer Developer ID Application so updates install cleanly across Macs and preserve macOS TCC permissions,
+# falling back to Apple Development or ad-hoc (-) for local source builds.
+DEV_ID_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application:/ {print $2; exit}')"
+APPLE_DEV_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development:/ {print $2; exit}')"
 
-codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
+if [[ -n "$DEV_ID_IDENTITY" ]]; then
+    echo "==> Signing with Developer ID Application certificate (hardened runtime)..."
+    codesign --force --deep --options runtime --timestamp --sign "$DEV_ID_IDENTITY" "$APP_DIR"
+elif [[ -n "$APPLE_DEV_IDENTITY" ]]; then
+    echo "==> Signing with Apple Development certificate..."
+    codesign --force --deep --sign "$APPLE_DEV_IDENTITY" "$APP_DIR"
+else
+    echo "==> Signing with ad-hoc identity (-)"
+    codesign --force --deep --sign "-" "$APP_DIR"
+fi
 echo "==> Built: $APP_DIR"
 
 if [[ "$INSTALL_APP" -eq 1 ]]; then

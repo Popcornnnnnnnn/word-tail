@@ -18,6 +18,6 @@ if let flagIdx = CommandLine.arguments.firstIndex(of: "--export-showcase-images"
 }
 
 let app = NSApplication.shared
-let delegate = AppDelegate()
+let delegate = MainActor.assumeIsolated { AppDelegate() }
 app.delegate = delegate
 app.run()

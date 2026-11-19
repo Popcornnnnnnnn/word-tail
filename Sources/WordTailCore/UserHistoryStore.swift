@@ -32,8 +32,30 @@ public final class UserHistoryStore {
     private static let appAffinityWeight = 6
     private static let globalAcceptWeight = 3
 
+    public struct CustomWordSyncRecord: Codable, Equatable, Sendable {
+        public var casedWord: String
+        public var isDeleted: Bool
+        public var updatedAt: TimeInterval
+
+        public init(casedWord: String, isDeleted: Bool, updatedAt: TimeInterval) {
+            self.casedWord = casedWord
+            self.isDeleted = isDeleted
+            self.updatedAt = updatedAt
+        }
+    }
+
+    public struct SyncShard: Codable, Equatable, Sendable {
+        public var counts: [String: Int] = [:]
+        public var customRecords: [String: CustomWordSyncRecord] = [:]
+        public var bigrams: [String: [String: Int]] = [:]
+        public var appVocabulary: [String: [String: Int]] = [:]
+
+        public init() {}
+    }
+
     private let fileURL: URL
     private let customURL: URL
+    private let customSyncMetaURL: URL
     private let bigramsURL: URL
     private let appVocabURL: URL
 
@@ -41,8 +63,10 @@ public final class UserHistoryStore {
     private var counts: [String: Int] = [:]
     private var customWords: Set<String> = []
     private var customCasing: [String: String] = [:]
+    private var customRecords: [String: CustomWordSyncRecord] = [:]
     private var bigrams: [String: [String: Int]] = [:]
     private var appVocabulary: [String: [String: Int]] = [:]
+    private var remoteShards: [String: SyncShard] = [:]
 
     public init(fileURL: URL? = nil) {
         let dir: URL
@@ -56,6 +80,7 @@ public final class UserHistoryStore {
             self.fileURL = dir.appendingPathComponent("accepted_words.json")
         }
         self.customURL = dir.appendingPathComponent("custom_words.json")
+        self.customSyncMetaURL = dir.appendingPathComponent("custom_words_meta.json")
         self.bigramsURL = dir.appendingPathComponent("word_bigrams.json")
         self.appVocabURL = dir.appendingPathComponent("app_vocabulary.json")
         loadSynchronously()
@@ -66,12 +91,19 @@ public final class UserHistoryStore {
            let decoded = try? JSONDecoder().decode([String: Int].self, from: data) {
             counts = decoded
         }
+        if let metaData = try? Data(contentsOf: customSyncMetaURL),
+           let decodedMeta = try? JSONDecoder().decode([String: CustomWordSyncRecord].self, from: metaData) {
+            customRecords = decodedMeta
+        }
         if let customData = try? Data(contentsOf: customURL),
            let list = try? JSONDecoder().decode([String].self, from: customData) {
             for raw in list {
                 let lower = raw.lowercased()
                 customWords.insert(lower)
                 customCasing[lower] = raw
+                if customRecords[lower] == nil {
+                    customRecords[lower] = CustomWordSyncRecord(casedWord: raw, isDeleted: false, updatedAt: 1)
+                }
             }
         }
         if let bigramData = try? Data(contentsOf: bigramsURL),
@@ -84,10 +116,72 @@ public final class UserHistoryStore {
         }
     }
 
+    public func exportLocalShard() -> SyncShard {
+        queue.sync {
+            var shard = SyncShard()
+            shard.counts = counts
+            shard.customRecords = customRecords
+            shard.bigrams = bigrams
+            shard.appVocabulary = appVocabulary
+            return shard
+        }
+    }
+
+    public func applyRemoteShards(_ shards: [String: SyncShard]) {
+        queue.sync {
+            remoteShards = shards
+            var changedCustom = false
+            for remote in shards.values {
+                for (lower, incoming) in remote.customRecords {
+                    let curTs = customRecords[lower]?.updatedAt ?? 0
+                    if incoming.updatedAt > curTs {
+                        customRecords[lower] = incoming
+                        if incoming.isDeleted {
+                            customWords.remove(lower)
+                            customCasing.removeValue(forKey: lower)
+                        } else {
+                            customWords.insert(lower)
+                            customCasing[lower] = incoming.casedWord
+                        }
+                        changedCustom = true
+                    }
+                }
+            }
+            if changedCustom {
+                persistCustomSnapshot(Array(customCasing.values).sorted())
+                persistCustomMetaSnapshot(customRecords)
+            }
+        }
+    }
+
+    private func mergedCountLocked(for key: String) -> Int {
+        var sum = counts[key, default: 0]
+        for shard in remoteShards.values {
+            sum += shard.counts[key, default: 0]
+        }
+        return sum
+    }
+
+    private func mergedBigramCountLocked(previous: String, word: String) -> Int {
+        var sum = bigrams[previous]?[word, default: 0] ?? 0
+        for shard in remoteShards.values {
+            sum += shard.bigrams[previous]?[word, default: 0] ?? 0
+        }
+        return sum
+    }
+
+    private func mergedAppCountLocked(bundleID: String, word: String) -> Int {
+        var sum = appVocabulary[bundleID]?[word, default: 0] ?? 0
+        for shard in remoteShards.values {
+            sum += shard.appVocabulary[bundleID]?[word, default: 0] ?? 0
+        }
+        return sum
+    }
+
     public func count(for word: String) -> Int {
         let lower = word.lowercased()
         return queue.sync {
-            let base = counts[lower, default: 0]
+            let base = mergedCountLocked(for: lower)
             return customWords.contains(lower) ? (Self.customScoreSentinel + base) : base
         }
     }
@@ -112,15 +206,15 @@ public final class UserHistoryStore {
         let lower = word.lowercased()
         let prevLower = previousWord?.lowercased()
         return queue.sync {
-            var score = counts[lower, default: 0] * Self.globalAcceptWeight
+            var score = mergedCountLocked(for: lower) * Self.globalAcceptWeight
             if customWords.contains(lower) {
                 score += Self.customScoreSentinel
             }
-            if let prevLower, let nextMap = bigrams[prevLower], let pairCount = nextMap[lower] {
-                score += pairCount * Self.bigramWeight
+            if let prevLower {
+                score += mergedBigramCountLocked(previous: prevLower, word: lower) * Self.bigramWeight
             }
-            if let bundleID, let appMap = appVocabulary[bundleID], let appCount = appMap[lower] {
-                score += appCount * Self.appAffinityWeight
+            if let bundleID {
+                score += mergedAppCountLocked(bundleID: bundleID, word: lower) * Self.appAffinityWeight
             }
             return score
         }
@@ -128,19 +222,22 @@ public final class UserHistoryStore {
 
     public var learnedWordsCount: Int {
         queue.sync {
-            Set(counts.keys).union(customWords).count
+            var keys = Set(counts.keys).union(customWords)
+            for shard in remoteShards.values { keys.formUnion(shard.counts.keys) }
+            return keys.count
         }
     }
 
     public func allEntries() -> [VocabularyEntry] {
         queue.sync {
-            let allKeys = Set(counts.keys).union(customWords)
+            var allKeys = Set(counts.keys).union(customWords)
+            for shard in remoteShards.values { allKeys.formUnion(shard.counts.keys) }
             return allKeys.map { key in
                 let isCustom = customWords.contains(key)
                 let display = customCasing[key] ?? key
                 return VocabularyEntry(
                     word: display,
-                    count: counts[key, default: 0],
+                    count: mergedCountLocked(for: key),
                     isCustom: isCustom
                 )
             }
@@ -154,8 +251,16 @@ public final class UserHistoryStore {
 
     public func topBigrams(limit: Int = 10) -> [BigramHabitEntry] {
         queue.sync {
+            var merged: [String: [String: Int]] = bigrams
+            for shard in remoteShards.values {
+                for (prev, nextDict) in shard.bigrams {
+                    for (next, cnt) in nextDict where cnt > 0 {
+                        merged[prev, default: [:]][next, default: 0] += cnt
+                    }
+                }
+            }
             var flattened: [BigramHabitEntry] = []
-            for (prev, nextDict) in bigrams {
+            for (prev, nextDict) in merged {
                 for (next, cnt) in nextDict where cnt > 0 {
                     flattened.append(BigramHabitEntry(previousWord: prev, word: next, count: cnt))
                 }
@@ -176,11 +281,14 @@ public final class UserHistoryStore {
             return false
         }
         let lower = trimmed.lowercased()
+        let now = Date().timeIntervalSince1970
 
         let work = {
             self.customWords.insert(lower)
             self.customCasing[lower] = trimmed
+            self.customRecords[lower] = CustomWordSyncRecord(casedWord: trimmed, isDeleted: false, updatedAt: now)
             self.persistCustomSnapshot(Array(self.customCasing.values).sorted())
+            self.persistCustomMetaSnapshot(self.customRecords)
         }
 
         if persistAsync {
@@ -198,10 +306,17 @@ public final class UserHistoryStore {
 
     public func removeWord(_ word: String) {
         let lower = word.lowercased()
+        let now = Date().timeIntervalSince1970
         queue.sync {
+            let wasCustom = customWords.contains(lower)
+            let oldCased = customCasing[lower] ?? word
             counts.removeValue(forKey: lower)
             customWords.remove(lower)
             customCasing.removeValue(forKey: lower)
+            if wasCustom {
+                customRecords[lower] = CustomWordSyncRecord(casedWord: oldCased, isDeleted: true, updatedAt: now)
+                persistCustomMetaSnapshot(customRecords)
+            }
             bigrams.removeValue(forKey: lower)
             for key in Array(bigrams.keys) {
                 bigrams[key]?.removeValue(forKey: lower)
@@ -224,10 +339,12 @@ public final class UserHistoryStore {
             counts.removeAll()
             customWords.removeAll()
             customCasing.removeAll()
+            customRecords.removeAll()
             bigrams.removeAll()
             appVocabulary.removeAll()
             try? FileManager.default.removeItem(at: fileURL)
             try? FileManager.default.removeItem(at: customURL)
+            try? FileManager.default.removeItem(at: customSyncMetaURL)
             try? FileManager.default.removeItem(at: bigramsURL)
             try? FileManager.default.removeItem(at: appVocabURL)
         }
@@ -257,20 +374,29 @@ public final class UserHistoryStore {
             if let bundleID, let appMap = appVocabulary[bundleID] {
                 candidateKeys.formUnion(appMap.keys)
             }
+            for shard in remoteShards.values {
+                candidateKeys.formUnion(shard.counts.keys)
+                if let prevLower, let rMap = shard.bigrams[prevLower] {
+                    candidateKeys.formUnion(rMap.keys)
+                }
+                if let bundleID, let rApp = shard.appVocabulary[bundleID] {
+                    candidateKeys.formUnion(rApp.keys)
+                }
+            }
 
             return candidateKeys.compactMap { key in
                 guard key.hasPrefix(lowerPrefix), key.count > lowerPrefix.count else {
                     return nil
                 }
-                var score = counts[key, default: 0] * Self.globalAcceptWeight
+                var score = mergedCountLocked(for: key) * Self.globalAcceptWeight
                 if customWords.contains(key) {
                     score += Self.customScoreSentinel
                 }
-                if let prevLower, let pairCount = bigrams[prevLower]?[key] {
-                    score += pairCount * Self.bigramWeight
+                if let prevLower {
+                    score += mergedBigramCountLocked(previous: prevLower, word: key) * Self.bigramWeight
                 }
-                if let bundleID, let appCount = appVocabulary[bundleID]?[key] {
-                    score += appCount * Self.appAffinityWeight
+                if let bundleID {
+                    score += mergedAppCountLocked(bundleID: bundleID, word: key) * Self.appAffinityWeight
                 }
                 guard score > 0 else { return nil }
                 return (customCasing[key] ?? key, score)
@@ -394,6 +520,14 @@ public final class UserHistoryStore {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(snapshot) {
             try? data.write(to: customURL, options: .atomic)
+        }
+    }
+
+    private func persistCustomMetaSnapshot(_ snapshot: [String: CustomWordSyncRecord]) {
+        let dir = customSyncMetaURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(snapshot) {
+            try? data.write(to: customSyncMetaURL, options: .atomic)
         }
     }
 

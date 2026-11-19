@@ -12,6 +12,7 @@ final class TypingEngine {
     let adaptiveStore: AdaptiveCorrectionStore
     let phrasePredictor: PhrasePredictor
     let keyStatsStore: KeyStatsStore
+    let syncEngine: SyncEngine
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
     private let overlay = GhostOverlayWindow()
@@ -291,6 +292,9 @@ final class TypingEngine {
 
     func flushAllTelemetry() {
         keyStatsStore.flushNow()
+        if syncEngine.statusSnapshot().isEnabled {
+            _ = syncEngine.syncNow()
+        }
     }
 
     var enableChromiumBridge: Bool {
@@ -320,6 +324,13 @@ final class TypingEngine {
         self.adaptiveStore = adaptiveStore
         self.phrasePredictor = phrasePredictor
         self.keyStatsStore = keyStatsStore
+        self.syncEngine = SyncEngine(
+            historyStore: historyStore,
+            adaptiveStore: adaptiveStore,
+            phrasePredictor: phrasePredictor,
+            habitTracker: habitTracker,
+            keyStatsStore: keyStatsStore
+        )
         self.inputGuard = inputGuard
         completer.habitTracker = habitTracker
         completer.adaptiveStore = adaptiveStore

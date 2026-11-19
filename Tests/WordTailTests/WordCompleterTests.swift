@@ -1054,4 +1054,129 @@ final class WordCompleterTests: XCTestCase {
             )
         )
     }
+
+    func testConflictFreeMultiDeviceSyncAcrossTwoMacsWithoutDoubleCounting() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailSyncTest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sharedSyncFolder = root.appendingPathComponent("iCloudWordTail", isDirectory: true)
+        let macADir = root.appendingPathComponent("MacA", isDirectory: true)
+        let macBDir = root.appendingPathComponent("MacB", isDirectory: true)
+        try FileManager.default.createDirectory(at: macADir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: macBDir, withIntermediateDirectories: true)
+
+        let fixedDate = Date(timeIntervalSince1970: 1_763_540_000)
+
+        let suiteA = "WordTailTestSuiteA-\(UUID().uuidString)"
+        let suiteB = "WordTailTestSuiteB-\(UUID().uuidString)"
+        let defaultsA = UserDefaults(suiteName: suiteA)!
+        let defaultsB = UserDefaults(suiteName: suiteB)!
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteA)
+            defaultsB.removePersistentDomain(forName: suiteB)
+        }
+
+        let histA = UserHistoryStore(fileURL: macADir.appendingPathComponent("accepted_words.json"))
+        let corrA = AdaptiveCorrectionStore(fileURL: macADir.appendingPathComponent("adaptive_corrections.json"))
+        let phrA = PhrasePredictor(fileURL: macADir.appendingPathComponent("learned_phrases.json"))
+        let habA = TypingHabitTracker(fileURL: macADir.appendingPathComponent("typing_insights.json"), nowProvider: { fixedDate })
+        let statsA = KeyStatsStore(fileURL: macADir.appendingPathComponent("key_stats.json"), nowProvider: { fixedDate })
+        let syncA = SyncEngine(
+            historyStore: histA,
+            adaptiveStore: corrA,
+            phrasePredictor: phrA,
+            habitTracker: habA,
+            keyStatsStore: statsA,
+            defaults: defaultsA,
+            overrideDeviceID: "mac-a-uuid",
+            localCacheURL: macADir.appendingPathComponent("remote_sync_cache.json")
+        )
+
+        let histB = UserHistoryStore(fileURL: macBDir.appendingPathComponent("accepted_words.json"))
+        let corrB = AdaptiveCorrectionStore(fileURL: macBDir.appendingPathComponent("adaptive_corrections.json"))
+        let phrB = PhrasePredictor(fileURL: macBDir.appendingPathComponent("learned_phrases.json"))
+        let habB = TypingHabitTracker(fileURL: macBDir.appendingPathComponent("typing_insights.json"), nowProvider: { fixedDate })
+        let statsB = KeyStatsStore(fileURL: macBDir.appendingPathComponent("key_stats.json"), nowProvider: { fixedDate })
+        let syncB = SyncEngine(
+            historyStore: histB,
+            adaptiveStore: corrB,
+            phrasePredictor: phrB,
+            habitTracker: habB,
+            keyStatsStore: statsB,
+            defaults: defaultsB,
+            overrideDeviceID: "mac-b-uuid",
+            localCacheURL: macBDir.appendingPathComponent("remote_sync_cache.json")
+        )
+
+        // Mac A activity: 4 keystrokes, 1 Tab acceptance, pinned brand "OpenClaw", shorthand "omw -> on my way",
+        // custom phrase "let me double check", and 1x mistype repair "recieve -> receive".
+        for _ in 0..<4 {
+            statsA.recordKeyDown(keyCode: 0, rawFlags: 0, isAutoRepeat: false, isSecureInput: false, isRomanLayout: true, appBundleID: "com.apple.Notes", appName: "Notes")
+        }
+        _ = habA.recordTabAccepted(fullWord: "quantitative", insertedText: "itative", previousWordFromContext: nil, bundleID: "com.apple.Notes", persistAsync: false)
+        XCTAssertTrue(histA.addCustomWord("OpenClaw", persistAsync: false))
+        XCTAssertTrue(corrA.addCustomRule(trigger: "omw", replacement: "on my way", persistAsync: false))
+        XCTAssertTrue(phrA.addCustomPhrase("let me double check", persistAsync: false))
+        corrA.recordObservedCorrection(mistype: "recieve", corrected: "receive", persistAsync: false)
+
+        // Mac B activity: 6 keystrokes, 2 Tab acceptances, and 1x mistype repair "recieve -> receive".
+        for _ in 0..<6 {
+            statsB.recordKeyDown(keyCode: 1, rawFlags: 0, isAutoRepeat: false, isSecureInput: false, isRomanLayout: true, appBundleID: "com.apple.mail", appName: "Mail")
+        }
+        _ = habB.recordTabAccepted(fullWord: "idempotent", insertedText: "potent", previousWordFromContext: nil, bundleID: "com.apple.mail", persistAsync: false)
+        _ = habB.recordTabAccepted(fullWord: "telemetry", insertedText: "metry", previousWordFromContext: nil, bundleID: "com.apple.mail", persistAsync: false)
+        corrB.recordObservedCorrection(mistype: "recieve", corrected: "receive", persistAsync: false)
+
+        // Sync Round 1 -> Round 2 -> Round 3 (proves idempotence & zero exponential double-counting!)
+        _ = syncA.enableSync(folderURL: sharedSyncFolder)
+        _ = syncB.enableSync(folderURL: sharedSyncFolder)
+        for _ in 0..<3 {
+            _ = syncA.syncNow()
+            _ = syncB.syncNow()
+        }
+
+        // 1. KeyStats sum cleanly: 4 (Mac A) + 6 (Mac B) == 10 on BOTH Macs, even after 3 repeated sync rounds!
+        XCTAssertEqual(statsA.snapshot(for: .today).totalKeyPresses, 10)
+        XCTAssertEqual(statsB.snapshot(for: .today).totalKeyPresses, 10)
+        XCTAssertEqual(syncA.statusSnapshot().syncedPeerCount, 1)
+        XCTAssertEqual(syncB.statusSnapshot().syncedPeerCount, 1)
+
+        // 2. Typing Insights sum cleanly: 1 (Mac A) + 2 (Mac B) == 3 Tabs accepted on BOTH Macs!
+        XCTAssertEqual(habA.snapshot().tabsAccepted, 3)
+        XCTAssertEqual(habB.snapshot().tabsAccepted, 3)
+
+        // 3. Custom words, shorthand rules, and custom phrases propagated to Mac B!
+        XCTAssertEqual(histB.customPinnedCasing(for: "openclaw"), "OpenClaw")
+        XCTAssertEqual(corrB.customOrLearnedReplacement(for: "omw"), "on my way")
+        XCTAssertEqual(phrB.predictAfterSpace(precedingWords: ["let", "me"]).first, "double check")
+
+        // 4. Cross-Mac learned typo graduation: 1x on Mac A + 1x on Mac B == 2x graduated on BOTH Macs!
+        XCTAssertEqual(corrA.customOrLearnedReplacement(for: "recieve"), "receive")
+        XCTAssertEqual(corrB.customOrLearnedReplacement(for: "recieve"), "receive")
+
+        // 5. Last-Write-Wins deletion tombstone: deleting "OpenClaw" and "omw" on Mac B removes them on Mac A after sync!
+        Thread.sleep(forTimeInterval: 0.02)
+        histB.removeWord("OpenClaw")
+        corrB.removeRuleOrUnmute(trigger: "omw")
+        _ = syncB.syncNow()
+        _ = syncA.syncNow()
+
+        XCTAssertNil(histA.customPinnedCasing(for: "openclaw"))
+        XCTAssertNil(corrA.customOrLearnedReplacement(for: "omw"))
+
+        // 6. Disconnecting sync on Mac B restores strictly local counts (6 keys on Mac B) without losing local data!
+        _ = syncB.disableSync()
+        XCTAssertEqual(statsB.snapshot(for: .today).totalKeyPresses, 6)
+        XCTAssertEqual(habB.snapshot().tabsAccepted, 2)
+    }
+
+    func testSemanticVersionComparatorForAutoUpdater() {
+        XCTAssertTrue(VersionComparator.isNewer(remote: "v0.6.1", current: "0.6.0"))
+        XCTAssertTrue(VersionComparator.isNewer(remote: "0.10.0", current: "0.6.9"))
+        XCTAssertTrue(VersionComparator.isNewer(remote: "v1.0.0", current: "0.9.9"))
+        XCTAssertFalse(VersionComparator.isNewer(remote: "v0.6.0", current: "0.6.0"))
+        XCTAssertFalse(VersionComparator.isNewer(remote: "0.5.6", current: "0.6.0"))
+        XCTAssertFalse(VersionComparator.isNewer(remote: "invalid", current: "0.6.0"))
+    }
 }

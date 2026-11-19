@@ -356,6 +356,7 @@ public final class KeyStatsStore {
     private let queue = DispatchQueue(label: "app.wordtail.macos.keystats", qos: .utility)
 
     private var days: [String: DailyKeyStatsRecord] = [:]
+    private var remoteDaysByDevice: [String: [String: DailyKeyStatsRecord]] = [:]
     private var modifierTracker = StandaloneModifierTapTracker()
     private var lastMousePoint: CGPoint?
     private var recentKeyTimestamps: [TimeInterval] = []
@@ -611,12 +612,42 @@ public final class KeyStatsStore {
         }
     }
 
+    // MARK: - Multi-Device Sync Shards
+
+    public func exportLocalDaysShard() -> [String: DailyKeyStatsRecord] {
+        queue.sync { days }
+    }
+
+    public func applyRemoteDeviceDays(_ shards: [String: [String: DailyKeyStatsRecord]]) {
+        queue.sync {
+            remoteDaysByDevice = shards
+        }
+    }
+
+    private func mergedDayLocked(forKey key: String) -> DailyKeyStatsRecord? {
+        var acc = days[key]
+        for deviceDays in remoteDaysByDevice.values {
+            if let remoteDay = deviceDays[key] {
+                acc = Self.mergeDay(existing: acc, incoming: remoteDay)
+            }
+        }
+        return acc
+    }
+
+    private func allKnownDayKeysLocked() -> [String] {
+        var keys = Set(days.keys)
+        for deviceDays in remoteDaysByDevice.values {
+            keys.formUnion(deviceDays.keys)
+        }
+        return Array(keys)
+    }
+
     // MARK: - Queries & Aggregation
 
     public func todayMenuBarCounts() -> (keys: Int, clicks: Int) {
         let (todayKey, _) = Self.dayKeyAndHour(for: nowProvider())
         return queue.sync {
-            guard let rec = days[todayKey] else { return (0, 0) }
+            guard let rec = mergedDayLocked(forKey: todayKey) else { return (0, 0) }
             return (rec.keyPresses, rec.totalClicks)
         }
     }
@@ -648,7 +679,7 @@ public final class KeyStatsStore {
             var mergedApps: [String: AppActivityRecord] = [:]
 
             for key in includedKeys {
-                guard let day = days[key] else { continue }
+                guard let day = mergedDayLocked(forKey: key) else { continue }
                 if day.keyPresses > 0 || day.totalClicks > 0 {
                     activeDays += 1
                 }
@@ -733,7 +764,7 @@ public final class KeyStatsStore {
             for offset in stride(from: -97, through: 0, by: 1) {
                 if let d = calendar.date(byAdding: .day, value: offset, to: startOfToday) {
                     let (k, _) = Self.dayKeyAndHour(for: d)
-                    let rec = days[k]
+                    let rec = mergedDayLocked(forKey: k)
                     calDays.append(CalendarActivityDay(
                         dateKey: k,
                         keyPresses: rec?.keyPresses ?? 0,
@@ -870,7 +901,7 @@ public final class KeyStatsStore {
         case .days30:
             return Self.recentDayKeys(count: 30, referenceDate: referenceDate)
         case .allTime:
-            return Array(days.keys)
+            return allKnownDayKeysLocked()
         }
     }
 
