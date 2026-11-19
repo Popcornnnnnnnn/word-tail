@@ -709,12 +709,14 @@ final class AXCaretContext {
             return (nil, false)
         }
 
+        let expectedNorm = ObviousTypoCorrector.normalizeApostrophes(expectedTrailingWord).lowercased()
+
         // 1. Standard O(1) windowed AXStringForRange + AXSelectedTextRange (with AXValue fallback)
         if let selectedRange = copySelectedRange(element), selectedRange.length == 0 {
             let windowStart = max(0, selectedRange.location - 120)
             let beforeLen = selectedRange.location - windowStart
             if beforeLen > 0, let slice = stringForRange(element, location: windowStart, length: beforeLen),
-               slice.lowercased().hasSuffix(expectedTrailingWord.lowercased()) {
+               ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
                 let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
                 return (slice, docStart)
             }
@@ -722,7 +724,7 @@ final class AXCaretContext {
                 let ns = fullValue as NSString
                 if selectedRange.location <= ns.length {
                     let slice = ns.substring(with: NSRange(location: windowStart, length: beforeLen))
-                    if slice.lowercased().hasSuffix(expectedTrailingWord.lowercased()) {
+                    if ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
                         let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
                         return (slice, docStart)
                     }
@@ -736,7 +738,7 @@ final class AXCaretContext {
            let markerRangeRef {
             let endMarker = AXTextMarkerRangeCopyEndMarker(markerRangeRef as! AXTextMarkerRange)
             if let resolved = readBoundedMarkerContext(element: element, endMarker: endMarker),
-               resolved.prefix.lowercased().hasSuffix(expectedTrailingWord.lowercased()) {
+               ObviousTypoCorrector.normalizeApostrophes(resolved.prefix).lowercased().hasSuffix(expectedNorm) {
                 return (resolved.prefix, resolved.isAtDocumentStart)
             }
         }
@@ -855,7 +857,8 @@ final class AXCaretContext {
         var wordStart = chars.count
         while wordStart > 0 {
             let ch = chars[wordStart - 1]
-            if (ch.isASCII && ch.isLetter) || (ch == "'" && wordStart >= 2 && chars[wordStart - 2].isASCII && chars[wordStart - 2].isLetter) {
+            if (ch.isASCII && ch.isLetter)
+                || (ObviousTypoCorrector.isApostrophe(ch) && wordStart >= 2 && chars[wordStart - 2].isASCII && chars[wordStart - 2].isLetter) {
                 wordStart -= 1
             } else {
                 break

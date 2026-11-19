@@ -793,5 +793,59 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertNil(
             ObviousTypoCorrector.spaceAutoCorrection(forWord: "cuda", adaptiveStore: nil, habitTracker: nil, historyStore: nil)
         )
+
+        // 5. Contractions & possessives with typed ASCII `'` or Smart Quote `’` at sentence start ("This should be ok? this's" -> "This's")
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "this's",
+                lineContextIncludingWord: "This should be ok? this's",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "This's"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "this's",
+                lineContextIncludingWord: "This should be ok? this’s",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "This's"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "don't",
+                lineContextIncludingWord: "don't",
+                isAtDocumentStart: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Don't"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "today's",
+                lineContextIncludingWord: "Done! today's",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Today's"
+        )
     }
 }

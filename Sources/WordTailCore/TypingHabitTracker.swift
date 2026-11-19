@@ -208,7 +208,7 @@ public final class TypingHabitTracker {
     private static var spellValidityCache: [String: Bool] = [:]
 
     public static func defaultValidEnglishWordCheck(_ rawWord: String) -> Bool {
-        let lower = rawWord.lowercased()
+        let lower = rawWord.replacingOccurrences(of: "’", with: "'").lowercased()
         guard lower.count >= 3, lower.count <= 28,
               lower.allSatisfy({ ($0.isASCII && $0.isLetter) || $0 == "'" }) else {
             return false

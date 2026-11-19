@@ -921,7 +921,10 @@ final class TypingEngine {
                         if rollingBuffer.count > 80 {
                             rollingBuffer = String(rollingBuffer.suffix(80))
                         }
-                        if let lineCtx, lineCtx.lowercased().hasSuffix(typedWord.lowercased()) {
+                        if let lineCtx,
+                           ObviousTypoCorrector.normalizeApostrophes(lineCtx).lowercased().hasSuffix(
+                               ObviousTypoCorrector.normalizeApostrophes(typedWord).lowercased()
+                           ) {
                             lastCapturedLineText = String(lineCtx.dropLast(typedWord.count)) + replacement + " "
                         }
                         pendingSpaceUndo = PendingSpaceUndo(originalWord: typedWord, replacedWith: replacement)
@@ -1002,7 +1005,7 @@ final class TypingEngine {
                 }
             }
 
-            if let last = typed.last, (last.isLetter && last.isASCII) || last == "'" {
+            if let last = typed.last, (last.isLetter && last.isASCII) || last == "'" || last == "’" {
                 if rollingBuffer.count == 1 && lastCapturedLineText == nil {
                     DispatchQueue.main.async { [weak self] in
                         self?.primeLineContextSnapshot()
@@ -1196,8 +1199,8 @@ final class TypingEngine {
         guard let snap = lastCapturedLineText else {
             return nil
         }
-        let lowerSnap = snap.lowercased()
-        let lowerWord = typedWord.lowercased()
+        let lowerSnap = ObviousTypoCorrector.normalizeApostrophes(snap).lowercased()
+        let lowerWord = ObviousTypoCorrector.normalizeApostrophes(typedWord).lowercased()
         if lowerSnap.hasSuffix(lowerWord) {
             return String(snap.dropLast(typedWord.count)) + typedWord
         }

@@ -471,6 +471,46 @@ public enum ObviousTypoCorrector {
         return MinimalDiffEdit(deleteCount: deleteCount, insertText: insertText)
     }
 
+    public static func isApostrophe(_ ch: Character) -> Bool {
+        ch == "'" || ch == "’"
+    }
+
+    public static func normalizeApostrophes(_ text: String) -> String {
+        text.contains("’") ? text.replacingOccurrences(of: "’", with: "'") : text
+    }
+
+    public static func isValidSentenceStarterWord(
+        _ rawWord: String,
+        validWordChecker: (String) -> Bool = TypingHabitTracker.defaultValidEnglishWordCheck
+    ) -> Bool {
+        let lower = normalizeApostrophes(rawWord).lowercased()
+        guard !lower.isEmpty else { return false }
+        if validShortEnglishWords.contains(lower)
+            || validWordChecker(lower)
+            || TechLexicon.wordSet.contains(lower) {
+            return true
+        }
+        // Contractions & possessives ("this's", "that's", "don't", "doesn't", "today's", "that'll"):
+        // Validate the base stem BEFORE the apostrophe instead of deleting "'" into invalid "thiss"/"todays"!
+        if lower.contains("'") {
+            for clitic in ["'s", "'d", "'ll", "'re", "'ve", "'m"] where lower.hasSuffix(clitic) {
+                let stem = String(lower.dropLast(clitic.count))
+                if validShortEnglishWords.contains(stem)
+                    || validWordChecker(stem)
+                    || TechLexicon.wordSet.contains(stem) {
+                    return true
+                }
+            }
+            if lower.hasSuffix("n't") {
+                let stem = String(lower.dropLast(3))
+                if validShortEnglishWords.contains(stem) || validWordChecker(stem) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     /// Unified `Space`-key transformation combining user/learned rules, high-confidence typo & contraction patterns,
     /// context-aware `"lets"` -> `"Let's"`, and sentence-start / standalone-"I" auto-capitalization.
     public static func spaceReplacement(
@@ -485,7 +525,7 @@ public enum ObviousTypoCorrector {
         validWordChecker: (String) -> Bool = TypingHabitTracker.defaultValidEnglishWordCheck
     ) -> String? {
         guard !word.isEmpty, word.count <= 24 else { return nil }
-        guard word.allSatisfy({ ($0.isASCII && $0.isLetter) || $0 == "'" }) else { return nil }
+        guard word.allSatisfy({ ($0.isASCII && $0.isLetter) || isApostrophe($0) }) else { return nil }
 
         // Never alter camelCase / mixedCase ("macOS", "iPhone", "useState") or ALL-CAPS ("API", "HTTP")
         if word.dropFirst().contains(where: \.isUppercase) {
@@ -495,7 +535,7 @@ public enum ObviousTypoCorrector {
             return nil
         }
 
-        let lower = word.lowercased()
+        let lower = normalizeApostrophes(word).lowercased()
         let atSentenceStart = isWordAtSentenceStart(
             word: word,
             inContextBeforeCursor: lineContextIncludingWord,
@@ -541,11 +581,8 @@ public enum ObviousTypoCorrector {
                 working = "I"
             } else if let first = working.first, first.isLowercase, atSentenceStart {
                 let firstWordPart = String(working.split(separator: " ").first ?? Substring(working))
-                let baseCheck = firstWordPart.replacingOccurrences(of: "'", with: "").lowercased()
                 let isRealWord = (working != word)
-                    || validShortEnglishWords.contains(baseCheck)
-                    || validWordChecker(baseCheck)
-                    || TechLexicon.wordSet.contains(baseCheck)
+                    || isValidSentenceStarterWord(firstWordPart, validWordChecker: validWordChecker)
                 if isRealWord {
                     working = working.prefix(1).uppercased() + working.dropFirst()
                 }
@@ -566,11 +603,11 @@ public enum ObviousTypoCorrector {
         adaptiveStore: AdaptiveCorrectionStore? = nil
     ) -> Bool {
         guard !word.isEmpty, word.count <= 24 else { return false }
-        guard word.allSatisfy({ ($0.isASCII && $0.isLetter) || $0 == "'" }) else { return false }
+        guard word.allSatisfy({ ($0.isASCII && $0.isLetter) || isApostrophe($0) }) else { return false }
         if word.dropFirst().contains(where: \.isUppercase) { return false }
         if word.count >= 2 && word.allSatisfy({ !$0.isLetter || $0.isUppercase }) { return false }
 
-        let lower = word.lowercased()
+        let lower = normalizeApostrophes(word).lowercased()
         if lower == "i" { return false } // "i" -> "I" unconditionally regardless of sentence position!
         if !autoCapitalizeSentences && !(autoCorrectTypos && lower == "lets") {
             return false
@@ -592,8 +629,10 @@ public enum ObviousTypoCorrector {
     }
 
     public static func hasConfirmedMidSentencePredecessor(forWord word: String, inBuffer buffer: String) -> Bool {
-        guard buffer.count > word.count + 1,
-              buffer.lowercased().hasSuffix(word.lowercased()) else {
+        let normBuf = normalizeApostrophes(buffer).lowercased()
+        let normWord = normalizeApostrophes(word).lowercased()
+        guard normBuf.count > normWord.count + 1,
+              normBuf.hasSuffix(normWord) else {
             return false
         }
         let chars = Array(buffer.dropLast(word.count))
@@ -624,7 +663,7 @@ public enum ObviousTypoCorrector {
         guard let context, !context.isEmpty else {
             return false
         }
-        guard context.lowercased().hasSuffix(word.lowercased()) else {
+        guard normalizeApostrophes(context).lowercased().hasSuffix(normalizeApostrophes(word).lowercased()) else {
             return false
         }
 
@@ -906,7 +945,7 @@ public enum ObviousTypoCorrector {
         var start = chars.count
         while start > 0 {
             let ch = chars[start - 1]
-            if (ch.isASCII && ch.isLetter) || (ch == "'" && start >= 2 && chars[start - 2].isASCII && chars[start - 2].isLetter) {
+            if (ch.isASCII && ch.isLetter) || (isApostrophe(ch) && start >= 2 && chars[start - 2].isASCII && chars[start - 2].isLetter) {
                 start -= 1
             } else {
                 break
@@ -923,7 +962,7 @@ public enum ObviousTypoCorrector {
 
     private static func isEligibleTypoToken(_ token: String, minLength: Int, historyStore: UserHistoryStore?) -> Bool {
         guard token.count >= minLength, token.count <= 24 else { return false }
-        guard token.allSatisfy({ ($0.isASCII && $0.isLetter) || $0 == "'" }) else { return false }
+        guard token.allSatisfy({ ($0.isASCII && $0.isLetter) || isApostrophe($0) }) else { return false }
 
         if token.count >= 2 && token.allSatisfy({ !$0.isLetter || $0.isUppercase }) {
             return false
@@ -932,7 +971,7 @@ public enum ObviousTypoCorrector {
             return false
         }
 
-        let lower = token.lowercased()
+        let lower = normalizeApostrophes(token).lowercased()
         if developerSafeWords.contains(lower) || TechLexicon.wordSet.contains(lower) {
             return false
         }
