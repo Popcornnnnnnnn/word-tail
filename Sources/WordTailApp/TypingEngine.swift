@@ -9,21 +9,26 @@ final class TypingEngine {
     private let completer: WordCompleter
     private let historyStore: UserHistoryStore
     private let habitTracker: TypingHabitTracker
+    let keyStatsStore: KeyStatsStore
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
     private let overlay = GhostOverlayWindow()
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var telemetryTap: CFMachPort?
+    private var telemetryRunLoopSource: CFRunLoopSource?
     private var debounceWorkItem: DispatchWorkItem?
     private var rollingBuffer: String = ""
     private var lastObservedBundleID: String?
+    private var lastObservedAppName: String?
     private var lastKnownRomanLayout: Bool = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
 
     private var activeCandidates: [CompletionMatch] = []
     private var activeCandidateIndex: Int = 0
     private var activeSnapshot: CaretSnapshot?
     private var activeBundleID: String?
+    private var activeAppName: String?
 
     private struct PinnedLiveSample {
         let bundleID: String
@@ -201,6 +206,30 @@ final class TypingEngine {
         historyStore.clearContextualHabitsOnly()
     }
 
+    var enableKeyStatsTracking: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "WordTailEnableKeyStats") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "WordTailEnableKeyStats")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailEnableKeyStats")
+        }
+    }
+
+    var showMenuBarKeyCount: Bool {
+        get { UserDefaults.standard.bool(forKey: "WordTailShowMenuBarKeyCount") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailShowMenuBarKeyCount")
+            onStateChanged?()
+        }
+    }
+
+    func flushAllTelemetry() {
+        keyStatsStore.flushNow()
+    }
+
     var enableChromiumBridge: Bool {
         get {
             if UserDefaults.standard.object(forKey: "WordTailChromiumBridge") == nil {
@@ -217,13 +246,20 @@ final class TypingEngine {
         completer: WordCompleter,
         historyStore: UserHistoryStore,
         habitTracker: TypingHabitTracker = TypingHabitTracker(),
+        keyStatsStore: KeyStatsStore = KeyStatsStore(),
         inputGuard: InputGuard
     ) {
         self.completer = completer
         self.historyStore = historyStore
         self.habitTracker = habitTracker
+        self.keyStatsStore = keyStatsStore
         self.inputGuard = inputGuard
         completer.habitTracker = habitTracker
+        if let front = NSWorkspace.shared.frontmostApplication,
+           front.bundleIdentifier != Bundle.main.bundleIdentifier {
+            self.lastObservedBundleID = front.bundleIdentifier
+            self.lastObservedAppName = front.localizedName
+        }
         if UserDefaults.standard.object(forKey: "WordTailMinPrefix") != nil {
             completer.minimumPrefixLength = max(2, UserDefaults.standard.integer(forKey: "WordTailMinPrefix"))
         }
@@ -249,6 +285,8 @@ final class TypingEngine {
 
     @discardableResult
     func start() -> Bool {
+        startPassiveTelemetryTapIfNeeded()
+
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
             warmUpRunningFrontApps()
@@ -295,8 +333,126 @@ final class TypingEngine {
 
     func stop() {
         dismissOverlay(clearBuffer: true)
+        keyStatsStore.flushNow()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
+        }
+        if let tTap = telemetryTap {
+            CGEvent.tapEnable(tap: tTap, enable: false)
+        }
+    }
+
+    /// Separate `.listenOnly` passive tap for KeyStats telemetry (mouse distance, scroll, clicks, modifiers, key heatmap)
+    /// so high-frequency 120Hz–1000Hz mouse movements never wait on the active key-interception tap.
+    private func startPassiveTelemetryTapIfNeeded() {
+        if let tTap = telemetryTap {
+            CGEvent.tapEnable(tap: tTap, enable: true)
+            return
+        }
+
+        let mask: CGEventMask =
+            (1 << CGEventType.keyDown.rawValue) |
+            (1 << CGEventType.flagsChanged.rawValue) |
+            (1 << CGEventType.leftMouseDown.rawValue) |
+            (1 << CGEventType.rightMouseDown.rawValue) |
+            (1 << CGEventType.otherMouseDown.rawValue) |
+            (1 << CGEventType.mouseMoved.rawValue) |
+            (1 << CGEventType.leftMouseDragged.rawValue) |
+            (1 << CGEventType.rightMouseDragged.rawValue) |
+            (1 << CGEventType.scrollWheel.rawValue)
+
+        let userInfo = Unmanaged.passUnretained(self).toOpaque()
+        guard let tTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .tailAppendEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: { _, type, event, refcon -> Unmanaged<CGEvent>? in
+                guard let refcon else { return Unmanaged.passUnretained(event) }
+                let engine = Unmanaged<TypingEngine>.fromOpaque(refcon).takeUnretainedValue()
+                engine.handlePassiveTelemetryEvent(type: type, event: event)
+                return Unmanaged.passUnretained(event)
+            },
+            userInfo: userInfo
+        ) else {
+            return
+        }
+
+        telemetryTap = tTap
+        let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tTap, 0)
+        telemetryRunLoopSource = src
+        CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
+        CGEvent.tapEnable(tap: tTap, enable: true)
+    }
+
+    private func handlePassiveTelemetryEvent(type: CGEventType, event: CGEvent) {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tTap = telemetryTap {
+                CGEvent.tapEnable(tap: tTap, enable: true)
+            }
+            return
+        }
+        guard enableKeyStatsTracking else { return }
+        if event.getIntegerValueField(.eventSourceUserData) == Self.injectedEventTag {
+            return
+        }
+
+        let bid = activeBundleID ?? lastObservedBundleID
+        let appName = activeAppName ?? lastObservedAppName
+
+        switch type {
+        case .mouseMoved, .leftMouseDragged, .rightMouseDragged:
+            keyStatsStore.recordMouseMove(to: event.location)
+
+        case .leftMouseDown:
+            keyStatsStore.recordMouseClick(button: .left, appBundleID: bid, appName: appName)
+
+        case .rightMouseDown:
+            keyStatsStore.recordMouseClick(button: .right, appBundleID: bid, appName: appName)
+
+        case .otherMouseDown:
+            let btnNum = event.getIntegerValueField(.mouseEventButtonNumber)
+            let kind: MouseButtonKind
+            switch btnNum {
+            case 3: kind = .sideBack
+            case 4: kind = .sideForward
+            default: kind = .middle
+            }
+            keyStatsStore.recordMouseClick(button: kind, appBundleID: bid, appName: appName)
+
+        case .scrollWheel:
+            let dy = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)
+            let dx = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis2)
+            let fallbackDY = dy == 0 ? event.getDoubleValueField(.scrollWheelEventDeltaAxis1) * 10.0 : dy
+            let fallbackDX = dx == 0 ? event.getDoubleValueField(.scrollWheelEventDeltaAxis2) * 10.0 : dx
+            keyStatsStore.recordScroll(deltaX: fallbackDX, deltaY: fallbackDY, appBundleID: bid, appName: appName)
+
+        case .keyDown:
+            let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+            let autoRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            keyStatsStore.recordKeyDown(
+                keyCode: keyCode,
+                rawFlags: event.flags.rawValue,
+                isAutoRepeat: autoRepeat,
+                isSecureInput: IsSecureEventInputEnabled(),
+                isRomanLayout: lastKnownRomanLayout,
+                appBundleID: bid,
+                appName: appName
+            )
+
+        case .flagsChanged:
+            let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+            keyStatsStore.recordFlagsChanged(
+                keyCode: keyCode,
+                rawFlags: event.flags.rawValue,
+                isSecureInput: IsSecureEventInputEnabled(),
+                isRomanLayout: lastKnownRomanLayout,
+                appBundleID: bid,
+                appName: appName
+            )
+
+        default:
+            break
         }
     }
 
@@ -313,6 +469,9 @@ final class TypingEngine {
             }
             self.lastLiveSample = nil
             self.lastObservedBundleID = app?.bundleIdentifier
+            self.lastObservedAppName = app?.localizedName
+            self.activeBundleID = app?.bundleIdentifier
+            self.activeAppName = app?.localizedName
             self.habitTracker.resetSessionContext()
             self.dismissOverlay(clearBuffer: true)
             if let app {
@@ -434,6 +593,7 @@ final class TypingEngine {
                 ? activeCandidates[activeCandidateIndex].previousWord
                 : nil
             let acceptedBundle = activeBundleID ?? lastObservedBundleID
+            let acceptedAppName = activeAppName ?? lastObservedAppName
             let shouldAddSpace = appendSpaceOnAccept && WordCompleter.shouldAppendTrailingSpace(charAfterCursor: charAfter)
             let textToInsert = shouldAddSpace ? (suffix + " ") : suffix
 
@@ -448,6 +608,13 @@ final class TypingEngine {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.injectUnicodeString(textToInsert)
+                if self.enableKeyStatsTracking {
+                    self.keyStatsStore.recordWordTailCompletion(
+                        charsSaved: textToInsert.count,
+                        appBundleID: acceptedBundle,
+                        appName: acceptedAppName
+                    )
+                }
                 let learnContext = self.enableHabitLearning
                 let outcome = learnContext
                     ? self.habitTracker.recordTabAccepted(
@@ -554,6 +721,7 @@ final class TypingEngine {
             return
         }
         activeBundleID = frontBundle
+        activeAppName = targetApp?.localizedName
         guard inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle) else {
             overlay.hide()
             return

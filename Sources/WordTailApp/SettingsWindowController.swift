@@ -56,6 +56,7 @@ private enum LinearUI {
 
 enum SettingsSection: String, CaseIterable, Identifiable {
     case calibration = "Calibration"
+    case keyStats = "KeyStats"
     case insights = "Insights"
     case dictionary = "Dictionary"
     case preferences = "Preferences"
@@ -64,6 +65,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .calibration: return "slider.horizontal.3"
+        case .keyStats: return "keyboard"
         case .insights: return "chart.bar.xaxis"
         case .dictionary: return "character.book.closed"
         case .preferences: return "switch.2"
@@ -135,6 +137,21 @@ final class SettingsViewModel: ObservableObject {
         didSet {
             guard !isRefreshing, !isStaticShowcase else { return }
             engine?.enableHabitLearning = enableHabitLearning
+        }
+    }
+
+    @Published var enableKeyStatsTracking: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enableKeyStatsTracking = enableKeyStatsTracking
+        }
+    }
+
+    @Published var showMenuBarKeyCount: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.showMenuBarKeyCount = showMenuBarKeyCount
+            onStateChange()
         }
     }
 
@@ -211,6 +228,14 @@ final class SettingsViewModel: ObservableObject {
     @Published var newCustomWordInput: String = ""
     @Published var insights: TypingInsightsSnapshot = TypingInsightsSnapshot()
     @Published var learnedBigrams: [BigramHabitEntry] = []
+    @Published var keyStatsRange: StatsTimeRange = .today {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            refreshKeyStats()
+        }
+    }
+    @Published var keyStats: KeyStatsAggregateSnapshot = KeyStatsAggregateSnapshot()
+    @Published var showcaseAppIcons: [String: NSImage] = [:]
 
     private var isRefreshing = false
 
@@ -227,6 +252,8 @@ final class SettingsViewModel: ObservableObject {
         self.ghostOpacity = Double(engine.ghostOpacity)
         self.appendSpaceOnAccept = engine.appendSpaceOnAccept
         self.enableHabitLearning = engine.enableHabitLearning
+        self.enableKeyStatsTracking = engine.enableKeyStatsTracking
+        self.showMenuBarKeyCount = engine.showMenuBarKeyCount
         self.enableTechLexicon = engine.enableTechLexicon
         self.enableGlobalHotkey = engine.enableGlobalHotkey
         self.minPrefix = engine.minimumPrefixLength
@@ -247,7 +274,9 @@ final class SettingsViewModel: ObservableObject {
         appOffsets: [AppOffsetItem],
         insights: TypingInsightsSnapshot,
         bigrams: [BigramHabitEntry],
-        vocabulary: [VocabularyEntry]
+        vocabulary: [VocabularyEntry],
+        keyStats: KeyStatsAggregateSnapshot = KeyStatsAggregateSnapshot(),
+        showcaseAppIcons: [String: NSImage] = [:]
     ) {
         self.engine = nil
         self.onStateChange = {}
@@ -259,6 +288,8 @@ final class SettingsViewModel: ObservableObject {
         self.ghostOpacity = 0.38
         self.appendSpaceOnAccept = true
         self.enableHabitLearning = true
+        self.enableKeyStatsTracking = true
+        self.showMenuBarKeyCount = true
         self.enableTechLexicon = true
         self.enableGlobalHotkey = true
         self.minPrefix = 2
@@ -273,6 +304,9 @@ final class SettingsViewModel: ObservableObject {
         self.insights = insights
         self.learnedBigrams = bigrams
         self.vocabularyEntries = vocabulary
+        self.keyStatsRange = keyStats.range
+        self.keyStats = keyStats
+        self.showcaseAppIcons = showcaseAppIcons
     }
 
     func refresh(currentApp: (name: String, bundleID: String)?) {
@@ -286,6 +320,8 @@ final class SettingsViewModel: ObservableObject {
         ghostOpacity = Double(engine.ghostOpacity)
         appendSpaceOnAccept = engine.appendSpaceOnAccept
         enableHabitLearning = engine.enableHabitLearning
+        enableKeyStatsTracking = engine.enableKeyStatsTracking
+        showMenuBarKeyCount = engine.showMenuBarKeyCount
         enableTechLexicon = engine.enableTechLexicon
         enableGlobalHotkey = engine.enableGlobalHotkey
         minPrefix = engine.minimumPrefixLength
@@ -300,6 +336,7 @@ final class SettingsViewModel: ObservableObject {
         vocabularyEntries = engine.vocabularyEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
 
         var runningNames: [String: String] = [:]
         for app in NSWorkspace.shared.runningApplications where Self.isUserFacingRunningApp(app) {
@@ -352,6 +389,7 @@ final class SettingsViewModel: ObservableObject {
         guard let engine, !isStaticShowcase else { return }
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
     }
 
     func clearInsights() {
@@ -359,6 +397,55 @@ final class SettingsViewModel: ObservableObject {
         engine.clearInsightsAndContextualHabits()
         insights = engine.insightsSnapshot()
         learnedBigrams = []
+    }
+
+    func refreshKeyStats() {
+        guard let engine, !isStaticShowcase else { return }
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+    }
+
+    func clearKeyStats() {
+        guard let engine, !isStaticShowcase else { return }
+        engine.keyStatsStore.clearAll()
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        onStateChange()
+    }
+
+    func exportKeyStatsJSON() {
+        guard let engine, !isStaticShowcase else { return }
+        engine.keyStatsStore.flushNow()
+        let panel = NSSavePanel()
+        panel.title = "Export KeyStats Data"
+        panel.allowedContentTypes = [.json]
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        panel.nameFieldStringValue = "wordtail-keystats-\(formatter.string(from: Date())).json"
+        if panel.runModal() == .OK, let url = panel.url {
+            if let data = try? engine.keyStatsStore.exportJSONData() {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
+    func importKeyStatsJSON() {
+        guard let engine, !isStaticShowcase else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Import KeyStats or WordTail JSON"
+        panel.message = "Supports both WordTail archives and KeyStats export JSON files."
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
+            _ = try? engine.keyStatsStore.importJSONData(data, merge: true)
+            refreshKeyStats()
+            onStateChange()
+        }
+    }
+
+    func resolvedAppIcon(bundleID: String) -> NSImage {
+        if let custom = showcaseAppIcons[bundleID] {
+            return custom
+        }
+        return Self.appIcon(forBundleID: bundleID)
     }
 
     func updateOffset(for bundleID: String, to newValue: Double) {
@@ -520,6 +607,8 @@ private struct LinearKbd: View {
     var body: some View {
         Text(label)
             .font(.system(size: 10.5, weight: .medium, design: .rounded))
+            .lineLimit(1)
+            .fixedSize()
             .foregroundStyle(.secondary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
@@ -729,6 +818,8 @@ private struct LinearSegmentedChoices<T: Hashable>: View {
                 } label: {
                     Text(opt.label)
                         .font(.system(size: 11.5, weight: active ? .semibold : .regular))
+                        .lineLimit(1)
+                        .fixedSize()
                         .foregroundStyle(active ? .primary : .secondary)
                         .padding(.horizontal, 10)
                         .frame(height: 22)
@@ -744,6 +835,7 @@ private struct LinearSegmentedChoices<T: Hashable>: View {
             }
         }
         .padding(2)
+        .fixedSize()
         .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -788,7 +880,7 @@ struct SettingsView: View {
                 .frame(width: 1)
             detailPane
         }
-        .frame(width: 680, height: 490)
+        .frame(width: 740, height: 548)
         .background(LinearUI.windowBg(scheme))
     }
 
@@ -829,6 +921,8 @@ struct SettingsView: View {
                     ) {
                         if section == .insights {
                             vm.refreshInsights()
+                        } else if section == .keyStats {
+                            vm.refreshKeyStats()
                         }
                         vm.selectedSection = section
                     }
@@ -884,6 +978,8 @@ struct SettingsView: View {
             switch vm.selectedSection {
             case .calibration:
                 calibrationContent
+            case .keyStats:
+                keyStatsContent
             case .insights:
                 insightsContent
             case .dictionary:
@@ -1090,6 +1186,166 @@ struct SettingsView: View {
                         .frame(height: 46)
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: KeyStats Section
+
+    private var keyStatsContent: some View {
+        let ks = vm.keyStats
+        return VStack(alignment: .leading, spacing: 15) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("KeyStats")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("100% local activity")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+
+                LinearSegmentedChoices(
+                    options: [
+                        ("Today", StatsTimeRange.today),
+                        ("7D", StatsTimeRange.days7),
+                        ("30D", StatsTimeRange.days30),
+                        ("All", StatsTimeRange.allTime)
+                    ],
+                    selection: $vm.keyStatsRange
+                )
+
+                LinearActionButton(title: "Import", icon: "square.and.arrow.down") {
+                    vm.importKeyStatsJSON()
+                }
+                LinearActionButton(title: "Export", icon: "square.and.arrow.up") {
+                    vm.exportKeyStatsJSON()
+                }
+            }
+
+            // 4 Hardware KPI Cards
+            HStack(spacing: 8) {
+                LinearMetricTile(
+                    label: "KEYSTROKES",
+                    value: KeyStatsAggregateSnapshot.formatCompactCount(ks.totalKeyPresses),
+                    subtitle: "\(ks.peakKPS) KPS · \(ks.leftHandPercent):\(100 - ks.leftHandPercent) L/R"
+                )
+                LinearMetricTile(
+                    label: "CLICKS & STYLE",
+                    value: KeyStatsAggregateSnapshot.formatCompactCount(ks.totalClicks),
+                    subtitle: "\(ks.inputStyleLabel) · \(String(format: "%.1f", ks.keyToClickRatio)):1 K/C"
+                )
+                LinearMetricTile(
+                    label: "MOUSE TRAVEL",
+                    value: KeyStatsAggregateSnapshot.formatDistance(ks.mouseDistanceMeters),
+                    subtitle: String(format: "%.2f Marathons", ks.marathonsEquivalent)
+                )
+                LinearMetricTile(
+                    label: "SCROLL TRAVEL",
+                    value: KeyStatsAggregateSnapshot.formatDistance(ks.scrollDistanceMeters),
+                    subtitle: String(format: "%.2f Everests", ks.everestsEquivalent)
+                )
+            }
+
+            // Interactive 65-Key MacBook ANSI Keyboard Heatmap
+            VStack(alignment: .leading, spacing: 6) {
+                ANSIKeyboardHeatmapView(
+                    heatmap: ks.keyHeatmap,
+                    totalKeys: ks.totalKeyPresses,
+                    englishPercent: ks.englishKeyPercent
+                )
+            }
+
+            // Bottom 2-Column Breakdown: Per-App Activity + Shortcuts & Calendar Heatmap
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
+                    LinearSectionHeader(
+                        title: "App Activity",
+                        subtitle: "Keys, clicks & scroll across all apps"
+                    )
+
+                    LinearCard {
+                        if ks.topApps.isEmpty {
+                            Text("App activity appears automatically as you type, click, and scroll.")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                        } else {
+                            ForEach(Array(ks.topApps.prefix(5).enumerated()), id: \.element.id) { idx, app in
+                                if idx > 0 {
+                                    Rectangle()
+                                        .fill(LinearUI.hairline(scheme))
+                                        .frame(height: 1)
+                                        .padding(.leading, 36)
+                                }
+                                HStack(spacing: 8) {
+                                    Image(nsImage: vm.resolvedAppIcon(bundleID: app.bundleID))
+                                        .resizable()
+                                        .frame(width: 18, height: 18)
+                                    Text(app.displayName)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text("\(KeyStatsAggregateSnapshot.formatCompactCount(app.keyPresses)) · \(KeyStatsAggregateSnapshot.formatCompactCount(app.clicks))c")
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 31)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        LinearSectionHeader(
+                            title: "Shortcuts & 14-Week Activity",
+                            subtitle: "\(ks.activeDays) active day\(ks.activeDays == 1 ? "" : "s") · Max \(KeyStatsAggregateSnapshot.formatCompactCount(ks.maxDailyKeys)) keys/day"
+                        )
+                        Spacer()
+                        if ks.totalKeyPresses > 0 || ks.totalClicks > 0 {
+                            LinearIconButton(symbol: "trash", helpText: "Reset KeyStats history") {
+                                vm.clearKeyStats()
+                            }
+                        }
+                    }
+
+                    LinearCard {
+                        CalendarContributionGrid(days: ks.calendarDays)
+                            .padding(.horizontal, 12)
+                            .padding(.top, 10)
+                            .padding(.bottom, 8)
+
+                        if !ks.topShortcuts.isEmpty {
+                            Rectangle()
+                                .fill(LinearUI.hairline(scheme))
+                                .frame(height: 1)
+
+                            HStack(spacing: 5) {
+                                ForEach(ks.topShortcuts.prefix(4)) { item in
+                                    HStack(spacing: 2.5) {
+                                        LinearKbd(label: item.label)
+                                        Text("\(KeyStatsAggregateSnapshot.formatCompactCount(item.count))")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .fixedSize()
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 32)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -1541,6 +1797,25 @@ struct SettingsView: View {
                     }
                     .padding(.horizontal, 14)
                     .frame(height: 46)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Show Today’s Keystrokes in Menu Bar")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Displays a compact live counter (e.g. 4.2k) beside the menu bar icon")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.showMenuBarKeyCount)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 50)
                 }
             }
 
@@ -1549,6 +1824,24 @@ struct SettingsView: View {
                 LinearSectionHeader(title: "System")
 
                 LinearCard {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Enable KeyStats Hardware Telemetry")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Counts keys, clicks, mouse & scroll distance, and per-app totals locally")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.enableKeyStatsTracking)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 50)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
                     HStack {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Show Icon in Dock & App Switcher")
@@ -1693,6 +1986,139 @@ private struct HourlyRhythmChart: View {
     }
 }
 
+private struct ANSIKeyboardHeatmapView: View {
+    @Environment(\.colorScheme) private var scheme
+    let heatmap: [String: Int]
+    let totalKeys: Int
+    let englishPercent: Int
+    @State private var hoveredKey: KeySpec?
+
+    var body: some View {
+        let maxCount = max(1, heatmap.values.max() ?? 1)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                LinearSectionHeader(title: "Keyboard Heatmap")
+                Spacer()
+                if let key = hoveredKey {
+                    let count = heatmap[key.id, default: 0]
+                    let pct = totalKeys > 0 ? Double(count) / Double(totalKeys) * 100.0 : 0
+                    Text("\(key.id): \(count) presses (\(String(format: "%.1f%%", pct)))")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(LinearUI.accent)
+                } else {
+                    Text("\(englishPercent)% Roman · \(100 - englishPercent)% CJK/IME")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            LinearCard {
+                VStack(spacing: 3.5) {
+                    ForEach(Array(KeyCodeMapper.ansiRows.enumerated()), id: \.offset) { rowIdx, row in
+                        GeometryReader { geo in
+                            let spacing: CGFloat = 3.5
+                            let totalWeight = row.reduce(0.0) { $0 + $1.widthWeight }
+                            let usableW = max(10, geo.size.width - spacing * CGFloat(max(0, row.count - 1)))
+
+                            HStack(spacing: spacing) {
+                                ForEach(row, id: \.id) { spec in
+                                    let count = heatmap[spec.id, default: 0]
+                                    let intensity = count > 0
+                                        ? min(1.0, max(0.14, sqrt(Double(count) / Double(maxCount))))
+                                        : 0.0
+                                    let keyW = usableW * CGFloat(spec.widthWeight / totalWeight)
+
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .fill(
+                                                count == 0
+                                                    ? LinearUI.subtleFill(scheme)
+                                                    : LinearUI.accent.opacity(intensity)
+                                            )
+                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .stroke(
+                                                hoveredKey?.id == spec.id
+                                                    ? LinearUI.accent
+                                                    : LinearUI.hairline(scheme),
+                                                lineWidth: 1
+                                            )
+                                        Text(spec.label)
+                                            .font(.system(size: rowIdx == 0 ? 8.5 : 9.5, weight: count > 0 ? .semibold : .regular, design: .rounded))
+                                            .foregroundStyle(
+                                                intensity >= 0.52
+                                                    ? Color.white
+                                                    : Color.primary.opacity(count > 0 ? 0.88 : 0.55)
+                                            )
+                                    }
+                                    .frame(width: keyW, height: rowIdx == 0 ? 17 : 22)
+                                    .onHover { inside in
+                                        if inside {
+                                            hoveredKey = spec
+                                        } else if hoveredKey?.id == spec.id {
+                                            hoveredKey = nil
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .frame(height: rowIdx == 0 ? 17 : 22)
+                    }
+                }
+                .padding(10)
+            }
+        }
+    }
+}
+
+private struct CalendarContributionGrid: View {
+    @Environment(\.colorScheme) private var scheme
+    let days: [CalendarActivityDay]
+
+    var body: some View {
+        let padded = days.count >= 98 ? Array(days.suffix(98)) : days
+        let maxActions = max(50, padded.map(\.totalActions).max() ?? 50)
+        let weeks = stride(from: 0, to: padded.count, by: 7).map { start in
+            Array(padded[start..<min(start + 7, padded.count)])
+        }
+
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 3.5) {
+                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                    VStack(spacing: 3.5) {
+                        ForEach(week) { day in
+                            let ratio = Double(day.totalActions) / Double(maxActions)
+                            let alpha = day.totalActions == 0 ? 0.0 : min(0.95, max(0.20, sqrt(ratio)))
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(day.totalActions == 0 ? LinearUI.subtleFill(scheme) : LinearUI.accent.opacity(alpha))
+                                .frame(width: 8.5, height: 8.5)
+                                .help("\(day.dateKey): \(day.keyPresses) keys · \(day.clicks) clicks")
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 4) {
+                Text("14 weeks")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Text("Less")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                ForEach([0.0, 0.25, 0.55, 0.90], id: \.self) { level in
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(level == 0 ? LinearUI.subtleFill(scheme) : LinearUI.accent.opacity(level))
+                        .frame(width: 7, height: 7)
+                }
+                Text("More")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
 private struct SidebarRow: View {
     @Environment(\.colorScheme) private var scheme
     let title: String
@@ -1762,8 +2188,11 @@ final class SettingsWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func present(for currentApp: (name: String, bundleID: String)?) {
+    func present(for currentApp: (name: String, bundleID: String)?, selectSection: SettingsSection? = nil) {
         viewModel.refresh(currentApp: currentApp)
+        if let selectSection {
+            viewModel.selectedSection = selectSection
+        }
         showWindow(nil)
         window?.level = .normal
         NSApp.activate(ignoringOtherApps: true)

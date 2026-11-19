@@ -103,6 +103,69 @@ enum ShowcaseExporter {
             VocabularyEntry(word: "quantitative", count: 11, isCustom: false)
         ]
 
+        let sampleHeatmap: [String: Int] = [
+            "Space": 4_120, "E": 2_890, "T": 2_210, "A": 1_980, "O": 1_840, "I": 1_790, "N": 1_720,
+            "S": 1_640, "R": 1_590, "L": 1_240, "D": 1_090, "C": 1_040, "U": 890, "M": 780,
+            "P": 740, "F": 620, "G": 590, "W": 560, "Y": 540, "B": 480, "V": 390, "K": 360,
+            "Delete": 1_310, "Return": 860, "Tab": 640, "LeftCmd": 980, "LeftShift": 870, "RightShift": 290,
+            "LeftOption": 310, "Ctrl": 240, "Esc": 210, ".": 420, ",": 380, "/": 190, "-": 210,
+            "1": 140, "2": 180, "3": 120, "Left": 240, "Right": 280, "Up": 190, "Down": 260, "Fn": 150
+        ]
+
+        let sampleCalDays: [CalendarActivityDay] = (0..<98).map { idx in
+            let wave = ((idx * 17 + 11) % 29)
+            let weekendDip = (idx % 7 == 5 || idx % 7 == 6) ? 0.35 : 1.0
+            let keys = wave < 3 ? 0 : Int(Double(1_800 + wave * 290) * weekendDip)
+            let clicks = keys == 0 ? 0 : max(80, keys / 7)
+            return CalendarActivityDay(dateKey: String(format: "2026-%02d-%02d", 8 + (idx / 30), 1 + (idx % 28)), keyPresses: keys, clicks: clicks)
+        }
+
+        let appIconsMap: [String: NSImage] = [
+            "com.openai.codex": srgbIcon(forBundleID: "com.openai.codex"),
+            "com.google.Chrome": srgbIcon(forBundleID: "com.google.Chrome"),
+            "com.apple.Notes": srgbIcon(forBundleID: "com.apple.Notes"),
+            "com.raycast.macos": srgbIcon(forBundleID: "com.raycast.macos"),
+            "com.apple.Safari": srgbIcon(forBundleID: "com.apple.Safari")
+        ]
+
+        let sampleKeyStats = KeyStatsAggregateSnapshot(
+            range: .days7,
+            totalKeyPresses: 42_680,
+            totalClicks: 6_140,
+            leftClicks: 5_290,
+            rightClicks: 710,
+            otherClicks: 140,
+            mouseDistanceMeters: 14_820,
+            scrollDistanceMeters: 6_410,
+            peakKPS: 13,
+            peakCPS: 6,
+            backspacePresses: 1_890,
+            leftHandPresses: 22_190,
+            rightHandPresses: 20_490,
+            romanKeyPresses: 29_020,
+            nonRomanKeyPresses: 13_660,
+            activeDays: 7,
+            maxDailyKeys: 8_940,
+            keyHeatmap: sampleHeatmap,
+            topShortcuts: [
+                RankedCountItem(label: "⌘C", count: 312),
+                RankedCountItem(label: "⌘V", count: 289),
+                RankedCountItem(label: "⌘S", count: 194),
+                RankedCountItem(label: "⌘Z", count: 118)
+            ],
+            topKeys: [],
+            topApps: [
+                AppActivitySummary(bundleID: "com.openai.codex", displayName: "Codex (ChatGPT)", keyPresses: 14_820, clicks: 1_940, scrollMeters: 2_180, charactersSaved: 1_420),
+                AppActivitySummary(bundleID: "com.google.Chrome", displayName: "Google Chrome", keyPresses: 11_340, clicks: 2_310, scrollMeters: 2_690, charactersSaved: 980),
+                AppActivitySummary(bundleID: "com.raycast.macos", displayName: "Raycast", keyPresses: 6_490, clicks: 420, scrollMeters: 380, charactersSaved: 460),
+                AppActivitySummary(bundleID: "com.apple.Notes", displayName: "Notes", keyPresses: 5_810, clicks: 760, scrollMeters: 640, charactersSaved: 560),
+                AppActivitySummary(bundleID: "com.apple.Safari", displayName: "Safari", keyPresses: 4_220, clicks: 710, scrollMeters: 520, charactersSaved: 210)
+            ],
+            calendarDays: sampleCalDays
+        )
+
+        let windowShotSize = NSSize(width: 816, height: 622)
+
         // 1. Hero inline-ghost banner
         try renderSwiftUIViewToPNG(
             ShowcaseHeroBanner(),
@@ -110,35 +173,57 @@ enum ShowcaseExporter {
             to: outDir.appendingPathComponent("hero-inline-ghost.png")
         )
 
-        // 2. Insights window screenshot
+        // 2. KeyStats & Keyboard Heatmap window screenshot
+        let keyStatsVM = SettingsViewModel(
+            showcaseSection: .keyStats,
+            appOffsets: sampleApps,
+            insights: sampleInsights,
+            bigrams: sampleBigrams,
+            vocabulary: sampleVocab,
+            keyStats: sampleKeyStats,
+            showcaseAppIcons: appIconsMap
+        )
+        try renderSwiftUIViewToPNG(
+            MacWindowFrameBackdrop(size: windowShotSize) {
+                SettingsView(vm: keyStatsVM)
+            },
+            size: windowShotSize,
+            to: outDir.appendingPathComponent("keystats-window.png")
+        )
+
+        // 3. Insights window screenshot
         let insightsVM = SettingsViewModel(
             showcaseSection: .insights,
             appOffsets: sampleApps,
             insights: sampleInsights,
             bigrams: sampleBigrams,
-            vocabulary: sampleVocab
+            vocabulary: sampleVocab,
+            keyStats: sampleKeyStats,
+            showcaseAppIcons: appIconsMap
         )
         try renderSwiftUIViewToPNG(
-            MacWindowFrameBackdrop {
+            MacWindowFrameBackdrop(size: windowShotSize) {
                 SettingsView(vm: insightsVM)
             },
-            size: NSSize(width: 760, height: 566),
+            size: windowShotSize,
             to: outDir.appendingPathComponent("insights-window.png")
         )
 
-        // 3. Calibration window screenshot
+        // 4. Calibration window screenshot
         let calibrationVM = SettingsViewModel(
             showcaseSection: .calibration,
             appOffsets: sampleApps,
             insights: sampleInsights,
             bigrams: sampleBigrams,
-            vocabulary: sampleVocab
+            vocabulary: sampleVocab,
+            keyStats: sampleKeyStats,
+            showcaseAppIcons: appIconsMap
         )
         try renderSwiftUIViewToPNG(
-            MacWindowFrameBackdrop {
+            MacWindowFrameBackdrop(size: windowShotSize) {
                 SettingsView(vm: calibrationVM)
             },
-            size: NSSize(width: 760, height: 566),
+            size: windowShotSize,
             to: outDir.appendingPathComponent("calibration-window.png")
         )
     }
@@ -202,6 +287,7 @@ enum ShowcaseExporter {
 }
 
 private struct MacWindowFrameBackdrop<Content: View>: View {
+    var size: NSSize = NSSize(width: 816, height: 622)
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -235,7 +321,7 @@ private struct MacWindowFrameBackdrop<Content: View>: View {
                 .padding(.top, 14)
             }
         }
-        .frame(width: 760, height: 566)
+        .frame(width: size.width, height: size.height)
     }
 }
 

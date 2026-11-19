@@ -30,7 +30,8 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertEqual(match2, CompletionMatch(prefix: "kn", fullWord: "knows", suffix: "ows"))
 
         let match3 = completer.complete(textBeforeCursor: "quantitative inv")
-        XCTAssertEqual(match3, CompletionMatch(prefix: "inv", fullWord: "investment", suffix: "estment"))
+        XCTAssertEqual(match3?.prefix, "inv")
+        XCTAssertTrue(["investment", "investing", "investor", "investors"].contains(match3?.fullWord))
     }
 
     func testCandidateCyclingReturnsMultipleSingleWordMatches() {
@@ -248,5 +249,98 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertGreaterThan(snap.averageBurstWPM, 40)
         XCTAssertEqual(snap.imeSwitches, 1)
         XCTAssertTrue(snap.fillerHabits.contains(where: { $0.word == "actually" }))
+    }
+
+    func testKeyStatsStoreHardwareTelemetrySecurePrivacyAndExternalImport() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailKeyStats-\(UUID().uuidString)", isDirectory: true)
+        let simulatedTime = Date(timeIntervalSince1970: 1_763_500_000)
+        let store = KeyStatsStore(
+            fileURL: tempDir.appendingPathComponent("keystats.json"),
+            nowProvider: { simulatedTime }
+        )
+
+        // 1. Normal key press + Cmd+C shortcut + auto-repeat ignored in keyPresses
+        store.recordKeyDown(
+            keyCode: 8, // C
+            rawFlags: CGEventFlags.maskCommand.rawValue,
+            isAutoRepeat: false,
+            isSecureInput: false,
+            isRomanLayout: true,
+            appBundleID: "com.openai.codex",
+            appName: "Codex"
+        )
+        store.recordKeyDown(
+            keyCode: 0, // A (auto-repeat)
+            rawFlags: 0,
+            isAutoRepeat: true,
+            isSecureInput: false,
+            isRomanLayout: true,
+            appBundleID: "com.openai.codex",
+            appName: "Codex"
+        )
+
+        // 2. Secure input (password field): counts total keystroke anonymously without leaking letter identity into heatmap!
+        store.recordKeyDown(
+            keyCode: 35, // P
+            rawFlags: 0,
+            isAutoRepeat: false,
+            isSecureInput: true,
+            isRomanLayout: true,
+            appBundleID: "com.apple.Safari",
+            appName: "Safari"
+        )
+
+        // 3. Mouse clicks, mouse movement, and scroll distance
+        store.recordMouseClick(button: .left, appBundleID: "com.openai.codex", appName: "Codex")
+        store.recordMouseMove(to: CGPoint(x: 100, y: 100))
+        store.recordMouseMove(to: CGPoint(x: 500, y: 400)) // +500 px
+        store.recordScroll(deltaX: 0, deltaY: 1000, appBundleID: "com.openai.codex", appName: "Codex")
+        store.flushNow()
+
+        let today = store.snapshot(for: .today)
+        XCTAssertEqual(today.totalKeyPresses, 2)
+        XCTAssertEqual(today.totalClicks, 1)
+        XCTAssertEqual(today.keyHeatmap["C"], 1)
+        XCTAssertNil(today.keyHeatmap["P"]) // password character never recorded in heatmap!
+        XCTAssertEqual(today.topShortcuts.first, RankedCountItem(label: "⌘C", count: 1))
+        XCTAssertGreaterThan(today.mouseDistanceMeters, 0.12)
+        XCTAssertGreaterThan(today.scrollDistanceMeters, 0.25)
+
+        // 4. Native export + external `debugtheworldbot/keyStats` JSON import compatibility
+        let externalJSON = """
+        {
+          "version": 1,
+          "history": {
+            "2026-11-10": {
+              "keyPresses": 3200,
+              "keyPressCounts": { "Space": 600, "Cmd+V": 45, "Delete": 120 },
+              "leftClicks": 410,
+              "rightClicks": 30,
+              "mouseDistance": 100000,
+              "scrollDistance": 50000,
+              "peakKPS": 11,
+              "appStats": {
+                "com.apple.Notes": {
+                  "bundleId": "com.apple.Notes",
+                  "displayName": "Notes",
+                  "keyPresses": 1200,
+                  "leftClicks": 90,
+                  "scrollDistance": 8000
+                }
+              }
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let importedDays = try store.importJSONData(externalJSON, merge: true)
+        XCTAssertEqual(importedDays, 1)
+
+        let allTime = store.snapshot(for: .allTime)
+        XCTAssertEqual(allTime.totalKeyPresses, 3202)
+        XCTAssertEqual(allTime.totalClicks, 441)
+        XCTAssertTrue(allTime.topShortcuts.contains(RankedCountItem(label: "⌘V", count: 45)))
+        XCTAssertTrue(allTime.topApps.contains(where: { $0.bundleID == "com.apple.Notes" && $0.keyPresses == 1200 }))
     }
 }

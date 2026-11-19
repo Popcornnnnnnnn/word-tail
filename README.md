@@ -26,24 +26,31 @@ Most modern macOS autocomplete utilities wrap multi-gigabyte local or cloud LLMs
 
 - **Zero LLM, ~3 ms latency:** Combines macOS's grammar-aware `NSSpellChecker`, a curated **180+ CS/AI/quant lexicon**, **personal 2-word bigrams**, **per-app vocabulary**, and **typo-trap rescue**.
 - **Built for bilingual & technical typists:** Stays **100% silent** whenever you switch to a non-Roman input method (Chinese Pinyin, Rime, Doubao, Japanese, Korean), focus a password field (`SecureEventInput` / `AXSecureTextField`), or edit code files inside IDEs and terminals.
-- **Knows your typing habits—without logging text:** Tracks saved keystrokes, `Tab` hit rate, burst WPM, 24-hour accuracy rhythm, personal typo traps, and prose crutches using **strictly local aggregate counters**.
+- **Built-in KeyStats + Linguistic Insights (100% local, zero telemetry):** Includes a complete hardware & habit studio—daily/7D/30D/all-time keystrokes, peak KPS/CPS, Left/Right hand balance, Roman vs CJK ratio, mouse travel (`Marathons`), scroll distance (`Everests`), a 65-key MacBook ANSI heatmap, 14-week activity calendar, per-app breakdowns, top shortcuts, saved keystrokes, burst WPM, and personal typo traps—plus JSON export & `KeyStats` backup import.
 
 ---
 
 ## Screenshots
 
+### Built-In KeyStats & Interactive Keyboard Heatmap
+Tracks keystrokes, clicks, mouse & scroll distance, peak KPS, left/right hand balance, Roman vs CJK input share, top shortcuts (`⌘C`, `⌘V`, `⌘S`), a 14-week contribution grid, and per-application totals via a zero-latency `.listenOnly` passive tap—and imports existing `KeyStats` JSON backups directly.
+
+<p align="center">
+  <img src="docs/images/keystats-window.png" alt="WordTail KeyStats and Keyboard Heatmap window" width="800" />
+</p>
+
 ### Typing Insights & Habit Learning
 WordTail learns your 2-word collocations (`pull → request`, `feature → flag`), weights vocabulary per app (`implementation` in Codex vs `important` in Mail), and automatically boosts words you frequently mistype and backspace (`definately → definitely`).
 
 <p align="center">
-  <img src="docs/images/insights-window.png" alt="WordTail Typing Insights window" width="760" />
+  <img src="docs/images/insights-window.png" alt="WordTail Typing Insights window" width="800" />
 </p>
 
 ### Sub-Retina-Pixel Baseline Calibration
 Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electron, floating `NSPanel` launchers like Raycast) report slightly different caret bounds. WordTail uses CoreText + `CGImage` sub-pixel interpolation (`0.05 pt` steps) with live 60 fps preview so gray ghost text sits flush on every app's baseline.
 
 <p align="center">
-  <img src="docs/images/calibration-window.png" alt="WordTail Baseline Calibration window" width="760" />
+  <img src="docs/images/calibration-window.png" alt="WordTail Baseline Calibration window" width="800" />
 </p>
 
 ---

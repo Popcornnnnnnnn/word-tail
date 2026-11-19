@@ -7,6 +7,7 @@ import WordTailCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let historyStore = UserHistoryStore()
+    private let keyStatsStore = KeyStatsStore()
     private lazy var habitTracker = TypingHabitTracker(validWordChecker: { [weak self] word in
         if self?.historyStore.isCustomWord(word) == true {
             return true
@@ -19,10 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         completer: completer,
         historyStore: historyStore,
         habitTracker: habitTracker,
+        keyStatsStore: keyStatsStore,
         inputGuard: inputGuard
     )
 
     private var permissionPollTimer: Timer?
+    private var menuBarCounterTimer: Timer?
     private var lastObservedApp: (name: String, bundleID: String)?
     private var settingsWindowController: SettingsWindowController?
 
@@ -87,6 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// keeps WordTail's autocomplete engine running until the user quits (⌘Q).
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        engine.flushAllTelemetry()
     }
 
     private func applyDockVisibilityPreference() {
@@ -216,12 +223,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let warn = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "WordTail Needs Permission") {
                 warn.isTemplate = true
                 button.image = warn
+                button.title = ""
                 button.appearsDisabled = false
                 return
             }
         }
         button.image = Self.makeMenuBarIcon()
+        button.imagePosition = engine.showMenuBarKeyCount ? .imageLeft : .imageOnly
+        if engine.showMenuBarKeyCount {
+            let counts = keyStatsStore.todayMenuBarCounts()
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+            button.title = " " + KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)
+            ensureMenuBarCounterTimerRunning()
+        } else {
+            button.title = ""
+            menuBarCounterTimer?.invalidate()
+            menuBarCounterTimer = nil
+        }
         button.appearsDisabled = !engine.isEnabled
+    }
+
+    private func ensureMenuBarCounterTimerRunning() {
+        guard menuBarCounterTimer == nil else { return }
+        menuBarCounterTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
+            guard let self, self.engine.showMenuBarKeyCount, let button = self.statusItem.button else { return }
+            let counts = self.keyStatsStore.todayMenuBarCounts()
+            button.title = " " + KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)
+        }
     }
 
     private static func makeMenuBarIcon() -> NSImage {
@@ -307,6 +335,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItemEntry.isEnabled = !trusted
         menu.addItem(statusItemEntry)
 
+        if engine.enableKeyStatsTracking {
+            let today = keyStatsStore.todayMenuBarCounts()
+            let statsSummary = NSMenuItem(
+                title: "Today: \(KeyStatsAggregateSnapshot.formatCompactCount(today.keys)) keys · \(KeyStatsAggregateSnapshot.formatCompactCount(today.clicks)) clicks",
+                action: #selector(openKeyStatsClicked),
+                keyEquivalent: ""
+            )
+            statsSummary.target = self
+            menu.addItem(statsSummary)
+        }
+
         menu.addItem(.separator())
 
         let enabledItem = NSMenuItem(
@@ -382,6 +421,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let openKeyStatsItem = NSMenuItem(
+            title: "KeyStats & Heatmap…",
+            action: #selector(openKeyStatsClicked),
+            keyEquivalent: ""
+        )
+        openKeyStatsItem.target = self
+        menu.addItem(openKeyStatsItem)
+
         let openWindowItem = NSMenuItem(
             title: "Open WordTail Window…",
             action: #selector(openSettingsClicked),
@@ -442,6 +489,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openSettingsClicked() {
+        presentMainWindow(section: nil)
+    }
+
+    @objc private func openKeyStatsClicked() {
+        presentMainWindow(section: .keyStats)
+    }
+
+    private func presentMainWindow(section: SettingsSection?) {
         let target = currentTargetApp()
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
@@ -450,7 +505,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 onStateChange: { [weak self] in self?.updateStatusIcon() }
             )
         }
-        settingsWindowController?.present(for: target)
+        settingsWindowController?.present(for: target, selectSection: section)
     }
 
     @objc private func quitClicked() {
