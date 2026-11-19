@@ -6,7 +6,9 @@ import WordTailCore
 struct CaretSnapshot {
     let textBeforeCursor: String
     let charAfterCursor: Character?
+    let textAfterOnLine: String
     let hasTextAfterOnLine: Bool
+    let isAtDocumentStart: Bool
     let placement: BaselinePlacement
     let font: NSFont
     let rawAXRect: CGRect
@@ -130,26 +132,31 @@ final class AXCaretContext {
 
             var textBefore = fallbackBuffer
             var charAfter: Character? = nil
+            var textAfterOnLine = ""
             var hasTextAfterOnLine = false
+            var isAtDocumentStart = false
 
             if let fullValue = copyStringAttribute(element, attribute: kAXValueAttribute as String),
                !fullValue.isEmpty {
                 let ns = fullValue as NSString
                 if selectedRange.location <= ns.length {
-                    let windowStart = max(0, selectedRange.location - 80)
+                    let windowStart = max(0, selectedRange.location - 120)
                     let beforeLen = selectedRange.location - windowStart
                     if beforeLen > 0 {
                         let candidate = ns.substring(with: NSRange(location: windowStart, length: beforeLen))
-                        // Keep fallbackBuffer if AXValue only contains object-replacement chars.
                         if candidate.contains(where: { $0.isASCII && $0.isLetter }) {
                             textBefore = candidate
                         }
                     }
 
+                    let fullPrefix = ns.substring(with: NSRange(location: 0, length: selectedRange.location))
+                    isAtDocumentStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: fullPrefix)
+
                     if selectedRange.location < ns.length {
                         let lookaheadLen = min(64, ns.length - selectedRange.location)
                         let afterSlice = ns.substring(with: NSRange(location: selectedRange.location, length: lookaheadLen))
                         charAfter = afterSlice.first
+                        textAfterOnLine = String(afterSlice.prefix(while: { !$0.isNewline }))
                         hasTextAfterOnLine = Self.lineHasVisibleTextAfterCaret(afterSlice)
                     }
                 }
@@ -164,14 +171,16 @@ final class AXCaretContext {
                     verticalAdjustment: verticalAdjustment
                 )
                 recordStatus(String(
-                    format: "app=%@ pid=%d->%d role=%@ path=range rect=(%.1fx%.1f) font=%.1f mid=%d",
+                    format: "app=%@ pid=%d->%d role=%@ path=range rect=(%.1fx%.1f) font=%.1f mid=%d doc0=%d",
                     app.bundleIdentifier ?? "?", app.processIdentifier, ownerPID, elemRole,
-                    axRect.width, axRect.height, font.pointSize, hasTextAfterOnLine ? 1 : 0
+                    axRect.width, axRect.height, font.pointSize, hasTextAfterOnLine ? 1 : 0, isAtDocumentStart ? 1 : 0
                 ))
                 return CaretSnapshot(
                     textBeforeCursor: textBefore,
                     charAfterCursor: charAfter,
+                    textAfterOnLine: textAfterOnLine,
                     hasTextAfterOnLine: hasTextAfterOnLine,
+                    isAtDocumentStart: isAtDocumentStart,
                     placement: placement,
                     font: font,
                     rawAXRect: axRect,
@@ -512,8 +521,48 @@ final class AXCaretContext {
         // so Chromium never walks out of the end of a chat box into adjacent toolbar buttons!
         var textBefore = fallbackBuffer
         var charAfter: Character? = nil
+        var textAfterOnLine = ""
         var hasTextAfterOnLine = false
+        var isAtDocumentStart = false
 
+        // 1. Read full logical text from the start of the editable element (or current paragraph) up to `endMarker`
+        // so soft-wrapped visual lines NEVER truncate preceding sentence context!
+        if let docText = readEditablePrefixFromDocumentStart(element: element, endMarker: endMarker) {
+            if docText.contains(where: { $0.isASCII && $0.isLetter }) {
+                textBefore = String(docText.suffix(120))
+            }
+            isAtDocumentStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: docText)
+        } else {
+            var paraRangeRef: CFTypeRef?
+            if AXUIElementCopyParameterizedAttributeValue(
+                element,
+                "AXParagraphTextMarkerRangeForTextMarker" as CFString,
+                endMarker,
+                &paraRangeRef
+            ) == .success, let paraRangeRef {
+                let paraRange = paraRangeRef as! AXTextMarkerRange
+                let paraStart = AXTextMarkerRangeCopyStartMarker(paraRange)
+                if !CFEqual(paraStart, endMarker),
+                   let paraPairRange = makeMarkerRange(element: element, start: paraStart, end: endMarker),
+                   let paraStr = stringForTextMarkerRange(element: element, markerRange: paraPairRange),
+                   paraStr.contains(where: { $0.isASCII && $0.isLetter }) {
+                    textBefore = String(paraStr.suffix(120))
+                    var prevBeforePara: CFTypeRef?
+                    let hasEarlierContent = AXUIElementCopyParameterizedAttributeValue(
+                        element,
+                        "AXPreviousTextMarkerForTextMarker" as CFString,
+                        paraStart,
+                        &prevBeforePara
+                    ) == .success && prevBeforePara != nil
+                    if !hasEarlierContent {
+                        isAtDocumentStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: paraStr)
+                    }
+                }
+            }
+        }
+
+        // 2. Scope `charAfter` and `textAfterOnLine` strictly to the current visual line inside `element`
+        // so Chromium never walks out of the end of a chat box into adjacent toolbar buttons!
         var lineRangeRef: CFTypeRef?
         let hasLineRange = AXUIElementCopyParameterizedAttributeValue(
             element,
@@ -527,15 +576,8 @@ final class AXCaretContext {
             let lineStart = AXTextMarkerRangeCopyStartMarker(lineMarkerRange)
             let lineEnd = AXTextMarkerRangeCopyEndMarker(lineMarkerRange)
 
-            if !CFEqual(lineStart, endMarker) {
-                let beforePair = [lineStart, endMarker] as CFArray
-                var beforeRangeRef: CFTypeRef?
-                if AXUIElementCopyParameterizedAttributeValue(
-                    element,
-                    "AXTextMarkerRangeForUnorderedTextMarkers" as CFString,
-                    beforePair,
-                    &beforeRangeRef
-                ) == .success, let beforeRangeRef,
+            if textBefore == fallbackBuffer && !CFEqual(lineStart, endMarker) {
+                if let beforeRangeRef = makeMarkerRange(element: element, start: lineStart, end: endMarker),
                    let beforeStr = stringForTextMarkerRange(element: element, markerRange: beforeRangeRef),
                    beforeStr.contains(where: { $0.isASCII && $0.isLetter }) {
                     textBefore = String(beforeStr.suffix(80))
@@ -543,23 +585,15 @@ final class AXCaretContext {
             }
 
             if !CFEqual(endMarker, lineEnd) {
-                let afterPair = [endMarker, lineEnd] as CFArray
-                var afterRangeRef: CFTypeRef?
-                if AXUIElementCopyParameterizedAttributeValue(
-                    element,
-                    "AXTextMarkerRangeForUnorderedTextMarkers" as CFString,
-                    afterPair,
-                    &afterRangeRef
-                ) == .success, let afterRangeRef,
+                if let afterRangeRef = makeMarkerRange(element: element, start: endMarker, end: lineEnd),
                    let afterStr = stringForTextMarkerRange(element: element, markerRange: afterRangeRef),
                    !afterStr.isEmpty {
                     charAfter = afterStr.first
+                    textAfterOnLine = String(afterStr.prefix(while: { !$0.isNewline }))
                     hasTextAfterOnLine = Self.lineHasVisibleTextAfterCaret(afterStr)
                 }
             }
         } else {
-            // Fallback when AXLineTextMarkerRangeForTextMarker is unavailable:
-            // only accept AXNextTextMarkerForTextMarker if it belongs to the exact same leaf AXUIElement!
             var curLeafRef: CFTypeRef?
             var nextMarkerRef: CFTypeRef?
             if AXUIElementCopyParameterizedAttributeValue(
@@ -581,16 +615,10 @@ final class AXCaretContext {
                     nextMarkerRef,
                     &nextLeafRef
                 ) == .success, let nextLeafRef, CFEqual(curLeafRef, nextLeafRef) {
-                    let nextPair = [endMarker, nextMarkerRef] as CFArray
-                    var nextRangeRef: CFTypeRef?
-                    if AXUIElementCopyParameterizedAttributeValue(
-                        element,
-                        "AXTextMarkerRangeForUnorderedTextMarkers" as CFString,
-                        nextPair,
-                        &nextRangeRef
-                    ) == .success, let nextRangeRef,
+                    if let nextRangeRef = makeMarkerRange(element: element, start: endMarker, end: nextMarkerRef),
                        let nextStr = stringForTextMarkerRange(element: element, markerRange: nextRangeRef) {
                         charAfter = nextStr.first
+                        textAfterOnLine = String(nextStr.prefix(while: { !$0.isNewline }))
                         hasTextAfterOnLine = Self.lineHasVisibleTextAfterCaret(nextStr)
                     }
                 }
@@ -609,12 +637,124 @@ final class AXCaretContext {
         return CaretSnapshot(
             textBeforeCursor: textBefore,
             charAfterCursor: charAfter,
+            textAfterOnLine: textAfterOnLine,
             hasTextAfterOnLine: hasTextAfterOnLine,
+            isAtDocumentStart: isAtDocumentStart,
             placement: placement,
             font: font,
             rawAXRect: axRect,
             primaryScreenHeight: primaryHeight
         )
+    }
+
+    /// Live lightweight inspection called on `Space` so even 1- or 2-letter sentence starters ("do ", "in ", "we ")
+    /// typed faster than 16ms have exact ground-truth document-start & period context without race conditions.
+    func inspectLiveSentenceContext(
+        targetApp: NSRunningApplication?,
+        expectedTrailingWord: String,
+        enableChromiumBridge: Bool
+    ) -> (context: String?, isAtDocumentStart: Bool) {
+        guard AXIsProcessTrusted(),
+              let app = targetApp ?? effectiveFocusedApplication(),
+              let element = resolveFocusedTextElement(app: app, enableChromiumBridge: enableChromiumBridge) else {
+            return (nil, false)
+        }
+
+        // 1. Standard AXValue + AXSelectedTextRange
+        if let selectedRange = copySelectedRange(element),
+           selectedRange.length == 0,
+           let fullValue = copyStringAttribute(element, attribute: kAXValueAttribute as String),
+           !fullValue.isEmpty {
+            let ns = fullValue as NSString
+            if selectedRange.location <= ns.length {
+                let fullBefore = ns.substring(with: NSRange(location: 0, length: selectedRange.location))
+                if fullBefore.lowercased().hasSuffix(expectedTrailingWord.lowercased()) {
+                    let docStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: fullBefore)
+                    return (String(fullBefore.suffix(120)), docStart)
+                }
+            }
+        }
+
+        // 2. WebKit / Chromium / Electron AXTextMarker
+        var markerRangeRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, "AXSelectedTextMarkerRange" as CFString, &markerRangeRef) == .success,
+           let markerRangeRef {
+            let endMarker = AXTextMarkerRangeCopyEndMarker(markerRangeRef as! AXTextMarkerRange)
+            if let docText = readEditablePrefixFromDocumentStart(element: element, endMarker: endMarker),
+               docText.lowercased().hasSuffix(expectedTrailingWord.lowercased()) {
+                let docStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: docText)
+                return (String(docText.suffix(120)), docStart)
+            }
+        }
+
+        return (nil, false)
+    }
+
+    private func readEditablePrefixFromDocumentStart(element: AXUIElement, endMarker: AXTextMarker) -> String? {
+        let role = copyStringAttribute(element, attribute: kAXRoleAttribute as String) ?? ""
+        // Only use element-level AXStartTextMarker on self-contained text controls (not whole-page AXWebArea)
+        guard role == "AXTextArea" || role == "AXTextField" || role == "AXComboBox" else {
+            return nil
+        }
+        var startMarkerRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &startMarkerRef) == .success,
+              let startMarkerRef else {
+            return nil
+        }
+        if CFEqual(startMarkerRef, endMarker) {
+            return ""
+        }
+        guard let fullRange = makeMarkerRange(element: element, start: startMarkerRef, end: endMarker) else {
+            return nil
+        }
+        var lenRef: CFTypeRef?
+        if AXUIElementCopyParameterizedAttributeValue(
+            element,
+            "AXLengthForTextMarkerRange" as CFString,
+            fullRange,
+            &lenRef
+        ) == .success, let num = lenRef as? NSNumber, num.intValue > 6000 {
+            return nil
+        }
+        guard let raw = stringForTextMarkerRange(element: element, markerRange: fullRange) else {
+            return nil
+        }
+        let cleaned = raw.replacingOccurrences(of: "\u{FFFC}", with: "").replacingOccurrences(of: "\u{200B}", with: "")
+        return cleaned
+    }
+
+    private func makeMarkerRange(element: AXUIElement, start: CFTypeRef, end: CFTypeRef) -> CFTypeRef? {
+        let pair = [start, end] as CFArray
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            "AXTextMarkerRangeForUnorderedTextMarkers" as CFString,
+            pair,
+            &rangeRef
+        ) == .success else {
+            return nil
+        }
+        return rangeRef
+    }
+
+    /// Returns true ONLY if `fullTextBeforeCursor` contains nothing before the current trailing ASCII word
+    /// (except optional leading spaces or opening quotes at index 0—NO newlines, NO earlier words!).
+    static func isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: String) -> Bool {
+        let chars = Array(fullTextBeforeCursor)
+        var wordStart = chars.count
+        while wordStart > 0 {
+            let ch = chars[wordStart - 1]
+            if (ch.isASCII && ch.isLetter) || (ch == "'" && wordStart >= 2 && chars[wordStart - 2].isASCII && chars[wordStart - 2].isLetter) {
+                wordStart -= 1
+            } else {
+                break
+            }
+        }
+        guard wordStart < chars.count else { return false }
+        let beforeWord = String(chars[0..<wordStart])
+        // Only allow spaces, tabs, or opening quote/paren at the very start of the input box (never newlines or earlier words!)
+        let allowedLeadingAtIndexZero = CharacterSet(charactersIn: " \t\"'“‘([")
+        return beforeWord.unicodeScalars.allSatisfy { allowedLeadingAtIndexZero.contains($0) }
     }
 
     private static func lineHasVisibleTextAfterCaret(_ slice: String) -> Bool {

@@ -22,6 +22,7 @@ final class TypingEngine {
     private var debounceWorkItem: DispatchWorkItem?
     private var rollingBuffer: String = ""
     private var lastCapturedLineText: String?
+    private var lastCapturedDocumentStart: Bool = false
     private var lastObservedBundleID: String?
     private var lastObservedAppName: String?
     private var lastKnownRomanLayout: Bool = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
@@ -645,7 +646,10 @@ final class TypingEngine {
             let prevWord = match.previousWord
             let acceptedBundle = activeBundleID ?? lastObservedBundleID
             let acceptedAppName = activeAppName ?? lastObservedAppName
-            let shouldAddSpace = appendSpaceOnAccept && WordCompleter.shouldAppendTrailingSpace(charAfterCursor: charAfter)
+            let shouldAddSpace = WordCompleter.shouldAppendSpaceOnTab(
+                charAfterCursor: charAfter,
+                appendSpacePreference: appendSpaceOnAccept
+            )
             let textToInsert = shouldAddSpace ? (match.suffix + " ") : match.suffix
             let deleteCount = match.replacementDeleteCount
 
@@ -756,7 +760,8 @@ final class TypingEngine {
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
                 rollingBuffer = "\n"
-                lastCapturedLineText = ""
+                lastCapturedLineText = nil
+                lastCapturedDocumentStart = false
                 DispatchQueue.main.async { [weak self] in
                     self?.habitTracker.resetSessionContext()
                 }
@@ -782,10 +787,20 @@ final class TypingEngine {
                 suppressedWordOnce = nil
 
                 if !wasJustUndone {
-                    let lineCtx = resolvedLineContextForWord(typedWord)
+                    // Inspect live AX context directly on Space so 1–2 letter starters ("do ", "in ", "we ")
+                    // and soft-wrapped lines ("...back of a word rather ") always have exact ground truth!
+                    let liveInspect = axContext.inspectLiveSentenceContext(
+                        targetApp: nil,
+                        expectedTrailingWord: typedWord,
+                        enableChromiumBridge: enableChromiumBridge
+                    )
+                    let lineCtx = liveInspect.context ?? resolvedLineContextForWord(typedWord)
+                    let isDocStart = liveInspect.context != nil ? liveInspect.isAtDocumentStart : lastCapturedDocumentStart
+
                     if let replacement = ObviousTypoCorrector.spaceReplacement(
                         forWord: typedWord,
                         lineContextIncludingWord: lineCtx,
+                        isAtDocumentStart: isDocStart,
                         autoCorrectTypos: autoCorrectOnSpace,
                         autoCapitalizeSentences: autoCapitalizeSentences,
                         adaptiveStore: adaptiveStore,
@@ -796,6 +811,7 @@ final class TypingEngine {
                         overlay.hide()
                         activeCandidates.removeAll(keepingCapacity: true)
                         activeSnapshot = nil
+                        lastCapturedDocumentStart = false
 
                         let diff = ObviousTypoCorrector.minimalDiff(from: typedWord, to: replacement)
                         rollingBuffer = String(rollingBuffer.dropLast(min(rollingBuffer.count, typedWord.count))) + replacement + " "
@@ -901,6 +917,7 @@ final class TypingEngine {
             verticalAdjustment: verticalAdjustment(forBundleID: frontBundle)
         ) {
             lastCapturedLineText = snap.textBeforeCursor
+            lastCapturedDocumentStart = snap.isAtDocumentStart
         }
     }
 
@@ -928,10 +945,12 @@ final class TypingEngine {
             return
         }
         lastCapturedLineText = snapshot.textBeforeCursor
+        lastCapturedDocumentStart = snapshot.isAtDocumentStart
 
         let matches = completer.candidates(
             textBeforeCursor: snapshot.textBeforeCursor,
             charAfterCursor: snapshot.charAfterCursor,
+            textAfterCursorOnLine: snapshot.textAfterOnLine,
             bundleID: frontBundle,
             limit: 5
         )
@@ -1006,6 +1025,7 @@ final class TypingEngine {
         if clearBuffer {
             rollingBuffer.removeAll(keepingCapacity: true)
             lastCapturedLineText = nil
+            lastCapturedDocumentStart = false
             pendingSpaceUndo = nil
             suppressedWordOnce = nil
         }

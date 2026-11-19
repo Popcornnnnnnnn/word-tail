@@ -391,11 +391,25 @@ final class WordCompleterTests: XCTestCase {
             "a lot"
         )
 
-        // 2. Sentence-start capitalization + standalone "i" + context-aware "lets" -> "Let's"
+        // 2. Sentence-start capitalization (2-letter "do", "hello", after period) + standalone "i" + context-aware "lets" -> "Let's"
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "do",
+                lineContextIncludingWord: "do",
+                isAtDocumentStart: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Do"
+        )
         XCTAssertEqual(
             ObviousTypoCorrector.spaceReplacement(
                 forWord: "hello",
                 lineContextIncludingWord: "hello",
+                isAtDocumentStart: true,
                 autoCorrectTypos: true,
                 autoCapitalizeSentences: true,
                 adaptiveStore: adaptive,
@@ -409,6 +423,7 @@ final class WordCompleterTests: XCTestCase {
             ObviousTypoCorrector.spaceReplacement(
                 forWord: "next",
                 lineContextIncludingWord: "All done. next",
+                isAtDocumentStart: false,
                 autoCorrectTypos: true,
                 autoCapitalizeSentences: true,
                 adaptiveStore: adaptive,
@@ -418,10 +433,38 @@ final class WordCompleterTests: XCTestCase {
             ),
             "Next"
         )
+        // Soft-wrapped line or plain newline WITHOUT period ("...behind the back of a word\nrather") must NEVER capitalize!
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "rather",
+                lineContextIncludingWord: "just behind the back of a word\nrather",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { _ in true }
+            )
+        )
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "rather",
+                lineContextIncludingWord: "just behind the back of a word rather",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { _ in true }
+            )
+        )
         XCTAssertEqual(
             ObviousTypoCorrector.spaceReplacement(
                 forWord: "teh",
                 lineContextIncludingWord: "teh",
+                isAtDocumentStart: true,
                 autoCorrectTypos: true,
                 autoCapitalizeSentences: true,
                 adaptiveStore: adaptive,
@@ -435,6 +478,7 @@ final class WordCompleterTests: XCTestCase {
             ObviousTypoCorrector.spaceReplacement(
                 forWord: "i",
                 lineContextIncludingWord: "think i",
+                isAtDocumentStart: false,
                 autoCorrectTypos: true,
                 autoCapitalizeSentences: true,
                 adaptiveStore: adaptive,
@@ -448,6 +492,7 @@ final class WordCompleterTests: XCTestCase {
             ObviousTypoCorrector.spaceReplacement(
                 forWord: "lets",
                 lineContextIncludingWord: "lets",
+                isAtDocumentStart: true,
                 autoCorrectTypos: true,
                 autoCapitalizeSentences: true,
                 adaptiveStore: adaptive,
@@ -558,5 +603,27 @@ final class WordCompleterTests: XCTestCase {
             ObviousTypoCorrector.spaceAutoCorrection(forWord: "omw", adaptiveStore: adaptive, habitTracker: nil, historyStore: history),
             "on my way"
         )
+    }
+
+    func testMidSentenceInsertionDirectlyAgainstFollowingWordWithoutRearSpace() {
+        let completer = WordCompleter(historyStore: makeTempHistory())
+
+        // Inserting "kn" directly against "the" ("I want to kn|the answer" — space in front, NO space in rear):
+        let inserted = completer.complete(
+            textBeforeCursor: "I want to kn",
+            charAfterCursor: "t",
+            textAfterCursorOnLine: "the answer"
+        )
+        XCTAssertEqual(inserted, CompletionMatch(prefix: "kn", fullWord: "know", suffix: "ow"))
+        // Accepting with Tab must append a separating space before "the" even if appendSpacePreference is false!
+        XCTAssertTrue(WordCompleter.shouldAppendSpaceOnTab(charAfterCursor: "t", appendSpacePreference: false))
+
+        // Whereas cursor inside a single existing word ("I kn|ow") must STILL stay silent!
+        let insideSingleWord = completer.complete(
+            textBeforeCursor: "I kn",
+            charAfterCursor: "o",
+            textAfterCursorOnLine: "ow"
+        )
+        XCTAssertNil(insideSingleWord)
     }
 }

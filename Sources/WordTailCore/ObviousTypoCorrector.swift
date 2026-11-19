@@ -245,22 +245,22 @@ public final class AdaptiveCorrectionStore {
 }
 
 public enum ObviousTypoCorrector {
-    /// Developer abbreviations, CLI tools, file formats, and bilingual tokens that must NEVER be auto-corrected by built-in rules.
+    /// Non-English developer identifiers, CLI binaries, and file formats that should never be auto-corrected or capitalized.
     public static let developerSafeWords: Set<String> = [
         "repo", "repos", "init", "inits", "config", "configs", "cfg", "env", "envs",
-        "arg", "args", "kwarg", "kwargs", "param", "params", "async", "sync", "impl", "impls",
+        "arg", "args", "kwarg", "kwargs", "param", "params", "async", "impl", "impls",
         "util", "utils", "auth", "authn", "authz", "oauth", "jwt", "sso", "rbac", "cors",
         "kubectl", "helm", "docker", "podman", "orbstack", "pytest", "pydantic", "fastapi",
-        "uvicorn", "gunicorn", "celery", "numpy", "scipy", "pandas", "polars", "torch",
-        "vite", "pnpm", "yarn", "npm", "npx", "bun", "deno", "esbuild", "webpack", "eslint",
-        "nvim", "vim", "neovim", "tmux", "zellij", "zsh", "bash", "fish", "ghostty", "iterm",
+        "uvicorn", "gunicorn", "celery", "numpy", "scipy", "pandas", "polars",
+        "vite", "pnpm", "npm", "npx", "deno", "esbuild", "webpack", "eslint",
+        "nvim", "vim", "neovim", "tmux", "zellij", "zsh", "bash", "ghostty", "iterm",
         "macos", "ios", "ipados", "watchos", "tvos", "xcode", "swiftc", "swiftui", "appkit",
         "uikit", "webkit", "coretext", "coregraphics", "avfoundation", "xctest",
         "wechat", "feishu", "lark", "dingtalk", "doubao", "bilibili", "xiaohongshu", "taobao",
         "raycast", "alfred", "codex", "claude", "gemini", "chatgpt", "deepseek", "qwen", "llama",
         "llm", "llms", "vlm", "rag", "lora", "qlora", "gguf", "mlx", "cuda", "mps",
         "gpu", "gpus", "cpu", "cpus", "npu", "tpu", "ram", "vram", "ssd", "nvme",
-        "api", "apis", "rpc", "grpc", "graphql", "rest", "url", "urls", "uri", "uris",
+        "api", "apis", "rpc", "grpc", "graphql", "url", "urls", "uri", "uris",
         "json", "jsonl", "yaml", "yml", "toml", "xml", "csv", "tsv", "parquet", "protobuf",
         "sql", "nosql", "sqlite", "postgres", "mysql", "redis", "kafka", "clickhouse", "supabase",
         "cli", "sdk", "sdks", "ide", "ides", "gui", "tui", "ui", "ux", "dx", "id", "ids",
@@ -269,14 +269,20 @@ public enum ObviousTypoCorrector {
         "aws", "gcp", "azure", "cloudflare", "vercel", "netlify", "railway", "k8s",
         "wasm", "wasi", "simd", "rgba", "srgb", "utf", "ascii", "regex", "regexp", "cron",
         "sudo", "chmod", "chown", "grep", "ripgrep", "awk", "sed", "curl", "wget", "jq", "yq",
-        "brew", "git", "diff", "diffs", "rebase", "stash", "worktree", "subagent", "subagents",
-        "cd", "ls", "cp", "mv", "rm", "mkdir", "cat", "echo", "make", "cmake", "python", "python3",
-        "node", "cargo", "go", "swift", "gh", "open", "export", "source", "which", "man", "tail", "head",
+        "brew", "git", "diffs", "worktree", "subagent", "subagents",
+        "ls", "cp", "mv", "rm", "mkdir", "cmake", "python", "python3", "cargo", "gh",
         "todo", "todos", "fixme", "noop", "bool", "int", "uint", "str", "dict", "vec",
         "idx", "len", "prev", "curr", "src", "dst", "tmp", "temp", "dir", "dirs", "pkg", "pkgs",
-        "dev", "devs", "prod", "stg", "qa", "perf", "spec", "specs", "doc", "docs", "readme",
+        "dev", "devs", "prod", "stg", "qa", "perf", "spec", "specs", "docs", "readme",
         "keystat", "keystats", "wordtail", "nihao", "xie", "xiexie", "shanghai", "beijing", "shenzhen",
         "iphone", "ipad", "airpods", "imac", "macbook", "ebay"
+    ]
+
+    /// Valid 1- and 2-letter English words (rejected by `>= 3`-char spellcheckers, but valid sentence starters & standalone words).
+    public static let validShortEnglishWords: Set<String> = [
+        "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "hi",
+        "if", "in", "is", "it", "me", "my", "no", "of", "oh", "ok", "on", "or",
+        "so", "to", "up", "us", "we"
     ]
 
     private static let nonSentenceEndingAbbreviations: Set<String> = [
@@ -459,6 +465,7 @@ public enum ObviousTypoCorrector {
     public static func spaceReplacement(
         forWord word: String,
         lineContextIncludingWord: String?,
+        isAtDocumentStart: Bool = false,
         autoCorrectTypos: Bool,
         autoCapitalizeSentences: Bool,
         adaptiveStore: AdaptiveCorrectionStore? = nil,
@@ -478,9 +485,11 @@ public enum ObviousTypoCorrector {
         }
 
         let lower = word.lowercased()
-        let atSentenceStart = lineContextIncludingWord.map {
-            isWordAtSentenceStart(word: word, inLineBeforeCursor: $0)
-        } ?? false
+        let atSentenceStart = isWordAtSentenceStart(
+            word: word,
+            inContextBeforeCursor: lineContextIncludingWord,
+            isAtDocumentStart: isAtDocumentStart
+        )
 
         // 1. User's explicit custom shorthand rules ALWAYS take priority (even over developerSafeWords if user defined one!)
         if autoCorrectTypos, let customOrLearned = adaptiveStore?.customOrLearnedReplacement(for: lower) {
@@ -522,7 +531,10 @@ public enum ObviousTypoCorrector {
             } else if let first = working.first, first.isLowercase, atSentenceStart {
                 let firstWordPart = String(working.split(separator: " ").first ?? Substring(working))
                 let baseCheck = firstWordPart.replacingOccurrences(of: "'", with: "").lowercased()
-                let isRealWord = (working != word) || validWordChecker(baseCheck) || TechLexicon.wordSet.contains(baseCheck)
+                let isRealWord = (working != word)
+                    || validShortEnglishWords.contains(baseCheck)
+                    || validWordChecker(baseCheck)
+                    || TechLexicon.wordSet.contains(baseCheck)
                 if isRealWord {
                     working = working.prefix(1).uppercased() + working.dropFirst()
                 }
@@ -532,27 +544,34 @@ public enum ObviousTypoCorrector {
         return working != word ? working : nil
     }
 
-    public static func isWordAtSentenceStart(word: String, inLineBeforeCursor line: String) -> Bool {
-        guard let lastLineSub = line.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).last else {
-            return false
-        }
-        let currentLine = String(lastLineSub)
-        guard currentLine.lowercased().hasSuffix(word.lowercased()) else {
-            return false
-        }
-
-        let prefixBeforeWord = String(currentLine.dropLast(word.count))
-        let trimmedBefore = prefixBeforeWord.trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'“‘(["))
-        if trimmedBefore.isEmpty {
+    /// Returns true ONLY when:
+    /// 1. `isAtDocumentStart` is true (the very first word at index 0 of the entire text field), OR
+    /// 2. Preceding text before `word` ends with sentence-ending punctuation (`.`, `!`, `?`) followed by whitespace/newline.
+    /// Soft-wrapped visual lines and plain line breaks (`\n`) without `.`, `!`, or `?` NEVER trigger sentence capitalization.
+    public static func isWordAtSentenceStart(
+        word: String,
+        inContextBeforeCursor context: String?,
+        isAtDocumentStart: Bool = false
+    ) -> Bool {
+        if isAtDocumentStart {
             return true
         }
-
-        guard let lastRaw = prefixBeforeWord.last, lastRaw == " " || lastRaw == "\t" else {
+        guard let context, !context.isEmpty else {
+            return false
+        }
+        guard context.lowercased().hasSuffix(word.lowercased()) else {
             return false
         }
 
+        let prefixBeforeWord = String(context.dropLast(word.count))
+        // Must have at least one whitespace/newline separator after the sentence-ending punctuation
+        guard let lastRaw = prefixBeforeWord.last, lastRaw.isWhitespace else {
+            return false
+        }
+
+        // Strip trailing spaces, tabs, newlines, and closing quotes/brackets right after `.`, `!`, `?`
         let strippedRight = prefixBeforeWord.replacingOccurrences(
-            of: "[ \\t\"'”’)\\]]+$",
+            of: "[ \\t\\r\\n\"'”’)\\]]+$",
             with: "",
             options: .regularExpression
         )

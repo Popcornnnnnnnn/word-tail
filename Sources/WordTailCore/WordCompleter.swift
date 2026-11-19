@@ -116,14 +116,27 @@ public final class WordCompleter {
         return after == "\n" || after == "\r"
     }
 
+    /// Decides whether `Tab` acceptance should append a space:
+    /// - Always appends a separating space if the cursor is pressed directly against the front of a following word (`"just al|behind"` -> `"just also |behind"`).
+    /// - Otherwise honors `appendSpacePreference` while avoiding duplicate spaces before existing spaces/punctuation.
+    public static func shouldAppendSpaceOnTab(charAfterCursor: Character?, appendSpacePreference: Bool) -> Bool {
+        if let after = charAfterCursor, isASCIILetter(after) {
+            return true
+        }
+        guard appendSpacePreference else { return false }
+        return shouldAppendTrailingSpace(charAfterCursor: charAfterCursor)
+    }
+
     public func complete(
         textBeforeCursor: String,
         charAfterCursor: Character? = nil,
+        textAfterCursorOnLine: String? = nil,
         bundleID: String? = nil
     ) -> CompletionMatch? {
         candidates(
             textBeforeCursor: textBeforeCursor,
             charAfterCursor: charAfterCursor,
+            textAfterCursorOnLine: textAfterCursorOnLine,
             bundleID: bundleID,
             limit: 1
         ).first
@@ -132,13 +145,11 @@ public final class WordCompleter {
     public func candidates(
         textBeforeCursor: String,
         charAfterCursor: Character? = nil,
+        textAfterCursorOnLine: String? = nil,
         bundleID: String? = nil,
         limit: Int = 5
     ) -> [CompletionMatch] {
         guard limit > 0 else { return [] }
-        if let after = charAfterCursor, !Self.allowedTrailingChars.contains(after) {
-            return []
-        }
 
         guard let rawLastLine = textBeforeCursor.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).last else {
             return []
@@ -171,6 +182,17 @@ public final class WordCompleter {
         let letterCount = prefix.filter(Self.isASCIILetter).count
         guard letterCount >= minimumPrefixLength else {
             return []
+        }
+
+        let effectiveCharAfter = charAfterCursor ?? textAfterCursorOnLine?.first
+        if let after = effectiveCharAfter, !Self.allowedTrailingChars.contains(after) {
+            // Allow mid-sentence insertion directly against the start of an existing word ("just al|behind" or "to kn|the")
+            // ONLY when `trailingWord` is a complete standalone word AND `prefix + trailingWord` is NOT a single valid word!
+            guard Self.isASCIILetter(after),
+                  let afterLine = textAfterCursorOnLine,
+                  Self.isInsertingBeforeSeparateWord(prefix: prefix, afterSlice: afterLine) else {
+                return []
+            }
         }
 
         let prevWord = Self.extractImmediatePreviousWord(chars: chars, beforeIndex: wordStart)
@@ -343,6 +365,23 @@ public final class WordCompleter {
         let suffix = adapted.dropFirst(prefix.count)
         guard suffix.count >= minimumSuffixLength else { return nil }
         return adapted
+    }
+
+    private static func isInsertingBeforeSeparateWord(prefix: String, afterSlice: String) -> Bool {
+        let trailingLetters = String(afterSlice.prefix(while: { isASCIILetter($0) || $0 == "'" })).lowercased()
+        guard !trailingLetters.isEmpty else { return false }
+
+        // If `prefix + trailingLetters` forms a valid single English word (e.g. "kn" + "ow" = "know", "comp" + "uter" = "computer"),
+        // the cursor is inside a single word—do NOT suggest!
+        let glued = (prefix + trailingLetters).lowercased()
+        if TypingHabitTracker.defaultValidEnglishWordCheck(glued) || TechLexicon.wordSet.contains(glued) {
+            return false
+        }
+
+        // Only allow if `trailingLetters` itself is already a valid standalone English word ("the", "behind", "in", "to", etc.)!
+        return ObviousTypoCorrector.validShortEnglishWords.contains(trailingLetters)
+            || TypingHabitTracker.defaultValidEnglishWordCheck(trailingLetters)
+            || TechLexicon.wordSet.contains(trailingLetters)
     }
 
     private static func isASCIILetter(_ ch: Character) -> Bool {
