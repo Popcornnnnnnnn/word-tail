@@ -436,16 +436,14 @@ final class TypingEngine {
             return
         }
 
-        let mask: CGEventMask =
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.flagsChanged.rawValue) |
-            (1 << CGEventType.leftMouseDown.rawValue) |
-            (1 << CGEventType.rightMouseDown.rawValue) |
-            (1 << CGEventType.otherMouseDown.rawValue) |
-            (1 << CGEventType.mouseMoved.rawValue) |
-            (1 << CGEventType.leftMouseDragged.rawValue) |
-            (1 << CGEventType.rightMouseDragged.rawValue) |
-            (1 << CGEventType.scrollWheel.rawValue)
+        let eventTypes: [CGEventType] = [
+            .keyDown, .flagsChanged,
+            .leftMouseDown, .rightMouseDown, .otherMouseDown, .mouseMoved,
+            .leftMouseDragged, .rightMouseDragged, .scrollWheel
+        ]
+        let mask = eventTypes.reduce(CGEventMask(0)) { mask, eventType in
+            mask | (CGEventMask(1) << eventType.rawValue)
+        }
 
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
         guard let tTap = CGEvent.tapCreate(

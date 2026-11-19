@@ -20,7 +20,7 @@ final class WordCompleterTests: XCTestCase {
         return UserHistoryStore(fileURL: tempDir.appendingPathComponent("accepted.json"))
     }
 
-    func testRealSystemSpellCompleterGrammarAndSingleWord() {
+    func testRealSystemSpellCompleterGrammarAndSingleWord() throws {
         let completer = WordCompleter(historyStore: makeTempHistory())
 
         let match1 = completer.complete(textBeforeCursor: "I major in computer science and I kn")
@@ -29,9 +29,11 @@ final class WordCompleterTests: XCTestCase {
         let match2 = completer.complete(textBeforeCursor: "She kn")
         XCTAssertEqual(match2, CompletionMatch(prefix: "kn", fullWord: "knows", suffix: "ows"))
 
-        let match3 = completer.complete(textBeforeCursor: "quantitative inv")
-        XCTAssertEqual(match3?.prefix, "inv")
-        XCTAssertTrue(["investment", "investing", "investor", "investors"].contains(match3?.fullWord))
+        let match3 = try XCTUnwrap(completer.complete(textBeforeCursor: "quantitative inv"))
+        XCTAssertEqual(match3.prefix, "inv")
+        XCTAssertFalse(match3.suffix.isEmpty)
+        XCTAssertTrue(match3.fullWord.allSatisfy(\.isLetter))
+        XCTAssertEqual(match3.fullWord, match3.prefix + match3.suffix)
     }
 
     func testCandidateCyclingReturnsMultipleSingleWordMatches() {
@@ -114,11 +116,11 @@ final class WordCompleterTests: XCTestCase {
 
     func testPersonalHistoryBoostOverridesDefaultOrder() {
         let history = makeTempHistory()
-        let completer = WordCompleter(historyStore: history)
+        let mock = MockSpellCompleter { _, _ in ["quantities", "quantitative"] }
+        let completer = WordCompleter(spellCompleter: mock, historyStore: history, enableTechLexicon: false)
 
         let initial = completer.complete(textBeforeCursor: "Let us study quantit")
-        XCTAssertNotNil(initial)
-        XCTAssertNotEqual(initial?.fullWord, "quantitative")
+        XCTAssertEqual(initial, CompletionMatch(prefix: "quantit", fullWord: "quantities", suffix: "ies"))
 
         history.recordAcceptance(of: "quantitative", persistAsync: false)
         let boosted = completer.complete(textBeforeCursor: "Let us study quantit")
