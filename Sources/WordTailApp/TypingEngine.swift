@@ -31,6 +31,7 @@ final class TypingEngine {
     private struct PendingSpaceUndo {
         let originalWord: String
         let replacedWith: String
+        let delimiter: String
     }
     private var pendingSpaceUndo: PendingSpaceUndo?
     private var suppressedWordOnce: String?
@@ -789,13 +790,15 @@ final class TypingEngine {
             return nil
         }
 
-        // Backspace -> first check 1-press Undo of an immediate `Space` auto-correction; otherwise normal delete!
+        // Backspace -> first check 1-press Undo of an immediate Space/punctuation auto-correction; otherwise normal delete!
         if keyCode == kVK_Delete {
             if let undo = pendingSpaceUndo {
                 pendingSpaceUndo = nil
-                suppressedWordOnce = undo.originalWord
-                let diff = ObviousTypoCorrector.minimalDiff(from: undo.replacedWith + " ", to: undo.originalWord)
-                let dropLen = min(rollingBuffer.count, undo.replacedWith.count + 1)
+                let baseTrigger = undo.originalWord.hasSuffix(".") ? String(undo.originalWord.dropLast()) : undo.originalWord
+                suppressedWordOnce = baseTrigger
+                let currentEditorSpan = undo.replacedWith + undo.delimiter
+                let diff = ObviousTypoCorrector.minimalDiff(from: currentEditorSpan, to: undo.originalWord)
+                let dropLen = min(rollingBuffer.count, currentEditorSpan.count)
                 rollingBuffer = String(rollingBuffer.dropLast(dropLen)) + undo.originalWord
                 if rollingBuffer.count > 80 {
                     rollingBuffer = String(rollingBuffer.suffix(80))
@@ -803,7 +806,7 @@ final class TypingEngine {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     if self.enableHabitLearning {
-                        self.adaptiveStore.recordUndo(forTrigger: undo.originalWord)
+                        self.adaptiveStore.recordUndo(forTrigger: baseTrigger)
                     }
                     if diff.deleteCount > 0 {
                         self.injectBackspaces(count: diff.deleteCount)
@@ -864,41 +867,66 @@ final class TypingEngine {
             return Unmanaged.passUnretained(event)
         }
 
-        // Space -> check high-confidence auto-correction ("im" -> "I'm", "teh" -> "the", learned patterns)
-        // and sentence-start / standalone-"I" capitalization!
-        if keyCode == kVK_Space, !flags.contains(.maskShift) {
+        let typedUnicode = Self.unicodeString(from: event)
+        let boundaryTriggerDelimiter: String? = {
+            if keyCode == kVK_Space && !flags.contains(.maskShift) {
+                return " "
+            }
+            if let s = typedUnicode, s == "," || s == "!" || s == "?" || s == ";" {
+                return s
+            }
+            return nil
+        }()
+
+        // Space or clause/sentence punctuation (`,`, `!`, `?`, `;`, plus `<word>.` + Space) ->
+        // check high-confidence auto-correction ("im," -> "I'm,", "teh " -> "the ") and sentence-start capitalization ("wow," -> "Wow,")!
+        if let delim = boundaryTriggerDelimiter {
             pendingSpaceUndo = nil
             let bid = activeBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             if bid != Bundle.main.bundleIdentifier,
                (autoCorrectOnSpace || autoCapitalizeSentences),
                inputGuard.shouldAllowPrediction(frontmostBundleID: bid),
-               let typedWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: rollingBuffer) {
+               let target = ObviousTypoCorrector.extractPunctuationOrSpaceTarget(
+                   rollingBuffer: rollingBuffer,
+                   typedDelimiter: delim
+               ) {
+                let typedWord = target.word
                 let wasJustUndone = (suppressedWordOnce == typedWord)
                 suppressedWordOnce = nil
 
                 if !wasJustUndone {
-                    // Zero-IPC fast path: skip synchronous AX queries on Space for ~90%+ of words (when `rollingBuffer`
-                    // already confirms `<word/comma> <typedWord>` mid-sentence, or when capitalization isn't needed).
                     let lineCtx: String?
                     let isDocStart: Bool
                     let sliceAtZero: Bool
                     if ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
                         forWord: typedWord,
-                        rollingBuffer: rollingBuffer,
+                        rollingBuffer: target.bufferUpToWord,
                         autoCorrectTypos: autoCorrectOnSpace,
                         autoCapitalizeSentences: autoCapitalizeSentences,
                         adaptiveStore: adaptiveStore
                     ) {
+                        let expectedInEditor = target.existingTrailingDot ? (typedWord + ".") : typedWord
                         let liveInspect = axContext.inspectLiveSentenceContext(
                             targetApp: nil,
-                            expectedTrailingWord: typedWord,
+                            expectedTrailingWord: expectedInEditor,
                             enableChromiumBridge: enableChromiumBridge
                         )
-                        lineCtx = liveInspect.context ?? resolvedLineContextForWord(typedWord)
-                        isDocStart = liveInspect.context != nil ? liveInspect.isAtDocumentStart : lastCapturedDocumentStart
-                        sliceAtZero = liveInspect.context != nil ? liveInspect.sliceStartsAtDocumentZero : false
+                        if let rawLive = liveInspect.context {
+                            let strippedLive = target.existingTrailingDot && rawLive.hasSuffix(".")
+                                ? String(rawLive.dropLast())
+                                : rawLive
+                            lineCtx = strippedLive
+                            isDocStart = target.existingTrailingDot
+                                ? (liveInspect.sliceStartsAtDocumentZero && AXCaretContext.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: strippedLive))
+                                : liveInspect.isAtDocumentStart
+                            sliceAtZero = liveInspect.sliceStartsAtDocumentZero
+                        } else {
+                            lineCtx = resolvedLineContextForWord(typedWord)
+                            isDocStart = lastCapturedDocumentStart
+                            sliceAtZero = false
+                        }
                     } else {
-                        lineCtx = rollingBuffer
+                        lineCtx = target.bufferUpToWord
                         isDocStart = false
                         sliceAtZero = false
                     }
@@ -920,38 +948,45 @@ final class TypingEngine {
                         activeSnapshot = nil
                         lastCapturedDocumentStart = false
 
-                        let srcSpan = transform.replacedSourceSpan
-                        let replacement = transform.replacementText
-                        let diff = ObviousTypoCorrector.minimalDiff(from: srcSpan, to: replacement)
-                        rollingBuffer = String(rollingBuffer.dropLast(min(rollingBuffer.count, srcSpan.count))) + replacement + " "
+                        let srcSpanInEditor = target.existingTrailingDot ? (transform.replacedSourceSpan + ".") : transform.replacedSourceSpan
+                        let replacementInEditor = target.existingTrailingDot ? (transform.replacementText + ".") : transform.replacementText
+                        let outDelim = target.outputDelimiter
+
+                        let diff = ObviousTypoCorrector.minimalDiff(from: srcSpanInEditor, to: replacementInEditor)
+                        rollingBuffer = String(rollingBuffer.dropLast(min(rollingBuffer.count, srcSpanInEditor.count))) + replacementInEditor + outDelim
                         if rollingBuffer.count > 80 {
                             rollingBuffer = String(rollingBuffer.suffix(80))
                         }
                         if let lineCtx,
                            ObviousTypoCorrector.normalizeApostrophes(lineCtx).lowercased().hasSuffix(
-                               ObviousTypoCorrector.normalizeApostrophes(srcSpan).lowercased()
+                               ObviousTypoCorrector.normalizeApostrophes(transform.replacedSourceSpan).lowercased()
                            ) {
-                            lastCapturedLineText = String(lineCtx.dropLast(srcSpan.count)) + replacement + " "
+                            lastCapturedLineText = String(lineCtx.dropLast(transform.replacedSourceSpan.count)) + replacementInEditor + outDelim
                         }
-                        pendingSpaceUndo = PendingSpaceUndo(originalWord: srcSpan, replacedWith: replacement)
+                        pendingSpaceUndo = PendingSpaceUndo(
+                            originalWord: srcSpanInEditor,
+                            replacedWith: replacementInEditor,
+                            delimiter: outDelim
+                        )
 
                         DispatchQueue.main.async { [weak self] in
                             guard let self else { return }
                             if diff.deleteCount > 0 {
                                 self.injectBackspaces(count: diff.deleteCount)
                             }
-                            self.injectUnicodeString(diff.insertText + " ")
+                            self.injectUnicodeString(diff.insertText + outDelim)
                             if self.enableHabitLearning {
-                                if let completed = self.habitTracker.recordTypedCharacters(" ", bundleID: bid) {
+                                if let completed = self.habitTracker.recordTypedCharacters(outDelim, bundleID: bid) {
                                     self.historyStore.recordNaturalWordUsage(
                                         word: completed.word,
                                         previousWord: completed.previousWord,
                                         bundleID: completed.bundleID
                                     )
                                 }
-                                self.recordPhraseWordIfValid(replacement, endedSentence: false)
+                                let ended = outDelim.contains(".") || outDelim == "!" || outDelim == "?" || outDelim == ";"
+                                self.recordPhraseWordIfValid(transform.replacementText, endedSentence: ended)
                             }
-                            if self.enablePhrasePrediction {
+                            if outDelim == " " && self.enablePhrasePrediction {
                                 self.schedulePredictionQuery()
                             }
                         }
@@ -966,7 +1001,7 @@ final class TypingEngine {
             suppressedWordOnce = nil
         }
 
-        if let typed = Self.unicodeString(from: event), !typed.isEmpty {
+        if let typed = typedUnicode, !typed.isEmpty {
             let firstTypedChar = typed.first
             let isPhraseBoundaryChar = firstTypedChar.map { " ,.!?;:\n\r".contains($0) } ?? false
             let wordBeforeBoundary = isPhraseBoundaryChar

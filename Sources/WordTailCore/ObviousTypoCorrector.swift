@@ -376,9 +376,9 @@ public enum ObviousTypoCorrector {
 
     /// Valid 1- and 2-letter English words (rejected by `>= 3`-char spellcheckers, but valid sentence starters & standalone words).
     public static let validShortEnglishWords: Set<String> = [
-        "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "hi",
+        "a", "i", "ah", "am", "an", "as", "at", "be", "by", "do", "eh", "go", "he", "hi", "hm",
         "if", "in", "is", "it", "me", "my", "no", "of", "oh", "ok", "on", "or",
-        "so", "to", "up", "us", "we"
+        "so", "to", "uh", "um", "up", "us", "we", "yo"
     ]
 
     private static let nonSentenceEndingAbbreviations: Set<String> = [
@@ -1168,6 +1168,56 @@ public enum ObviousTypoCorrector {
             }
         }
 
+        return nil
+    }
+
+    public struct BoundaryTransformTarget: Equatable, Sendable {
+        public let word: String
+        public let bufferUpToWord: String
+        public let existingTrailingDot: Bool
+        public let outputDelimiter: String
+    }
+
+    /// Resolves whether a typed delimiter (`Space`, `,`, `!`, `?`, `;`, or `Space` right after `<word>.`)
+    /// completes a standalone prose word eligible for auto-correction / sentence-start capitalization.
+    /// Keeps filenames/domains (`notes.md`, `github.com`, `e.g.`) untouched by waiting for `Space` after `.`.
+    public static func extractPunctuationOrSpaceTarget(
+        rollingBuffer: String,
+        typedDelimiter: String
+    ) -> BoundaryTransformTarget? {
+        if typedDelimiter == " " {
+            if let word = extractTrailingStandaloneWord(from: rollingBuffer) {
+                return BoundaryTransformTarget(
+                    word: word,
+                    bufferUpToWord: rollingBuffer,
+                    existingTrailingDot: false,
+                    outputDelimiter: " "
+                )
+            }
+            if rollingBuffer.hasSuffix("."), !rollingBuffer.hasSuffix("..") {
+                let withoutDot = String(rollingBuffer.dropLast())
+                if let word = extractTrailingStandaloneWord(from: withoutDot) {
+                    return BoundaryTransformTarget(
+                        word: word,
+                        bufferUpToWord: withoutDot,
+                        existingTrailingDot: true,
+                        outputDelimiter: " "
+                    )
+                }
+            }
+            return nil
+        }
+
+        if typedDelimiter == "," || typedDelimiter == "!" || typedDelimiter == "?" || typedDelimiter == ";" {
+            if let word = extractTrailingStandaloneWord(from: rollingBuffer) {
+                return BoundaryTransformTarget(
+                    word: word,
+                    bufferUpToWord: rollingBuffer,
+                    existingTrailingDot: false,
+                    outputDelimiter: typedDelimiter
+                )
+            }
+        }
         return nil
     }
 

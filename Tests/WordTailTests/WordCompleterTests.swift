@@ -958,5 +958,31 @@ final class WordCompleterTests: XCTestCase {
             ),
             "Repo"
         )
+
+        // 7. Punctuation-delimited starters & contractions ("wow," -> "Wow,", "thanks!" -> "Thanks!", "yes. " -> "Yes. ", while "notes.md" & "e.g. " skip!)
+        let commaTarget = ObviousTypoCorrector.extractPunctuationOrSpaceTarget(rollingBuffer: "wow", typedDelimiter: ",")
+        XCTAssertEqual(commaTarget?.word, "wow")
+        XCTAssertEqual(commaTarget?.outputDelimiter, ",")
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: commaTarget!.word,
+                lineContextIncludingWord: commaTarget!.bufferUpToWord,
+                isAtDocumentStart: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Wow"
+        )
+
+        let dotSpaceTarget = ObviousTypoCorrector.extractPunctuationOrSpaceTarget(rollingBuffer: "yes.", typedDelimiter: " ")
+        XCTAssertEqual(dotSpaceTarget?.word, "yes")
+        XCTAssertEqual(dotSpaceTarget?.existingTrailingDot, true)
+
+        // Abbreviations ("e.g.") and domain/file dots ("notes.md.") are never extracted as standalone dot-space targets!
+        XCTAssertNil(ObviousTypoCorrector.extractPunctuationOrSpaceTarget(rollingBuffer: "e.g.", typedDelimiter: " "))
+        XCTAssertNil(ObviousTypoCorrector.extractPunctuationOrSpaceTarget(rollingBuffer: "notes.md", typedDelimiter: "."))
     }
 }
