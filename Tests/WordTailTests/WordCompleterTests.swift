@@ -145,6 +145,46 @@ final class WordCompleterTests: XCTestCase {
         ), "I also")
     }
 
+    func testCapitalizesWhenPreviousParagraphWasNotTypedInWordTail() throws {
+        let target = try XCTUnwrap(ObviousTypoCorrector.extractPunctuationOrSpaceTarget(
+            rollingBuffer: "also",
+            typedDelimiter: ","
+        ))
+        let context = ObviousTypoCorrector.sentenceContext(
+            forFirstWord: target.word,
+            paragraphPrefix: "also",
+            readPreviousTail: { "card.\n" }
+        )
+        XCTAssertEqual(context, "card.\nalso")
+        let replacement = ObviousTypoCorrector.spaceReplacement(
+            forWord: target.word,
+            lineContextIncludingWord: context,
+            autoCorrectTypos: false,
+            autoCapitalizeSentences: true,
+            habitTracker: nil,
+            historyStore: nil,
+            validWordChecker: { $0 == "also" }
+        )
+        XCTAssertEqual(replacement.map { $0 + target.outputDelimiter }, "Also,")
+
+        for previousTail in ["card", "e.g."] {
+            let continuation = ObviousTypoCorrector.sentenceContext(
+                forFirstWord: "also",
+                paragraphPrefix: "also",
+                readPreviousTail: { previousTail }
+            )
+            XCTAssertFalse(ObviousTypoCorrector.isWordAtSentenceStart(word: "also", inContextBeforeCursor: continuation))
+        }
+        XCTAssertNil(ObviousTypoCorrector.sentenceContext(
+            forFirstWord: "also",
+            paragraphPrefix: "we also",
+            readPreviousTail: {
+                XCTFail("No lookback needed within the paragraph")
+                return nil
+            }
+        ))
+    }
+
     func testPersonalHistoryBoostOverridesDefaultOrder() {
         let history = makeTempHistory()
         let mock = MockSpellCompleter { _, _ in ["quantities", "quantitative"] }

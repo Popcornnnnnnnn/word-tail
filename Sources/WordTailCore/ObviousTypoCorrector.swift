@@ -1137,6 +1137,20 @@ public enum ObviousTypoCorrector {
         return hasSentenceEndingPunctuation(before: prefix) ? prefix : "\n"
     }
 
+    /// A paragraph-scoped editor response needs earlier text only for its first word.
+    public static func sentenceContext(
+        forFirstWord word: String,
+        paragraphPrefix: String,
+        readPreviousTail: () -> String?
+    ) -> String? {
+        guard containsOnlyWord(word, in: paragraphPrefix),
+              let previousTail = readPreviousTail()?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !previousTail.isEmpty else {
+            return nil
+        }
+        return previousTail + "\n" + paragraphPrefix
+    }
+
     /// Rich editors can report only the current paragraph. Recover a preceding sentence ending
     /// when the live context and the typed buffer agree on the first word of the new paragraph.
     public static func sentenceContext(
@@ -1144,15 +1158,18 @@ public enum ObviousTypoCorrector {
         liveContext: String,
         bufferedContext: String
     ) -> String {
-        let normalizedWord = normalizeApostrophes(word).lowercased()
-        let liveWord = liveContext.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalizeApostrophes(liveWord).lowercased() == normalizedWord,
+        guard containsOnlyWord(word, in: liveContext),
               let lastLine = bufferedContext.split(whereSeparator: \.isNewline).last,
-              normalizeApostrophes(lastLine.trimmingCharacters(in: .whitespaces)).lowercased() == normalizedWord,
+              containsOnlyWord(word, in: String(lastLine)),
               isWordAtSentenceStart(word: word, inContextBeforeCursor: bufferedContext) else {
             return liveContext
         }
         return bufferedContext
+    }
+
+    private static func containsOnlyWord(_ word: String, in text: String) -> Bool {
+        let normalizedText = normalizeApostrophes(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        return normalizedText.lowercased() == normalizeApostrophes(word).lowercased()
     }
 
     private static func hasSentenceEndingPunctuation(before prefixBeforeWord: String) -> Bool {
