@@ -147,6 +147,13 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var enablePhrasePrediction: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enablePhrasePrediction = enablePhrasePrediction
+        }
+    }
+
     @Published var enableHabitLearning: Bool {
         didSet {
             guard !isRefreshing, !isStaticShowcase else { return }
@@ -240,6 +247,8 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var vocabularyEntries: [VocabularyEntry] = []
     @Published var newCustomWordInput: String = ""
+    @Published var phraseEntries: [PhraseEntry] = []
+    @Published var newCustomPhraseInput: String = ""
     @Published var correctionRules: [CorrectionRuleEntry] = []
     @Published var newRuleTrigger: String = ""
     @Published var newRuleReplacement: String = ""
@@ -270,6 +279,7 @@ final class SettingsViewModel: ObservableObject {
         self.appendSpaceOnAccept = engine.appendSpaceOnAccept
         self.autoCorrectOnSpace = engine.autoCorrectOnSpace
         self.autoCapitalizeSentences = engine.autoCapitalizeSentences
+        self.enablePhrasePrediction = engine.enablePhrasePrediction
         self.enableHabitLearning = engine.enableHabitLearning
         self.enableKeyStatsTracking = engine.enableKeyStatsTracking
         self.showMenuBarKeyCount = engine.showMenuBarKeyCount
@@ -308,6 +318,7 @@ final class SettingsViewModel: ObservableObject {
         self.appendSpaceOnAccept = true
         self.autoCorrectOnSpace = true
         self.autoCapitalizeSentences = true
+        self.enablePhrasePrediction = true
         self.enableHabitLearning = true
         self.enableKeyStatsTracking = true
         self.showMenuBarKeyCount = true
@@ -342,6 +353,7 @@ final class SettingsViewModel: ObservableObject {
         appendSpaceOnAccept = engine.appendSpaceOnAccept
         autoCorrectOnSpace = engine.autoCorrectOnSpace
         autoCapitalizeSentences = engine.autoCapitalizeSentences
+        enablePhrasePrediction = engine.enablePhrasePrediction
         enableHabitLearning = engine.enableHabitLearning
         enableKeyStatsTracking = engine.enableKeyStatsTracking
         showMenuBarKeyCount = engine.showMenuBarKeyCount
@@ -357,6 +369,7 @@ final class SettingsViewModel: ObservableObject {
         }
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         vocabularyEntries = engine.vocabularyEntries()
+        phraseEntries = engine.phrasePredictor.allEntries()
         correctionRules = engine.adaptiveStore.allEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
@@ -540,8 +553,24 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         engine.clearLearnedWords()
         vocabularyEntries = []
+        phraseEntries = []
         correctionRules = []
         learnedBigrams = []
+    }
+
+    func submitNewCustomPhrase() {
+        guard let engine,
+              engine.phrasePredictor.addCustomPhrase(newCustomPhraseInput, persistAsync: false) else {
+            return
+        }
+        newCustomPhraseInput = ""
+        phraseEntries = engine.phrasePredictor.allEntries()
+    }
+
+    func removePhraseEntry(_ entry: PhraseEntry) {
+        guard let engine else { return }
+        engine.phrasePredictor.removeEntry(entry)
+        phraseEntries = engine.phrasePredictor.allEntries()
     }
 
     func submitNewCorrectionRule() {
@@ -1697,6 +1726,65 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
+                LinearSectionHeader(
+                    title: "Pinned & Learned Phrases",
+                    subtitle: "Triggers after 2–3 anchor words; Tab accepts full phrase, ⌥→ accepts 1 word."
+                )
+
+                LinearCard {
+                    HStack(spacing: 8) {
+                        Image(systemName: "text.quote")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        TextField("Pin custom 3–10 word phrase (e.g. as far as I'm concerned)…", text: $vm.newCustomPhraseInput)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5))
+                            .onSubmit {
+                                vm.submitNewCustomPhrase()
+                            }
+                        LinearActionButton(title: "Pin", icon: nil) {
+                            vm.submitNewCustomPhrase()
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 42)
+
+                    if !vm.phraseEntries.isEmpty {
+                        ForEach(vm.phraseEntries.prefix(30)) { item in
+                            Rectangle()
+                                .fill(LinearUI.hairline(scheme))
+                                .frame(height: 1)
+                                .padding(.leading, 12)
+
+                            HStack(spacing: 6) {
+                                Text(item.anchor)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                                Text(item.continuation)
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundStyle(LinearUI.accent)
+                                LinearKbd(label: item.source.rawValue)
+                                Spacer()
+                                if item.count > 0 {
+                                    Text("\(item.count)×")
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                LinearIconButton(symbol: "xmark", helpText: "Remove phrase") {
+                                    vm.removePhraseEntry(item)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     LinearSectionHeader(
                         title: "Custom & Learned Words",
@@ -1831,6 +1919,25 @@ struct SettingsView: View {
 
                     HStack {
                         VStack(alignment: .leading, spacing: 1) {
+                            Text("Conservative Phrase Prediction")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Suggests fixed idioms (as far → as I'm concerned) & 3× repeated personal phrases")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.enablePhrasePrediction)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
                             Text("Learn Word Habits & Insights")
                                 .font(.system(size: 13, weight: .medium))
                             Text("Learns 2-word pairs, per-app vocabulary, typo traps, and local speed stats")
@@ -1910,6 +2017,21 @@ struct SettingsView: View {
                     }
                     .padding(.horizontal, 14)
                     .frame(height: 46)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        Text("Accept 1 Word of Multi-Word Phrase")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        LinearKbd(label: "⌥ →")
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 40)
 
                     Rectangle()
                         .fill(LinearUI.hairline(scheme))

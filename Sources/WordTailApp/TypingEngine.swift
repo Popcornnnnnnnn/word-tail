@@ -10,6 +10,7 @@ final class TypingEngine {
     private let historyStore: UserHistoryStore
     private let habitTracker: TypingHabitTracker
     let adaptiveStore: AdaptiveCorrectionStore
+    let phrasePredictor: PhrasePredictor
     let keyStatsStore: KeyStatsStore
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
@@ -165,6 +166,22 @@ final class TypingEngine {
         }
     }
 
+    var enablePhrasePrediction: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "WordTailEnablePhrasePrediction") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "WordTailEnablePhrasePrediction")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailEnablePhrasePrediction")
+            completer.enablePhrasePrediction = newValue
+            if !newValue {
+                phrasePredictor.resetSentenceWindow()
+            }
+        }
+    }
+
     var enableTechLexicon: Bool {
         get { completer.enableTechLexicon }
         set {
@@ -218,6 +235,7 @@ final class TypingEngine {
     func clearLearnedWords() {
         historyStore.clearAll()
         adaptiveStore.clearAll()
+        phrasePredictor.clearAll()
     }
 
     var enableHabitLearning: Bool {
@@ -231,6 +249,7 @@ final class TypingEngine {
             UserDefaults.standard.set(newValue, forKey: "WordTailEnableHabitLearning")
             if !newValue {
                 habitTracker.resetSessionContext()
+                phrasePredictor.resetSentenceWindow()
             }
         }
     }
@@ -246,6 +265,7 @@ final class TypingEngine {
     func clearInsightsAndContextualHabits() {
         habitTracker.clearAll()
         historyStore.clearContextualHabitsOnly()
+        phrasePredictor.clearLearnedOnly()
     }
 
     var enableKeyStatsTracking: Bool {
@@ -289,6 +309,7 @@ final class TypingEngine {
         historyStore: UserHistoryStore,
         habitTracker: TypingHabitTracker = TypingHabitTracker(),
         adaptiveStore: AdaptiveCorrectionStore = AdaptiveCorrectionStore(),
+        phrasePredictor: PhrasePredictor = PhrasePredictor(),
         keyStatsStore: KeyStatsStore = KeyStatsStore(),
         inputGuard: InputGuard
     ) {
@@ -296,12 +317,17 @@ final class TypingEngine {
         self.historyStore = historyStore
         self.habitTracker = habitTracker
         self.adaptiveStore = adaptiveStore
+        self.phrasePredictor = phrasePredictor
         self.keyStatsStore = keyStatsStore
         self.inputGuard = inputGuard
         completer.habitTracker = habitTracker
         completer.adaptiveStore = adaptiveStore
+        completer.phrasePredictor = phrasePredictor
         if UserDefaults.standard.object(forKey: "WordTailAutoCorrectOnSpace") != nil {
             completer.enableInlineTypoFix = UserDefaults.standard.bool(forKey: "WordTailAutoCorrectOnSpace")
+        }
+        if UserDefaults.standard.object(forKey: "WordTailEnablePhrasePrediction") != nil {
+            completer.enablePhrasePrediction = UserDefaults.standard.bool(forKey: "WordTailEnablePhrasePrediction")
         }
         if let front = NSWorkspace.shared.frontmostApplication,
            front.bundleIdentifier != Bundle.main.bundleIdentifier {
@@ -521,6 +547,7 @@ final class TypingEngine {
             self.activeBundleID = app?.bundleIdentifier
             self.activeAppName = app?.localizedName
             self.habitTracker.resetSessionContext()
+            self.phrasePredictor.resetSentenceWindow()
             self.dismissOverlay(clearBuffer: true)
             if let app {
                 self.axContext.warmUpApplication(app, enableChromiumBridge: self.enableChromiumBridge)
@@ -540,6 +567,7 @@ final class TypingEngine {
                     self.habitTracker.recordIMESwitch()
                 }
             }
+            self.phrasePredictor.resetSentenceWindow()
             self.dismissOverlay(clearBuffer: true)
         }
     }
@@ -591,6 +619,7 @@ final class TypingEngine {
                 let isClick = (type != .scrollWheel)
                 if isClick {
                     self.habitTracker.resetSessionContext()
+                    self.phrasePredictor.resetSentenceWindow()
                 }
                 self.lastLiveSample = nil
                 self.dismissOverlay(clearBuffer: isClick)
@@ -623,6 +652,49 @@ final class TypingEngine {
                     font: snapshot.font,
                     opacity: ghostOpacity
                 )
+            }
+            return nil
+        }
+
+        // Partial 1-word acceptance for multi-word phrases: Option + Right Arrow (`⌥ →`)
+        if overlay.isVisible,
+           let match = overlay.currentMatch,
+           !match.isTypoCorrection,
+           match.suffix.contains(" "),
+           keyCode == kVK_RightArrow,
+           flags.contains(.maskAlternate),
+           !flags.contains(.maskCommand),
+           !flags.contains(.maskControl),
+           !flags.contains(.maskShift) {
+            pendingSpaceUndo = nil
+            suppressedWordOnce = nil
+            debounceWorkItem?.cancel()
+            let (acceptedChunk, _) = PhrasePredictor.splitFirstWord(of: match.suffix)
+            let completedFirstWord = match.prefix + acceptedChunk.trimmingCharacters(in: .whitespaces)
+            let acceptedBundle = activeBundleID ?? lastObservedBundleID
+            let acceptedAppName = activeAppName ?? lastObservedAppName
+
+            overlay.hide()
+            activeCandidates.removeAll(keepingCapacity: true)
+            activeSnapshot = nil
+
+            rollingBuffer.append(acceptedChunk)
+            if rollingBuffer.count > 80 {
+                rollingBuffer = String(rollingBuffer.suffix(80))
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.injectUnicodeString(acceptedChunk)
+                if self.enableKeyStatsTracking {
+                    self.keyStatsStore.recordWordTailCompletion(
+                        charsSaved: max(1, acceptedChunk.count),
+                        appBundleID: acceptedBundle,
+                        appName: acceptedAppName
+                    )
+                }
+                self.recordPhraseWordIfValid(completedFirstWord, endedSentence: false)
+                self.schedulePredictionQuery()
             }
             return nil
         }
@@ -689,11 +761,21 @@ final class TypingEngine {
                         bundleID: acceptedBundle
                     )
                     : nil
-                self.historyStore.recordAcceptance(
-                    of: match.fullWord,
-                    previousWord: learnContext ? (outcome?.previousWord ?? prevWord) : nil,
-                    bundleID: learnContext ? acceptedBundle : nil
-                )
+                if !match.fullWord.contains(" ") {
+                    self.historyStore.recordAcceptance(
+                        of: match.fullWord,
+                        previousWord: learnContext ? (outcome?.previousWord ?? prevWord) : nil,
+                        bundleID: learnContext ? acceptedBundle : nil
+                    )
+                    if shouldAddSpace {
+                        self.recordPhraseWordIfValid(match.fullWord, endedSentence: false)
+                        if self.enablePhrasePrediction {
+                            self.schedulePredictionQuery()
+                        }
+                    }
+                } else {
+                    self.phrasePredictor.resetSentenceWindow()
+                }
             }
             return nil
         }
@@ -759,16 +841,24 @@ final class TypingEngine {
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
+                let wordBeforeReturn = ObviousTypoCorrector.extractTrailingStandaloneWord(from: rollingBuffer)
                 rollingBuffer = "\n"
                 lastCapturedLineText = nil
                 lastCapturedDocumentStart = false
                 DispatchQueue.main.async { [weak self] in
-                    self?.habitTracker.resetSessionContext()
+                    guard let self else { return }
+                    if let w = wordBeforeReturn {
+                        self.recordPhraseWordIfValid(w, endedSentence: true)
+                    } else {
+                        self.phrasePredictor.resetSentenceWindow()
+                    }
+                    self.habitTracker.resetSessionContext()
                 }
                 return Unmanaged.passUnretained(event)
             }
             DispatchQueue.main.async { [weak self] in
                 self?.habitTracker.resetSessionContext()
+                self?.phrasePredictor.resetSentenceWindow()
                 self?.dismissOverlay(clearBuffer: true)
             }
             return Unmanaged.passUnretained(event)
@@ -837,6 +927,10 @@ final class TypingEngine {
                                         bundleID: completed.bundleID
                                     )
                                 }
+                                self.recordPhraseWordIfValid(replacement, endedSentence: false)
+                            }
+                            if self.enablePhrasePrediction {
+                                self.schedulePredictionQuery()
                             }
                         }
                         return nil
@@ -851,6 +945,12 @@ final class TypingEngine {
         }
 
         if let typed = Self.unicodeString(from: event), !typed.isEmpty {
+            let firstTypedChar = typed.first
+            let isPhraseBoundaryChar = firstTypedChar.map { " ,.!?;:\n\r".contains($0) } ?? false
+            let wordBeforeBoundary = isPhraseBoundaryChar
+                ? ObviousTypoCorrector.extractTrailingStandaloneWord(from: rollingBuffer)
+                : nil
+
             rollingBuffer.append(typed)
             if rollingBuffer.count > 80 {
                 rollingBuffer = String(rollingBuffer.suffix(80))
@@ -874,6 +974,18 @@ final class TypingEngine {
                             bundleID: completed.bundleID
                         )
                     }
+                    if let ch = firstTypedChar {
+                        if isPhraseBoundaryChar {
+                            let ended = ".!?;:\n\r".contains(ch)
+                            if let w = wordBeforeBoundary {
+                                self.recordPhraseWordIfValid(w, endedSentence: ended)
+                            } else if ended {
+                                self.phrasePredictor.resetSentenceWindow()
+                            }
+                        } else if "/\\@_".contains(ch) {
+                            self.phrasePredictor.resetSentenceWindow()
+                        }
+                    }
                 }
             }
 
@@ -884,6 +996,11 @@ final class TypingEngine {
                     }
                 }
                 schedulePredictionQuery()
+            } else if typed == " " && enablePhrasePrediction {
+                overlay.hide()
+                activeCandidates.removeAll(keepingCapacity: true)
+                activeSnapshot = nil
+                schedulePredictionQuery()
             } else {
                 DispatchQueue.main.async { [weak self] in
                     self?.dismissOverlay(clearBuffer: false)
@@ -892,6 +1009,32 @@ final class TypingEngine {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    private func recordPhraseWordIfValid(_ rawText: String, endedSentence: Bool) {
+        guard enableHabitLearning && enablePhrasePrediction else { return }
+        let parts = rawText.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !parts.isEmpty else { return }
+
+        for (idx, token) in parts.enumerated() {
+            let clean = token.trimmingCharacters(in: CharacterSet(charactersIn: ",.!?;:\"'()[]{}"))
+            let lower = clean.lowercased()
+            let isValid: Bool
+            if clean.count <= 2 {
+                isValid = ObviousTypoCorrector.validShortEnglishWords.contains(lower)
+            } else {
+                isValid = historyStore.isCustomWord(clean)
+                    || TypingHabitTracker.defaultValidEnglishWordCheck(clean)
+                    || clean.contains("'")
+            }
+            if isValid {
+                let isLast = (idx == parts.count - 1)
+                phrasePredictor.observeCompletedWord(clean, endedSentence: isLast && endedSentence)
+            } else {
+                phrasePredictor.resetSentenceWindow()
+                return
+            }
+        }
     }
 
     private func schedulePredictionQuery() {

@@ -387,8 +387,15 @@ final class AXCaretContext {
 
     private func characterRectAndFont(element: AXUIElement, caretLocation: Int) -> (CGRect, NSFont)? {
         var resolvedRect: CGRect?
-        if caretLocation > 0, let prevRect = boundsForRange(element, location: caretLocation - 1, length: 1),
+        if caretLocation > 0, var prevRect = boundsForRange(element, location: caretLocation - 1, length: 1),
            Self.isValidCaretRect(prevRect) {
+            if let caretRect = boundsForRange(element, location: caretLocation, length: 0),
+               Self.isValidCaretRect(caretRect),
+               abs(caretRect.origin.y - prevRect.origin.y) < 6,
+               caretRect.origin.x > prevRect.maxX,
+               (caretRect.origin.x - prevRect.maxX) <= 18 {
+                prevRect.size.width = caretRect.origin.x - prevRect.origin.x
+            }
             resolvedRect = prevRect
         } else if let caretRect = boundsForRange(element, location: caretLocation, length: 0),
                   Self.isValidCaretRect(caretRect) {
@@ -502,12 +509,20 @@ final class AXCaretContext {
             }
         }
 
-        // Fallback to collapsed caret marker range if preceding-char range wasn't available.
+        // Fallback to collapsed caret marker range if preceding-char range wasn't available,
+        // or widen trailing-space X when WebKit/Blink reports zero width for a trailing space!
         var rawCandidateRect = CGRect.zero
-        if resolvedRect == nil,
-           let collapsedRect = boundsForTextMarkerRange(element: element, markerRange: markerRangeRef) {
+        if let collapsedRect = boundsForTextMarkerRange(element: element, markerRange: markerRangeRef) {
             rawCandidateRect = collapsedRect
-            if Self.isValidCaretRect(collapsedRect) {
+            if var prev = resolvedRect {
+                if Self.isValidCaretRect(collapsedRect),
+                   abs(collapsedRect.origin.y - prev.origin.y) < 6,
+                   collapsedRect.origin.x > prev.maxX,
+                   (collapsedRect.origin.x - prev.maxX) <= 18 {
+                    prev.size.width = collapsedRect.origin.x - prev.origin.x
+                    resolvedRect = prev
+                }
+            } else if Self.isValidCaretRect(collapsedRect) {
                 resolvedRect = collapsedRect
             }
         }

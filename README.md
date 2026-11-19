@@ -59,7 +59,8 @@ Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electr
 
 | Shortcut | Action |
 | --- | --- |
-| `Tab` | Accept visible word completion or inline typo fix (`→ word`) |
+| `Tab` | Accept visible word/phrase completion or inline typo fix (`→ word`) |
+| `⌥ →` | Accept **1 word** of a multi-word phrase completion (`as `, leaving `I'm concerned`) |
 | `Space` | Auto-correct contractions/typos (`im` → `I'm`, `teh` → `the`) & capitalize sentence starts |
 | `⌫` (after `Space`) | Revert an auto-correction immediately (no re-correct loop; 2× mutes trigger) |
 | `⌥ ]` / `⌥ [` | Cycle next / previous single-word candidate (top 5 matches) |
@@ -81,6 +82,7 @@ Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electr
 2. **Habit-Aware Contextual Ranking & Bidirectionally Learnable Auto-Correct (`< 1 ms`, Zero Network):**
    - **Pinned Custom Words & Shorthand** → **Personal Bigrams (`prevWord → word`)** → **Per-App Vocabulary (`bundleID → word`)** → **Typo-Trap Auto-Rescue** → **Accepted Word Frequency** → **macOS Grammar Completion** → **CS/AI Lexicon**.
    - **Learnable Patterns:** Built-in contractions (`im` → `I'm`, `dont` → `don't`, `alot` → `a lot`, sentence-start `lets` → `Let's`), sentence-start & standalone-`"I"` capitalization (skipping CLI/dev commands like `git`, `kubectl`, `macOS`), positive graduation from your own repairs (`2×`), and automatic muting when undone twice with `⌫`.
+   - **Conservative Phrase Mode (`< 1 ms`, zero LLM):** Suggests high-certainty English idioms after 2–3 anchor words (`"as far "` → `as I'm concerned` / `as I know`, `"on the other "` → `hand`) and personal phrases you repeat `3×+` with `>= 50%` consistency (keeping one-off sequences in RAM only so unique sentences never touch disk). `Tab` accepts the full phrase; `⌥ →` accepts one word at a time.
 3. **Strict Privacy Boundary:**
    - Zero network calls, zero telemetry, zero raw sentence storage.
    - Passive habit counters (`word_bigrams.json`, `app_vocabulary.json`, `typing_insights.json`) accept **only** dictionary/lexicon-verified single English words and aggregate hourly counts—and can be disabled or cleared in one click.

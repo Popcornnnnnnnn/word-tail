@@ -84,29 +84,35 @@ public final class WordCompleter {
     private let historyStore: UserHistoryStore
     public weak var habitTracker: TypingHabitTracker?
     public var adaptiveStore: AdaptiveCorrectionStore?
+    public var phrasePredictor: PhrasePredictor?
     public var minimumPrefixLength: Int
     public var minimumSuffixLength: Int
     public var enableTechLexicon: Bool
     public var enableInlineTypoFix: Bool
+    public var enablePhrasePrediction: Bool
 
     public init(
         spellCompleter: SpellCompleting = SystemSpellCompleter(),
         historyStore: UserHistoryStore = UserHistoryStore(),
         habitTracker: TypingHabitTracker? = nil,
         adaptiveStore: AdaptiveCorrectionStore? = nil,
+        phrasePredictor: PhrasePredictor? = nil,
         minimumPrefixLength: Int = 2,
         minimumSuffixLength: Int = 2,
         enableTechLexicon: Bool = true,
-        enableInlineTypoFix: Bool = true
+        enableInlineTypoFix: Bool = true,
+        enablePhrasePrediction: Bool = true
     ) {
         self.spellCompleter = spellCompleter
         self.historyStore = historyStore
         self.habitTracker = habitTracker
         self.adaptiveStore = adaptiveStore
+        self.phrasePredictor = phrasePredictor
         self.minimumPrefixLength = minimumPrefixLength
         self.minimumSuffixLength = minimumSuffixLength
         self.enableTechLexicon = enableTechLexicon
         self.enableInlineTypoFix = enableInlineTypoFix
+        self.enablePhrasePrediction = enablePhrasePrediction
     }
 
     /// Returns true only when appending a trailing space after `Tab` will not create a duplicate space
@@ -180,11 +186,33 @@ public final class WordCompleter {
 
         let prefix = String(chars[wordStart..<chars.count])
         let letterCount = prefix.filter(Self.isASCIILetter).count
-        guard letterCount >= minimumPrefixLength else {
-            return []
+        let effectiveCharAfter = charAfterCursor ?? textAfterCursorOnLine?.first
+
+        // Case 1: Cursor sits immediately after a single Space ("as far |" or "one more |") -> Conservative Phrase Prediction!
+        if prefix.isEmpty {
+            guard enablePhrasePrediction,
+                  let predictor = phrasePredictor,
+                  chars.last == " ",
+                  chars.count >= 4,
+                  chars[chars.count - 2] != " " else {
+                return []
+            }
+            if let after = effectiveCharAfter, !Self.allowedTrailingChars.contains(after) {
+                guard Self.isASCIILetter(after),
+                      let afterLine = textAfterCursorOnLine,
+                      Self.isInsertingBeforeSeparateWord(prefix: "", afterSlice: afterLine) else {
+                    return []
+                }
+            }
+            let preceding = Self.extractPrecedingSentenceWords(chars: chars, beforeIndex: wordStart, maxWords: 3)
+            guard preceding.count >= 2 else { return [] }
+            let phrases = predictor.predictAfterSpace(precedingWords: preceding, limit: limit)
+            return phrases.map { phrase in
+                CompletionMatch(prefix: "", fullWord: phrase, suffix: phrase, previousWord: preceding.last)
+            }
         }
 
-        let effectiveCharAfter = charAfterCursor ?? textAfterCursorOnLine?.first
+        // Case 2: Mid-word — validate trailing boundary first so neither phrase nor word completions fire inside a single word ("kn|ow").
         if let after = effectiveCharAfter, !Self.allowedTrailingChars.contains(after) {
             // Allow mid-sentence insertion directly against the start of an existing word ("just al|behind" or "to kn|the")
             // ONLY when `trailingWord` is a complete standalone word AND `prefix + trailingWord` is NOT a single valid word!
@@ -193,6 +221,34 @@ public final class WordCompleter {
                   Self.isInsertingBeforeSeparateWord(prefix: prefix, afterSlice: afterLine) else {
                 return []
             }
+        }
+
+        // Check conservative multi-word phrase continuation first (even on 1st letter like "as far a")!
+        let precedingSentenceWords = enablePhrasePrediction
+            ? Self.extractPrecedingSentenceWords(chars: chars, beforeIndex: wordStart, maxWords: 3)
+            : []
+        let phraseMatches: [CompletionMatch]
+        if enablePhrasePrediction,
+           let predictor = phrasePredictor,
+           precedingSentenceWords.count >= 2 {
+            phraseMatches = predictor.predictMidWord(
+                precedingWords: precedingSentenceWords,
+                currentPrefix: prefix,
+                limit: 2
+            ).map { full in
+                CompletionMatch(
+                    prefix: prefix,
+                    fullWord: full,
+                    suffix: String(full.dropFirst(prefix.count)),
+                    previousWord: precedingSentenceWords.last
+                )
+            }
+        } else {
+            phraseMatches = []
+        }
+
+        guard letterCount >= minimumPrefixLength else {
+            return Array(phraseMatches.prefix(limit))
         }
 
         let prevWord = Self.extractImmediatePreviousWord(chars: chars, beforeIndex: wordStart)
@@ -293,11 +349,25 @@ public final class WordCompleter {
             return lhs.offset < rhs.offset
         }
 
-        return ranked.prefix(limit).map { entry in
+        let singleWordMatches = ranked.prefix(limit).map { entry in
             let full = entry.element
             let suffix = String(full.dropFirst(prefix.count))
             return CompletionMatch(prefix: prefix, fullWord: full, suffix: suffix, previousWord: prevWord)
         }
+
+        if phraseMatches.isEmpty {
+            return singleWordMatches
+        }
+
+        var mergedOut: [CompletionMatch] = []
+        var seenFull = Set<String>()
+        for m in phraseMatches + singleWordMatches {
+            if seenFull.insert(m.fullWord.lowercased()).inserted {
+                mergedOut.append(m)
+                if mergedOut.count >= limit { break }
+            }
+        }
+        return mergedOut
     }
 
     private func contextualPriority(for word: String, previousWord: String?, bundleID: String?) -> Int {
@@ -331,6 +401,46 @@ public final class WordCompleter {
             }
         }
         return String(chars[idx..<prevEnd]).lowercased()
+    }
+
+    /// Extracts up to `maxWords` contiguous preceding words within the same clause/sentence (stopping at `.`, `!`, `?`, `:`, `;`).
+    public static func extractPrecedingSentenceWords(chars: [Character], beforeIndex startIdx: Int, maxWords: Int = 3) -> [String] {
+        var cursor = startIdx
+        var collected: [String] = []
+
+        while cursor > 0 && collected.count < maxWords {
+            var sawSpace = false
+            while cursor > 0 && (chars[cursor - 1] == " " || chars[cursor - 1] == "\t") {
+                sawSpace = true
+                cursor -= 1
+            }
+            guard sawSpace, cursor > 0 else { break }
+
+            let wordEnd = cursor
+            while cursor > 0 {
+                let ch = chars[cursor - 1]
+                if isASCIILetter(ch) || (ch == "'" && cursor >= 2 && isASCIILetter(chars[cursor - 2])) {
+                    cursor -= 1
+                } else {
+                    break
+                }
+            }
+            guard wordEnd > cursor else { break }
+            if cursor > 0 {
+                let boundary = chars[cursor - 1]
+                // Comma is allowed inside a sentence ("well, as far "), while period/question/slash/etc. stops phrase context
+                let allowedBefore: Set<Character> = [" ", "\t", ",", "(", "[", "{", "\"", "'", "“", "‘"]
+                if !allowedBefore.contains(boundary) {
+                    break
+                }
+                if boundary == "," {
+                    collected.insert(String(chars[cursor..<wordEnd]).lowercased(), at: 0)
+                    break
+                }
+            }
+            collected.insert(String(chars[cursor..<wordEnd]).lowercased(), at: 0)
+        }
+        return collected
     }
 
     private func adaptCandidate(

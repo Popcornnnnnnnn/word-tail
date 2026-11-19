@@ -626,4 +626,67 @@ final class WordCompleterTests: XCTestCase {
         )
         XCTAssertNil(insideSingleWord)
     }
+
+    func testConservativeMultiWordPhraseIdiomsLearningPrivacyAndPartialWordSplit() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailPhrases-\(UUID().uuidString)", isDirectory: true)
+        let phraseFile = tempDir.appendingPathComponent("learned_phrases.json")
+        let predictor = PhrasePredictor(fileURL: phraseFile)
+        let completer = WordCompleter(
+            historyStore: makeTempHistory(),
+            phrasePredictor: predictor,
+            enablePhrasePrediction: true
+        )
+
+        // 1. Built-in high-certainty idioms after Space ("as far " -> "as I'm concerned", "on the other " -> "hand")
+        let asFar = completer.candidates(textBeforeCursor: "as far ", limit: 3)
+        XCTAssertEqual(asFar.first, CompletionMatch(prefix: "", fullWord: "as I'm concerned", suffix: "as I'm concerned"))
+        XCTAssertTrue(asFar.map(\.fullWord).contains("as I know"))
+
+        // Mid-word 1-letter continuation ("as far a" -> "as I'm concerned")
+        let asFarMid = completer.complete(textBeforeCursor: "as far a")
+        XCTAssertEqual(asFarMid, CompletionMatch(prefix: "a", fullWord: "as I'm concerned", suffix: "s I'm concerned"))
+
+        // Partial 1-word acceptance (`⌥ →`) splits cleanly word-by-word!
+        let step1 = PhrasePredictor.splitFirstWord(of: "as I'm concerned")
+        XCTAssertEqual(step1.acceptedChunk, "as ")
+        XCTAssertEqual(step1.remainingPhrase, "I'm concerned")
+        let step2 = PhrasePredictor.splitFirstWord(of: step1.remainingPhrase ?? "")
+        XCTAssertEqual(step2.acceptedChunk, "I'm ")
+        XCTAssertEqual(step2.remainingPhrase, "concerned")
+
+        // 2. Conservative guardrails: generic "in the ", sentence boundary "Hello. far ", and URL "https://as far " stay silent!
+        XCTAssertNil(completer.complete(textBeforeCursor: "in the "))
+        XCTAssertNil(completer.complete(textBeforeCursor: "Hello. far "))
+        XCTAssertNil(completer.complete(textBeforeCursor: "https://as far "))
+
+        // 3. Privacy & self-learning:
+        //    - 1st time typing a personal phrase ("in my humble opinion") stays in RAM probation ONLY (no disk file created)!
+        for (idx, w) in ["in", "my", "humble", "opinion"].enumerated() {
+            predictor.observeCompletedWord(w, endedSentence: idx == 3, persistAsync: false)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: phraseFile.path))
+        XCTAssertNil(completer.complete(textBeforeCursor: "in my "))
+
+        //    - 2nd time promotes to disk (`count == 2`), still conservative (waits for 3x)
+        for (idx, w) in ["in", "my", "humble", "opinion"].enumerated() {
+            predictor.observeCompletedWord(w, endedSentence: idx == 3, persistAsync: false)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: phraseFile.path))
+        XCTAssertNil(completer.complete(textBeforeCursor: "in my "))
+
+        //    - 3rd time (`count >= 3` & `confidence >= 50%`) activates conservative personal phrase prediction!
+        for (idx, w) in ["in", "my", "humble", "opinion"].enumerated() {
+            predictor.observeCompletedWord(w, endedSentence: idx == 3, persistAsync: false)
+        }
+        let learnedMatch = completer.complete(textBeforeCursor: "in my ")
+        XCTAssertEqual(learnedMatch?.fullWord, "humble opinion")
+
+        // 4. Custom pinned phrases work immediately!
+        XCTAssertTrue(predictor.addCustomPhrase("happy to review this pull request", persistAsync: false))
+        XCTAssertEqual(
+            completer.complete(textBeforeCursor: "happy to ")?.fullWord,
+            "review this pull request"
+        )
+    }
 }
