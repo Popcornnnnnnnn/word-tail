@@ -274,6 +274,9 @@ public enum ObviousTypoCorrector {
         "todo", "todos", "fixme", "noop", "bool", "int", "uint", "str", "dict", "vec",
         "idx", "len", "prev", "curr", "src", "dst", "tmp", "temp", "dir", "dirs", "pkg", "pkgs",
         "dev", "devs", "prod", "stg", "qa", "perf", "spec", "specs", "docs", "readme",
+        "wip", "poc", "mvp", "kpi", "okr", "eta", "fyi", "tbh", "imo", "imho", "afaik", "lgtm",
+        "pls", "plz", "thx", "nvm", "idk", "ikr", "smh", "lmao", "hodl", "saas", "paas", "iaas",
+        "onnx", "uuid", "uids", "conf", "confs", "sync", "awesun", "todesk", "rustdesk", "anydesk", "tailscale",
         "keystat", "keystats", "wordtail", "nihao", "xie", "xiexie", "shanghai", "beijing", "shenzhen",
         "iphone", "ipad", "airpods", "imac", "macbook", "ebay"
     ]
@@ -356,31 +359,39 @@ public enum ObviousTypoCorrector {
         "bytheway": "by the way",
 
         // High-frequency transpositions & fast-typing slips
+        "aslo": "also", "alos": "also",
+        "similat": "similar", "similiar": "similar", "simlar": "similar",
         "teh": "the", "hte": "the", "thge": "the",
         "taht": "that", "thta": "that",
-        "adn": "and", "nad": "and", "anbd": "and",
+        "adn": "and", "nad": "and", "anbd": "and", "cna": "can",
         "wiht": "with", "iwth": "with", "wtih": "with",
         "thier": "their", "theri": "their",
         "abotu": "about", "baout": "about", "abuot": "about",
         "knwo": "know", "konw": "know", "kno": "know", "nkow": "know",
         "jsut": "just", "jstu": "just",
+        "liek": "like", "liuke": "like",
+        "tahn": "than", "thna": "than",
+        "chekc": "check", "chek": "check", "checkign": "checking",
+        "yuo": "you", "yoru": "your", "yuor": "your",
         "waht": "what", "hwat": "what",
-        "whcih": "which", "wich": "which",
+        "whcih": "which", "whihc": "which", "wich": "which",
         "woudl": "would", "owuld": "would",
         "coudl": "could", "oculd": "could",
         "shoudl": "should", "shuold": "should", "shoud": "should",
         "firts": "first", "fisrt": "first",
         "agian": "again", "agin": "again",
         "beacuse": "because", "becuase": "because", "becasue": "because", "beause": "because", "cuz": "because",
-        "ahve": "have", "hvae": "have",
+        "ahve": "have", "hvae": "have", "haev": "have",
         "tihs": "this", "htis": "this",
         "fomr": "from", "frmo": "from",
         "peopel": "people", "poeple": "people",
-        "workd": "world", "wolrd": "world",
+        "workd": "world", "wolrd": "world", "worls": "world",
         "thign": "thing", "hting": "thing", "thigns": "things", "tihngs": "things",
         "otehr": "other", "ohter": "other",
         "verison": "version", "vresion": "version",
-        "probelm": "problem", "porblem": "problem", "problme": "problem",
+        "probelm": "problem", "porblem": "problem", "problme": "problem", "problms": "problems", "probelms": "problems",
+        "sentance": "sentence", "sentances": "sentences",
+        "pattren": "pattern", "parttern": "pattern", "partterns": "patterns",
         "slef": "self", "esle": "else", "ture": "true", "flase": "false", "fasle": "false",
         "retrun": "return", "reutrn": "return",
         "chnage": "change", "chaneg": "change", "chnages": "changes",
@@ -658,7 +669,8 @@ public enum ObviousTypoCorrector {
         forWord word: String,
         adaptiveStore: AdaptiveCorrectionStore? = nil,
         habitTracker: TypingHabitTracker?,
-        historyStore: UserHistoryStore?
+        historyStore: UserHistoryStore?,
+        spellCompleter: SpellCompleting = SystemSpellCompleter()
     ) -> String? {
         let lower = word.lowercased()
         if adaptiveStore?.isMuted(lower) == true {
@@ -682,7 +694,151 @@ public enum ObviousTypoCorrector {
             return adaptCase(of: personalFix, toTyped: word)
         }
 
+        // General single-edit QWERTY / transposition / missing-letter spell-checker fallback on Space
+        // (catches any obvious slip like "similat" -> "similar", "aslo" -> "also", "checkign" -> "checking"
+        // while keeping 3-letter acronyms, 4-letter non-transpositions like "vite"/"cuda", and proper nouns like "awesun" untouched!)
+        if lower.count >= 4,
+           !TypingHabitTracker.defaultValidEnglishWordCheck(lower),
+           let spellFixed = conservativeSpaceSpellFix(forLowerWord: lower, spellCompleter: spellCompleter) {
+            return adaptCase(of: spellFixed, toTyped: word)
+        }
+
         return nil
+    }
+
+    private static let qwertyNeighbors: [Character: Set<Character>] = [
+        "q": ["w", "a"],
+        "w": ["q", "e", "a", "s"],
+        "e": ["w", "r", "s", "d"],
+        "r": ["e", "t", "d", "f"],
+        "t": ["r", "y", "f", "g"],
+        "y": ["t", "u", "g", "h"],
+        "u": ["y", "i", "h", "j"],
+        "i": ["u", "o", "j", "k"],
+        "o": ["i", "p", "k", "l"],
+        "p": ["o", "l"],
+        "a": ["q", "w", "s", "z"],
+        "s": ["w", "e", "a", "d", "z", "x"],
+        "d": ["e", "r", "s", "f", "x", "c"],
+        "f": ["r", "t", "d", "g", "c", "v"],
+        "g": ["t", "y", "f", "h", "v", "b"],
+        "h": ["y", "u", "g", "j", "b", "n"],
+        "j": ["u", "i", "h", "k", "n", "m"],
+        "k": ["i", "o", "j", "l", "m"],
+        "l": ["o", "p", "k"],
+        "z": ["a", "s", "x"],
+        "x": ["z", "s", "d", "c"],
+        "c": ["x", "d", "f", "v"],
+        "v": ["c", "f", "g", "b"],
+        "b": ["v", "g", "h", "n"],
+        "n": ["b", "h", "j", "m"],
+        "m": ["n", "j", "k"]
+    ]
+
+    private static let vowels: Set<Character> = ["a", "e", "i", "o", "u"]
+    private static let spaceSpellLock = NSLock()
+    private static var spaceSpellCache: [String: String?] = [:]
+
+    private static func conservativeSpaceSpellFix(
+        forLowerWord lower: String,
+        spellCompleter: SpellCompleting
+    ) -> String? {
+        let isSystem = spellCompleter is SystemSpellCompleter
+        if isSystem {
+            spaceSpellLock.lock()
+            if let hit = spaceSpellCache[lower] {
+                spaceSpellLock.unlock()
+                return hit
+            }
+            spaceSpellLock.unlock()
+        }
+
+        let resolved: String? = {
+            guard let raw = spellCompleter.correction(forWord: lower),
+                  let first = raw.first,
+                  first.isLowercase, // ignore proper-noun suggestions ("Verizon", "Oslo")
+                  raw.allSatisfy({ $0.isASCII && $0.isLetter }) else {
+                return nil
+            }
+            let cand = raw.lowercased()
+            guard cand != lower, isSafeSingleEditSpaceTypo(typed: lower, candidate: cand) else {
+                return nil
+            }
+            return cand
+        }()
+
+        if isSystem {
+            spaceSpellLock.lock()
+            if spaceSpellCache.count >= 512 {
+                spaceSpellCache.removeAll(keepingCapacity: true)
+            }
+            spaceSpellCache[lower] = resolved
+            spaceSpellLock.unlock()
+        }
+        return resolved
+    }
+
+    public static func isSafeSingleEditSpaceTypo(typed: String, candidate: String) -> Bool {
+        let ac = Array(typed)
+        let bc = Array(candidate)
+
+        // 1. Single adjacent transposition on >= 4-letter words ("aslo" -> "also", "liek" -> "like", "checkign" -> "checking")
+        if ac.count == bc.count, ac.count >= 4 {
+            var diffs: [Int] = []
+            for i in 0..<ac.count where ac[i] != bc[i] {
+                diffs.append(i)
+                if diffs.count > 2 { break }
+            }
+            if diffs.count == 2,
+               diffs[1] == diffs[0] + 1,
+               ac[diffs[0]] == bc[diffs[1]],
+               ac[diffs[1]] == bc[diffs[0]] {
+                return true
+            }
+        }
+
+        // 2. >= 5-letter single QWERTY neighbor substitution ("similat" -> "similar", "hellp" -> "hello")
+        //    or >= 6-letter vowel slip ("sentance" -> "sentence"), keeping the first letter anchored!
+        guard ac.count >= 5, bc.count >= 5, ac.first == bc.first else {
+            return false
+        }
+
+        if ac.count == bc.count {
+            var diffIdx: Int? = nil
+            for i in 1..<ac.count where ac[i] != bc[i] {
+                if diffIdx != nil { return false }
+                diffIdx = i
+            }
+            guard let idx = diffIdx else { return false }
+            if qwertyNeighbors[ac[idx]]?.contains(bc[idx]) == true {
+                return true
+            }
+            if ac.count >= 6 && vowels.contains(ac[idx]) && vowels.contains(bc[idx]) {
+                return true
+            }
+            return false
+        }
+
+        // 3. >= 5-letter single missing or extra repeated/interior character ("problms" -> "problems", "optmize" -> "optimize")
+        if abs(ac.count - bc.count) == 1 {
+            let shorter = ac.count < bc.count ? ac : bc
+            let longer = ac.count < bc.count ? bc : ac
+            var i = 0, j = 0, skipped = false
+            while i < shorter.count && j < longer.count {
+                if shorter[i] == longer[j] {
+                    i += 1
+                    j += 1
+                } else if !skipped {
+                    skipped = true
+                    j += 1
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+
+        return false
     }
 
     /// Inline `Tab` ghost fix (`→ word`) used when normal prefix completion returns zero matches.
@@ -721,15 +877,24 @@ public enum ObviousTypoCorrector {
             }
         }
 
-        // 4. Conservative spell-checker fallback for `>= 5`-letter misspelled tokens with Damerau-Levenshtein <= 2
-        if lower.count >= 5,
-           let candidate = spellCompleter.correction(forWord: lower)?.lowercased(),
-           candidate.count >= 4,
-           candidate != lower,
-           candidate.first == lower.first,
-           candidate.allSatisfy({ ($0.isASCII && $0.isLetter) || $0 == "'" }),
-           damerauLevenshtein(lower, candidate) <= 2 {
-            return adaptCase(of: candidate, toTyped: prefix)
+        // 4. Conservative spell-checker fallback (`>= 4`-letter adjacent transpositions like "aslo" -> "also",
+        //    or `>= 5`-letter misspelled tokens with Damerau-Levenshtein <= 2)
+        if lower.count >= 4,
+           let raw = spellCompleter.correction(forWord: lower),
+           let first = raw.first,
+           first.isLowercase,
+           raw.allSatisfy({ ($0.isASCII && $0.isLetter) || $0 == "'" }) {
+            let candidate = raw.lowercased()
+            if lower.count == 4 {
+                if isSafeSingleEditSpaceTypo(typed: lower, candidate: candidate) {
+                    return adaptCase(of: candidate, toTyped: prefix)
+                }
+            } else if candidate.count >= 4,
+                      candidate != lower,
+                      candidate.first == lower.first,
+                      damerauLevenshtein(lower, candidate) <= 2 {
+                return adaptCase(of: candidate, toTyped: prefix)
+            }
         }
 
         return nil

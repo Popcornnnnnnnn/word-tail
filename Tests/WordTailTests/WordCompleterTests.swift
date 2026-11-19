@@ -576,12 +576,12 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertEqual(inlineFix?.replacementDeleteCount, 4) // deletes "atel"
         XCTAssertEqual(inlineFix?.suffix, "itely")           // inserts "itely"
 
-        // 2. Positive self-learning: observing a personal mistype ("functoin" -> "function") twice graduates it to Space auto-correct!
-        XCTAssertNil(ObviousTypoCorrector.spaceAutoCorrection(forWord: "functoin", adaptiveStore: adaptive, habitTracker: nil, historyStore: history))
-        adaptive.recordObservedCorrection(mistype: "functoin", corrected: "function", persistAsync: false)
-        adaptive.recordObservedCorrection(mistype: "functoin", corrected: "function", persistAsync: false)
+        // 2. Positive self-learning: observing a multi-edit personal mistype ("fnctn" -> "function") twice graduates it to Space auto-correct!
+        XCTAssertNil(ObviousTypoCorrector.spaceAutoCorrection(forWord: "fnctn", adaptiveStore: adaptive, habitTracker: nil, historyStore: history))
+        adaptive.recordObservedCorrection(mistype: "fnctn", corrected: "function", persistAsync: false)
+        adaptive.recordObservedCorrection(mistype: "fnctn", corrected: "function", persistAsync: false)
         XCTAssertEqual(
-            ObviousTypoCorrector.spaceAutoCorrection(forWord: "functoin", adaptiveStore: adaptive, habitTracker: nil, historyStore: history),
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "fnctn", adaptiveStore: adaptive, habitTracker: nil, historyStore: history),
             "function"
         )
 
@@ -751,5 +751,47 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertTrue(TypingHabitTracker.defaultValidEnglishWordCheck("sentence")) // cache hit
         XCTAssertFalse(TypingHabitTracker.defaultValidEnglishWordCheck("zzzzqwxk"))
         XCTAssertFalse(TypingHabitTracker.defaultValidEnglishWordCheck("zzzzqwxk")) // negative cache hit
+
+        // 4. General QWERTY / transposition / missing-letter Space auto-correction:
+        //    Fixes "aslo" -> "Also" (at sentence start) and "similat" -> "similar", while leaving brand/tech terms ("awesun", "vite", "cuda", "wip") untouched!
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "aslo",
+                lineContextIncludingWord: "aslo",
+                isAtDocumentStart: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Also"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "similat",
+                lineContextIncludingWord: "check if there any similat",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "similar"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "functoin", adaptiveStore: nil, habitTracker: nil, historyStore: nil),
+            "function"
+        )
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "awesun", adaptiveStore: nil, habitTracker: nil, historyStore: nil)
+        )
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "vite", adaptiveStore: nil, habitTracker: nil, historyStore: nil)
+        )
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "cuda", adaptiveStore: nil, habitTracker: nil, historyStore: nil)
+        )
     }
 }
