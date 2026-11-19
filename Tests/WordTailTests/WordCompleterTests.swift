@@ -847,5 +847,116 @@ final class WordCompleterTests: XCTestCase {
             ),
             "Today's"
         )
+
+        // 6. Smart 2nd-word CLI -> Prose promotion ("git status" stays lowercase, while "git is" -> "Git is"!)
+        //    + Mixed-case brands ("macos" -> "macOS", "iphone" -> "iPhone") & prose tech nouns ("repo" -> "Repo")
+        XCTAssertNil(
+            ObviousTypoCorrector.evaluateSpaceTransform(
+                forWord: "git",
+                lineContextIncludingWord: "git",
+                isAtDocumentStart: true,
+                sliceStartsAtDocumentZero: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        )
+        XCTAssertNil(
+            ObviousTypoCorrector.evaluateSpaceTransform(
+                forWord: "status",
+                lineContextIncludingWord: "git status",
+                isAtDocumentStart: false,
+                sliceStartsAtDocumentZero: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.evaluateSpaceTransform(
+                forWord: "is",
+                lineContextIncludingWord: "git is",
+                isAtDocumentStart: false,
+                sliceStartsAtDocumentZero: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            SpaceTransformResult(replacedSourceSpan: "git is", replacementText: "Git is")
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.evaluateSpaceTransform(
+                forWord: "isnt",
+                lineContextIncludingWord: "Done. docker isnt",
+                isAtDocumentStart: false,
+                sliceStartsAtDocumentZero: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            SpaceTransformResult(replacedSourceSpan: "docker isnt", replacementText: "Docker isn't")
+        )
+        // Mid-sentence "git is" ("because git is") stays lowercase!
+        XCTAssertNil(
+            ObviousTypoCorrector.evaluateSpaceTransform(
+                forWord: "is",
+                lineContextIncludingWord: "because git is",
+                isAtDocumentStart: false,
+                sliceStartsAtDocumentZero: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        )
+        // Mixed-case brands ("macos" -> "macOS", "iphone" -> "iPhone") & prose tech nouns ("repo" -> "Repo")
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "macos",
+                lineContextIncludingWord: "macos",
+                isAtDocumentStart: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "macOS"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "iphone",
+                lineContextIncludingWord: "my iphone",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "iPhone"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "repo",
+                lineContextIncludingWord: "repo",
+                isAtDocumentStart: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Repo"
+        )
     }
 }

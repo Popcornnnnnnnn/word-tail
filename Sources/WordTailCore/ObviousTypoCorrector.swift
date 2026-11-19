@@ -11,6 +11,16 @@ public struct MinimalDiffEdit: Equatable, Sendable {
     }
 }
 
+public struct SpaceTransformResult: Equatable, Sendable {
+    public let replacedSourceSpan: String
+    public let replacementText: String
+
+    public init(replacedSourceSpan: String, replacementText: String) {
+        self.replacedSourceSpan = replacedSourceSpan
+        self.replacementText = replacementText
+    }
+}
+
 public enum CorrectionRuleSource: String, Codable, Equatable, Sendable {
     case custom = "Custom"
     case learned = "Learned"
@@ -281,6 +291,89 @@ public enum ObviousTypoCorrector {
         "iphone", "ipad", "airpods", "imac", "macbook", "ebay"
     ]
 
+    /// Mixed-case & camelCase technology/product brands auto-cased on Space/Tab (and preserved without turning "macOS" into "MacOS").
+    public static let canonicalBrandCasing: [String: String] = [
+        "macos": "macOS",
+        "ios": "iOS",
+        "ipados": "iPadOS",
+        "watchos": "watchOS",
+        "tvos": "tvOS",
+        "visionos": "visionOS",
+        "iphone": "iPhone",
+        "iphones": "iPhones",
+        "ipad": "iPad",
+        "ipads": "iPads",
+        "imac": "iMac",
+        "airpods": "AirPods",
+        "macbook": "MacBook",
+        "wechat": "WeChat",
+        "chatgpt": "ChatGPT",
+        "openai": "OpenAI",
+        "deepseek": "DeepSeek",
+        "github": "GitHub",
+        "gitlab": "GitLab",
+        "youtube": "YouTube",
+        "linkedin": "LinkedIn",
+        "ebay": "eBay",
+        "javascript": "JavaScript",
+        "typescript": "TypeScript",
+        "pytorch": "PyTorch",
+        "tensorflow": "TensorFlow",
+        "postgresql": "PostgreSQL",
+        "graphql": "GraphQL",
+        "fastapi": "FastAPI",
+        "swiftui": "SwiftUI",
+        "appkit": "AppKit",
+        "uikit": "UIKit",
+        "webkit": "WebKit",
+        "coretext": "CoreText"
+    ]
+
+    /// Dual CLI/prose command binaries that stay lowercase on the 1st Space (`"git status"`),
+    /// and retroactively capitalize on the 2nd Space when followed by an English prose verb (`"git is "` -> `"Git is "`).
+    public static let cliCommandWords: Set<String> = [
+        "git", "docker", "podman", "kubectl", "helm", "brew", "cargo", "rustup",
+        "npm", "pnpm", "npx", "yarn", "bun", "deno", "vite", "webpack", "esbuild", "eslint",
+        "python", "python3", "pip", "pip3", "uv", "pytest", "uvicorn", "gunicorn",
+        "swiftc", "xcodebuild", "cmake", "ninja",
+        "ls", "cd", "cp", "mv", "rm", "mkdir", "rmdir",
+        "sudo", "chmod", "chown", "ps", "pkill", "htop", "lsof",
+        "grep", "rg", "ripgrep", "awk", "sed", "xargs", "jq", "yq",
+        "curl", "wget", "ssh", "scp", "rsync", "tar", "unzip", "ditto",
+        "tmux", "zellij", "vim", "nvim", "neovim", "zsh", "bash", "gh"
+    ]
+
+    /// Lowercase acronyms & shorthand tokens that should not be half-capitalized to TitleCase ("Api", "Json", "Tbh") on Space.
+    public static let nonCapitalizedAcronyms: Set<String> = [
+        "api", "apis", "rpc", "grpc", "url", "urls", "uri", "uris",
+        "json", "jsonl", "yaml", "yml", "toml", "xml", "csv", "tsv",
+        "sql", "nosql", "cli", "sdk", "sdks", "ide", "ides", "gui", "tui", "ui", "ux", "dx", "id", "ids",
+        "pr", "prs", "mr", "mrs", "ci", "cd", "cicd", "sre",
+        "tls", "mtls", "ssl", "http", "https", "tcp", "udp", "quic", "dns", "ip", "vpc",
+        "aws", "gcp", "k8s", "wasm", "wasi", "simd", "rgba", "srgb", "utf", "ascii",
+        "llm", "llms", "vlm", "rag", "gguf", "mlx", "gpu", "gpus", "cpu", "cpus", "npu", "tpu", "ram", "vram", "ssd", "nvme",
+        "jwt", "sso", "rbac", "cors", "wip", "poc", "mvp", "kpi", "okr", "eta",
+        "fyi", "tbh", "imo", "imho", "afaik", "lgtm", "pls", "plz", "thx", "nvm", "idk", "ikr", "smh", "lmao",
+        "saas", "paas", "iaas", "uuid", "uids", "cfg", "env", "envs", "arg", "args", "kwarg", "kwargs"
+    ]
+
+    /// English verbs, modals, and adverbs that unambiguously mark `<cliWord> <word2>` as an English sentence (`"Git is"`, `"Docker has"`).
+    public static let proseSecondWordTriggers: Set<String> = [
+        "is", "isn't", "are", "aren't", "was", "wasn't", "were", "weren't",
+        "has", "hasn't", "have", "haven't", "had", "hadn't",
+        "can", "can't", "cannot", "could", "couldn't",
+        "will", "won't", "would", "wouldn't", "should", "shouldn't",
+        "shall", "may", "might", "must", "mustn't",
+        "does", "doesn't", "did", "didn't",
+        "works", "worked", "makes", "made", "helps", "helped", "keeps", "kept", "lets",
+        "uses", "used", "needs", "needed", "seems", "seemed", "looks", "feels",
+        "becomes", "became", "supports", "supported", "allows", "allowed",
+        "provides", "requires", "handles", "stores", "runs", "ran",
+        "fails", "failed", "crashes", "crashed", "breaks", "broke",
+        "takes", "took", "gives", "gave", "comes", "came", "goes", "went",
+        "also", "still", "really", "actually", "always", "never", "just", "only", "already", "often", "usually"
+    ]
+
     /// Valid 1- and 2-letter English words (rejected by `>= 3`-char spellcheckers, but valid sentence starters & standalone words).
     public static let validShortEnglishWords: Set<String> = [
         "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "hi",
@@ -511,23 +604,24 @@ public enum ObviousTypoCorrector {
         return false
     }
 
-    /// Unified `Space`-key transformation combining user/learned rules, high-confidence typo & contraction patterns,
-    /// context-aware `"lets"` -> `"Let's"`, and sentence-start / standalone-"I" auto-capitalization.
-    public static func spaceReplacement(
+    /// Unified `Space`-key transformation returning either a 1-word edit (`"im"` -> `"I'm"`, `"macos"` -> `"macOS"`, `"repo"` -> `"Repo"`)
+    /// or a 2-word CLI-to-prose sentence-start promotion (`"git is"` -> `"Git is"`).
+    public static func evaluateSpaceTransform(
         forWord word: String,
         lineContextIncludingWord: String?,
         isAtDocumentStart: Bool = false,
+        sliceStartsAtDocumentZero: Bool = false,
         autoCorrectTypos: Bool,
         autoCapitalizeSentences: Bool,
         adaptiveStore: AdaptiveCorrectionStore? = nil,
         habitTracker: TypingHabitTracker?,
         historyStore: UserHistoryStore?,
         validWordChecker: (String) -> Bool = TypingHabitTracker.defaultValidEnglishWordCheck
-    ) -> String? {
+    ) -> SpaceTransformResult? {
         guard !word.isEmpty, word.count <= 24 else { return nil }
         guard word.allSatisfy({ ($0.isASCII && $0.isLetter) || isApostrophe($0) }) else { return nil }
 
-        // Never alter camelCase / mixedCase ("macOS", "iPhone", "useState") or ALL-CAPS ("API", "HTTP")
+        // Never alter already mixedCase ("macOS", "iPhone", "useState") or ALL-CAPS ("API", "HTTP")
         if word.dropFirst().contains(where: \.isUppercase) {
             return nil
         }
@@ -542,13 +636,15 @@ public enum ObviousTypoCorrector {
             isAtDocumentStart: isAtDocumentStart
         )
 
-        // 1. User's explicit custom shorthand rules ALWAYS take priority (even over developerSafeWords if user defined one!)
+        // 1. User's explicit custom shorthand rules ALWAYS take priority
         if autoCorrectTypos, let customOrLearned = adaptiveStore?.customOrLearnedReplacement(for: lower) {
             var res = adaptCase(of: customOrLearned, toTyped: word)
-            if autoCapitalizeSentences && atSentenceStart, let f = res.first, f.isLowercase {
+            if autoCapitalizeSentences && atSentenceStart,
+               let f = res.first, f.isLowercase,
+               !res.dropFirst().contains(where: \.isUppercase) {
                 res = res.prefix(1).uppercased() + res.dropFirst()
             }
-            return res != word ? res : nil
+            return res != word ? SpaceTransformResult(replacedSourceSpan: word, replacementText: res) : nil
         }
 
         // Respect triggers the user muted by undoing with Backspace twice!
@@ -556,45 +652,150 @@ public enum ObviousTypoCorrector {
             return nil
         }
 
-        if developerSafeWords.contains(lower) {
-            return nil
-        }
-
         var working = word
 
-        // 2. Context-aware pattern: "lets" at the start of a sentence -> "Let's" (leaves "it lets you" untouched!)
-        if autoCorrectTypos && lower == "lets" && atSentenceStart {
-            working = "Let's"
-        } else if autoCorrectTypos,
-                  let typoFixed = spaceAutoCorrection(
-                      forWord: working,
-                      adaptiveStore: adaptiveStore,
-                      habitTracker: habitTracker,
-                      historyStore: historyStore
-                  ) {
-            working = typoFixed
+        // 2. Canonical mixed-case brands ("macos" -> "macOS", "iphone" -> "iPhone", "chatgpt" -> "ChatGPT")
+        if autoCorrectTypos, word == lower, let brand = canonicalBrandCasing[lower] {
+            working = brand
+        } else if !developerSafeWords.contains(lower) {
+            // 3. Context-aware "lets" -> "Let's" + typo/contraction auto-correction
+            if autoCorrectTypos && lower == "lets" && atSentenceStart {
+                working = "Let's"
+            } else if autoCorrectTypos,
+                      let typoFixed = spaceAutoCorrection(
+                          forWord: working,
+                          adaptiveStore: adaptiveStore,
+                          habitTracker: habitTracker,
+                          historyStore: historyStore
+                      ) {
+                working = typoFixed
+            }
         }
 
-        // 3. Sentence-start capitalization + standalone "i" -> "I"
+        // 4. Sentence-start capitalization + standalone "i" -> "I"
+        //    - CLI commands (`git`, `docker`, `python`) stay lowercase on the 1st Space so `"git status"` isn't altered!
+        //    - Mixed-case brands (`macOS`, `iPhone`) keep their lowercase leading letter (`!working.dropFirst().contains(where: \.isUppercase)`).
+        //    - Prose-friendly tech nouns (`repo`, `docs`, `claude`, `codex`) DO capitalize at sentence start!
         if autoCapitalizeSentences {
             if working == "i" {
                 working = "I"
-            } else if let first = working.first, first.isLowercase, atSentenceStart {
+            } else if let first = working.first,
+                      first.isLowercase,
+                      !working.dropFirst().contains(where: \.isUppercase),
+                      atSentenceStart,
+                      !cliCommandWords.contains(lower),
+                      !nonCapitalizedAcronyms.contains(lower) {
                 let firstWordPart = String(working.split(separator: " ").first ?? Substring(working))
-                let isRealWord = (working != word)
+                let isRealOrTechNoun = (working != word)
+                    || developerSafeWords.contains(lower)
                     || isValidSentenceStarterWord(firstWordPart, validWordChecker: validWordChecker)
-                if isRealWord {
+                if isRealOrTechNoun {
                     working = working.prefix(1).uppercased() + working.dropFirst()
                 }
             }
         }
 
-        return working != word ? working : nil
+        // 5. Smart 2nd-word CLI -> Prose promotion (`"git is "` -> `"Git is "`, `"docker isnt "` -> `"Docker isn't "`):
+        if autoCapitalizeSentences,
+           let ctx = lineContextIncludingWord,
+           let promoted = evaluateDeferredCliSentencePromotion(
+               secondWordTyped: word,
+               secondWordResolved: working,
+               lineContextIncludingSecondWord: ctx,
+               sliceStartsAtDocumentZero: sliceStartsAtDocumentZero || isAtDocumentStart,
+               adaptiveStore: adaptiveStore
+           ) {
+            return promoted
+        }
+
+        return working != word ? SpaceTransformResult(replacedSourceSpan: word, replacementText: working) : nil
+    }
+
+    public static func spaceReplacement(
+        forWord word: String,
+        lineContextIncludingWord: String?,
+        isAtDocumentStart: Bool = false,
+        sliceStartsAtDocumentZero: Bool = false,
+        autoCorrectTypos: Bool,
+        autoCapitalizeSentences: Bool,
+        adaptiveStore: AdaptiveCorrectionStore? = nil,
+        habitTracker: TypingHabitTracker?,
+        historyStore: UserHistoryStore?,
+        validWordChecker: (String) -> Bool = TypingHabitTracker.defaultValidEnglishWordCheck
+    ) -> String? {
+        evaluateSpaceTransform(
+            forWord: word,
+            lineContextIncludingWord: lineContextIncludingWord,
+            isAtDocumentStart: isAtDocumentStart,
+            sliceStartsAtDocumentZero: sliceStartsAtDocumentZero,
+            autoCorrectTypos: autoCorrectTypos,
+            autoCapitalizeSentences: autoCapitalizeSentences,
+            adaptiveStore: adaptiveStore,
+            habitTracker: habitTracker,
+            historyStore: historyStore,
+            validWordChecker: validWordChecker
+        )?.replacementText
+    }
+
+    private static func evaluateDeferredCliSentencePromotion(
+        secondWordTyped: String,
+        secondWordResolved: String,
+        lineContextIncludingSecondWord context: String,
+        sliceStartsAtDocumentZero: Bool,
+        adaptiveStore: AdaptiveCorrectionStore?
+    ) -> SpaceTransformResult? {
+        let resolvedNorm = normalizeApostrophes(secondWordResolved).lowercased()
+        guard proseSecondWordTriggers.contains(resolvedNorm) else { return nil }
+        guard normalizeApostrophes(context).lowercased().hasSuffix(normalizeApostrophes(secondWordTyped).lowercased()) else {
+            return nil
+        }
+
+        let beforeSecond = String(context.dropLast(secondWordTyped.count))
+        let chars = Array(beforeSecond)
+        var spaceStart = chars.count
+        while spaceStart > 0 && chars[spaceStart - 1] == " " {
+            spaceStart -= 1
+        }
+        let spaceCount = chars.count - spaceStart
+        guard spaceCount >= 1 && spaceCount <= 2, spaceStart > 0 else { return nil }
+
+        var cliStart = spaceStart
+        while cliStart > 0 && chars[cliStart - 1].isASCII && (chars[cliStart - 1].isLetter || chars[cliStart - 1].isNumber) {
+            cliStart -= 1
+        }
+        guard cliStart < spaceStart else { return nil }
+
+        let cliWord = String(chars[cliStart..<spaceStart])
+        // Only promote if typed all-lowercase as a known dual CLI/prose word and not muted
+        guard cliWord == cliWord.lowercased(),
+              cliCommandWords.contains(cliWord),
+              adaptiveStore?.isMuted(cliWord) != true else {
+            return nil
+        }
+
+        let contextUpToCli = String(chars[0..<spaceStart])
+        let beforeCli = String(chars[0..<cliStart])
+        let allowedDocZeroPrefix = CharacterSet(charactersIn: " \t\"'“‘([")
+        let cliIsAtDocStart = sliceStartsAtDocumentZero
+            && beforeCli.unicodeScalars.allSatisfy { allowedDocZeroPrefix.contains($0) }
+
+        guard isWordAtSentenceStart(
+            word: cliWord,
+            inContextBeforeCursor: contextUpToCli,
+            isAtDocumentStart: cliIsAtDocStart
+        ) else {
+            return nil
+        }
+
+        let spaces = String(chars[spaceStart..<chars.count])
+        let promotedCli = cliWord.prefix(1).uppercased() + cliWord.dropFirst()
+        return SpaceTransformResult(
+            replacedSourceSpan: cliWord + spaces + secondWordTyped,
+            replacementText: promotedCli + spaces + secondWordResolved
+        )
     }
 
     /// Fast O(1) pre-check deciding whether `Space` needs a synchronous live Accessibility read to resolve sentence-start capitalization.
-    /// Skips cross-process AX IPC for ~90%+ of words (mid-sentence words preceded by `<letter/comma> `, already-capitalized words,
-    /// developer/CLI safe tokens, muted triggers, and standalone `"i"`).
     public static func needsLiveSentenceContextOnSpace(
         forWord word: String,
         rollingBuffer: String,
@@ -608,7 +809,15 @@ public enum ObviousTypoCorrector {
         if word.count >= 2 && word.allSatisfy({ !$0.isLetter || $0.isUppercase }) { return false }
 
         let lower = normalizeApostrophes(word).lowercased()
-        if lower == "i" { return false } // "i" -> "I" unconditionally regardless of sentence position!
+        if lower == "i" || canonicalBrandCasing[lower] != nil {
+            return false // "i" -> "I" and mixed-case brands ("macos" -> "macOS") don't depend on sentence position!
+        }
+
+        // Check if `<cliWord> <word>` might need live doc-start verification for 2nd-word CLI->Prose promotion ("git is ")!
+        if autoCapitalizeSentences, mayNeedLiveCliPromotionCheck(secondWord: word, inBuffer: rollingBuffer) {
+            return true
+        }
+
         if !autoCapitalizeSentences && !(autoCorrectTypos && lower == "lets") {
             return false
         }
@@ -616,13 +825,30 @@ public enum ObviousTypoCorrector {
             return false
         }
         if adaptiveStore?.customOrLearnedReplacement(for: lower) == nil {
-            if adaptiveStore?.isMuted(lower) == true || developerSafeWords.contains(lower) {
+            if adaptiveStore?.isMuted(lower) == true
+                || cliCommandWords.contains(lower)
+                || nonCapitalizedAcronyms.contains(lower) {
                 return false
             }
         }
-        // If `rollingBuffer` already has `<word/comma> <typedWord>` on the current line without `.`, `!`, `?`,
-        // `typedWord` is guaranteed mid-sentence (`isAtSentenceStart == false`) with zero AX IPC needed!
         if hasConfirmedMidSentencePredecessor(forWord: word, inBuffer: rollingBuffer) {
+            return false
+        }
+        return true
+    }
+
+    private static func mayNeedLiveCliPromotionCheck(secondWord: String, inBuffer buffer: String) -> Bool {
+        let lowerSecond = normalizeApostrophes(secondWord).lowercased()
+        let effectiveSecond = unambiguousTypos[lowerSecond]?.lowercased() ?? lowerSecond
+        guard proseSecondWordTriggers.contains(effectiveSecond) else { return false }
+        guard normalizeApostrophes(buffer).lowercased().hasSuffix(lowerSecond) else { return false }
+
+        let beforeSecond = String(buffer.dropLast(secondWord.count)).trimmingCharacters(in: CharacterSet(charactersIn: " \t"))
+        guard let prevWord = extractTrailingStandaloneWord(from: beforeSecond) else { return false }
+        guard prevWord == prevWord.lowercased(), cliCommandWords.contains(prevWord) else { return false }
+
+        // If `buffer` ALREADY proves `prevWord` is mid-sentence ("I think git is"), no live AX query is needed!
+        if hasConfirmedMidSentencePredecessor(forWord: prevWord, inBuffer: beforeSecond) {
             return false
         }
         return true
@@ -717,6 +943,9 @@ public enum ObviousTypoCorrector {
         }
         if let customOrLearned = adaptiveStore?.customOrLearnedReplacement(for: lower) {
             return adaptCase(of: customOrLearned, toTyped: word)
+        }
+        if word == lower, let brand = canonicalBrandCasing[lower] {
+            return brand
         }
 
         guard isEligibleTypoToken(word, minLength: 2, historyStore: historyStore) else {
@@ -893,6 +1122,9 @@ public enum ObviousTypoCorrector {
             return adaptCase(of: customOrLearned, toTyped: prefix)
         }
         guard adaptiveStore?.isMuted(lower) != true else { return nil }
+        if prefix == lower, let brand = canonicalBrandCasing[lower] {
+            return brand
+        }
         guard isEligibleTypoToken(prefix, minLength: 2, historyStore: historyStore) else {
             return nil
         }

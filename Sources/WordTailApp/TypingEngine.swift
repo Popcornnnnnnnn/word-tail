@@ -881,6 +881,7 @@ final class TypingEngine {
                     // already confirms `<word/comma> <typedWord>` mid-sentence, or when capitalization isn't needed).
                     let lineCtx: String?
                     let isDocStart: Bool
+                    let sliceAtZero: Bool
                     if ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
                         forWord: typedWord,
                         rollingBuffer: rollingBuffer,
@@ -895,15 +896,18 @@ final class TypingEngine {
                         )
                         lineCtx = liveInspect.context ?? resolvedLineContextForWord(typedWord)
                         isDocStart = liveInspect.context != nil ? liveInspect.isAtDocumentStart : lastCapturedDocumentStart
+                        sliceAtZero = liveInspect.context != nil ? liveInspect.sliceStartsAtDocumentZero : false
                     } else {
                         lineCtx = rollingBuffer
                         isDocStart = false
+                        sliceAtZero = false
                     }
 
-                    if let replacement = ObviousTypoCorrector.spaceReplacement(
+                    if let transform = ObviousTypoCorrector.evaluateSpaceTransform(
                         forWord: typedWord,
                         lineContextIncludingWord: lineCtx,
                         isAtDocumentStart: isDocStart,
+                        sliceStartsAtDocumentZero: sliceAtZero,
                         autoCorrectTypos: autoCorrectOnSpace,
                         autoCapitalizeSentences: autoCapitalizeSentences,
                         adaptiveStore: adaptiveStore,
@@ -916,18 +920,20 @@ final class TypingEngine {
                         activeSnapshot = nil
                         lastCapturedDocumentStart = false
 
-                        let diff = ObviousTypoCorrector.minimalDiff(from: typedWord, to: replacement)
-                        rollingBuffer = String(rollingBuffer.dropLast(min(rollingBuffer.count, typedWord.count))) + replacement + " "
+                        let srcSpan = transform.replacedSourceSpan
+                        let replacement = transform.replacementText
+                        let diff = ObviousTypoCorrector.minimalDiff(from: srcSpan, to: replacement)
+                        rollingBuffer = String(rollingBuffer.dropLast(min(rollingBuffer.count, srcSpan.count))) + replacement + " "
                         if rollingBuffer.count > 80 {
                             rollingBuffer = String(rollingBuffer.suffix(80))
                         }
                         if let lineCtx,
                            ObviousTypoCorrector.normalizeApostrophes(lineCtx).lowercased().hasSuffix(
-                               ObviousTypoCorrector.normalizeApostrophes(typedWord).lowercased()
+                               ObviousTypoCorrector.normalizeApostrophes(srcSpan).lowercased()
                            ) {
-                            lastCapturedLineText = String(lineCtx.dropLast(typedWord.count)) + replacement + " "
+                            lastCapturedLineText = String(lineCtx.dropLast(srcSpan.count)) + replacement + " "
                         }
-                        pendingSpaceUndo = PendingSpaceUndo(originalWord: typedWord, replacedWith: replacement)
+                        pendingSpaceUndo = PendingSpaceUndo(originalWord: srcSpan, replacedWith: replacement)
 
                         DispatchQueue.main.async { [weak self] in
                             guard let self else { return }

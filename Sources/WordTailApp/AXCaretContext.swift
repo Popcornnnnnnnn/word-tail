@@ -702,11 +702,11 @@ final class AXCaretContext {
         targetApp: NSRunningApplication?,
         expectedTrailingWord: String,
         enableChromiumBridge: Bool
-    ) -> (context: String?, isAtDocumentStart: Bool) {
+    ) -> (context: String?, isAtDocumentStart: Bool, sliceStartsAtDocumentZero: Bool) {
         guard AXIsProcessTrusted(),
               let app = targetApp ?? effectiveFocusedApplication(),
               let element = resolveFocusedTextElement(app: app, enableChromiumBridge: enableChromiumBridge) else {
-            return (nil, false)
+            return (nil, false, false)
         }
 
         let expectedNorm = ObviousTypoCorrector.normalizeApostrophes(expectedTrailingWord).lowercased()
@@ -718,7 +718,7 @@ final class AXCaretContext {
             if beforeLen > 0, let slice = stringForRange(element, location: windowStart, length: beforeLen),
                ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
                 let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
-                return (slice, docStart)
+                return (slice, docStart, windowStart == 0)
             }
             if let fullValue = copyStringAttribute(element, attribute: kAXValueAttribute as String), !fullValue.isEmpty {
                 let ns = fullValue as NSString
@@ -726,7 +726,7 @@ final class AXCaretContext {
                     let slice = ns.substring(with: NSRange(location: windowStart, length: beforeLen))
                     if ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
                         let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
-                        return (slice, docStart)
+                        return (slice, docStart, windowStart == 0)
                     }
                 }
             }
@@ -739,11 +739,11 @@ final class AXCaretContext {
             let endMarker = AXTextMarkerRangeCopyEndMarker(markerRangeRef as! AXTextMarkerRange)
             if let resolved = readBoundedMarkerContext(element: element, endMarker: endMarker),
                ObviousTypoCorrector.normalizeApostrophes(resolved.prefix).lowercased().hasSuffix(expectedNorm) {
-                return (resolved.prefix, resolved.isAtDocumentStart)
+                return (resolved.prefix, resolved.isAtDocumentStart, resolved.sliceStartsAtDocumentZero)
             }
         }
 
-        return (nil, false)
+        return (nil, false, false)
     }
 
     /// Reads up to 120 trailing characters before `endMarker` + exact `isAtDocumentStart` in O(1):
@@ -754,7 +754,7 @@ final class AXCaretContext {
     private func readBoundedMarkerContext(
         element: AXUIElement,
         endMarker: AXTextMarker
-    ) -> (prefix: String, isAtDocumentStart: Bool)? {
+    ) -> (prefix: String, isAtDocumentStart: Bool, sliceStartsAtDocumentZero: Bool)? {
         let role = copyStringAttribute(element, attribute: kAXRoleAttribute as String) ?? ""
         var confirmedPastDocStart = false
 
@@ -763,7 +763,7 @@ final class AXCaretContext {
             if AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &startMarkerRef) == .success,
                let startMarkerRef {
                 if CFEqual(startMarkerRef, endMarker) {
-                    return ("", true)
+                    return ("", true, true)
                 }
                 if let fullRange = makeMarkerRange(element: element, start: startMarkerRef, end: endMarker) {
                     var lenRef: CFTypeRef?
@@ -780,7 +780,7 @@ final class AXCaretContext {
                             let cleaned = raw.replacingOccurrences(of: "\u{FFFC}", with: "").replacingOccurrences(of: "\u{200B}", with: "")
                             if cleaned.count <= 300 {
                                 let docStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: cleaned)
-                                return (String(cleaned.suffix(120)), docStart)
+                                return (String(cleaned.suffix(120)), docStart, cleaned.count <= 120)
                             }
                         }
                     }
@@ -816,6 +816,7 @@ final class AXCaretContext {
                 if let rawPara = stringForTextMarkerRange(element: element, markerRange: paraPairRange) {
                     let cleaned = rawPara.replacingOccurrences(of: "\u{FFFC}", with: "").replacingOccurrences(of: "\u{200B}", with: "")
                     var docStart = false
+                    var startsAtZero = false
                     if !confirmedPastDocStart {
                         var prevBeforePara: CFTypeRef?
                         let hasEarlier = AXUIElementCopyParameterizedAttributeValue(
@@ -826,9 +827,10 @@ final class AXCaretContext {
                         ) == .success && prevBeforePara != nil
                         if !hasEarlier {
                             docStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: cleaned)
+                            startsAtZero = (cleaned.count <= 120)
                         }
                     }
-                    return (String(cleaned.suffix(120)), docStart)
+                    return (String(cleaned.suffix(120)), docStart, startsAtZero)
                 }
             }
         }
