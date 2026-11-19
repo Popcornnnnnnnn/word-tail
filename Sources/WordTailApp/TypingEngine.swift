@@ -878,7 +878,7 @@ final class TypingEngine {
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
                 let wordBeforeReturn = ObviousTypoCorrector.extractTrailingStandaloneWord(from: rollingBuffer)
-                rollingBuffer = "\n"
+                rollingBuffer = ObviousTypoCorrector.sentenceContextAfterReturn(rollingBuffer)
                 lastCapturedLineText = nil
                 lastCapturedDocumentStart = false
                 DispatchQueue.main.async { [weak self] in
@@ -948,13 +948,19 @@ final class TypingEngine {
                             let strippedLive = target.existingTrailingDot && rawLive.hasSuffix(".")
                                 ? String(rawLive.dropLast())
                                 : rawLive
-                            lineCtx = strippedLive
                             isDocStart = target.existingTrailingDot
                                 ? (liveInspect.sliceStartsAtDocumentZero && AXCaretContext.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: strippedLive))
                                 : liveInspect.isAtDocumentStart
                             sliceAtZero = liveInspect.sliceStartsAtDocumentZero
+                            lineCtx = isDocStart || sliceAtZero
+                                ? strippedLive
+                                : ObviousTypoCorrector.sentenceContext(
+                                    forWord: typedWord,
+                                    liveContext: strippedLive,
+                                    bufferedContext: target.bufferUpToWord
+                                )
                         } else {
-                            lineCtx = resolvedLineContextForWord(typedWord)
+                            lineCtx = resolvedLineContextForWord(typedWord, bufferUpToWord: target.bufferUpToWord)
                             isDocStart = lastCapturedDocumentStart
                             sliceAtZero = false
                         }
@@ -1297,9 +1303,9 @@ final class TypingEngine {
 
     /// Reconstructs the current line's text up to and including `typedWord`, accounting for fast keystroke rollover
     /// where `Space` arrives a few milliseconds before the last character's 16ms debounced AX snapshot.
-    private func resolvedLineContextForWord(_ typedWord: String) -> String? {
-        if rollingBuffer.contains("\n") || rollingBuffer.contains(".") || rollingBuffer.contains("!") || rollingBuffer.contains("?") {
-            return rollingBuffer
+    private func resolvedLineContextForWord(_ typedWord: String, bufferUpToWord: String) -> String? {
+        if bufferUpToWord.contains("\n") || bufferUpToWord.contains(".") || bufferUpToWord.contains("!") || bufferUpToWord.contains("?") {
+            return bufferUpToWord
         }
         guard let snap = lastCapturedLineText else {
             return nil
