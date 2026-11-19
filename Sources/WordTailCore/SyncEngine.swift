@@ -88,6 +88,11 @@ public final class SyncEngine {
     public static let folderPathDefaultsKey = "WordTailSyncFolderPath"
     public static let deviceIDDefaultsKey = "WordTailSyncDeviceID"
 
+    private struct PeerCache: Codable {
+        let folderPath: String
+        let envelopes: [String: DeviceSyncEnvelope]
+    }
+
     private let historyStore: UserHistoryStore
     private let adaptiveStore: AdaptiveCorrectionStore
     private let phrasePredictor: PhrasePredictor
@@ -146,8 +151,8 @@ public final class SyncEngine {
         self.isEnabledFlag = defaults.bool(forKey: Self.enabledDefaultsKey)
         self.folderPathValue = defaults.string(forKey: Self.folderPathDefaultsKey)
 
-        if isEnabledFlag {
-            loadCachedPeersSynchronously()
+        if isEnabledFlag, let folderPathValue {
+            loadCachedPeersSynchronously(for: folderPathValue)
         }
     }
 
@@ -181,6 +186,11 @@ public final class SyncEngine {
     public func enableSync(folderURL: URL) -> SyncStatusSnapshot {
         let standardized = folderURL.standardizedFileURL.path
         return queue.sync {
+            if standardized != folderPathValue {
+                knownPeers = []
+                lastSyncedAtValue = nil
+                applyPeerEnvelopes([:])
+            }
             folderPathValue = standardized
             isEnabledFlag = true
             lastErrorValue = nil
@@ -262,7 +272,7 @@ public final class SyncEngine {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
-        var remoteEnvelopes: [String: DeviceSyncEnvelope] = loadCachedEnvelopeMapLocked()
+        var remoteEnvelopes = loadCachedEnvelopeMapLocked(for: rawPath)
 
         for itemURL in entries {
             let fileName = itemURL.lastPathComponent
@@ -287,7 +297,7 @@ public final class SyncEngine {
 
         // 3. Apply all remote peer shards (merges additive stats + reconciles LWW custom words/rules/phrases)
         applyPeerEnvelopes(remoteEnvelopes)
-        saveCachedEnvelopeMapLocked(remoteEnvelopes)
+        saveCachedEnvelopeMapLocked(remoteEnvelopes, for: rawPath)
 
         // 4. Export THIS Mac's local shard (including reconciled LWW custom rule/word/phrase metadata)
         let now = Date()
@@ -375,8 +385,8 @@ public final class SyncEngine {
         if let coordError { throw coordError }
     }
 
-    private func loadCachedPeersSynchronously() {
-        let cached = loadCachedEnvelopeMapLocked()
+    private func loadCachedPeersSynchronously(for folderPath: String) {
+        let cached = loadCachedEnvelopeMapLocked(for: folderPath)
         guard !cached.isEmpty else { return }
         applyPeerEnvelopes(cached)
         knownPeers = cached.values
@@ -384,17 +394,23 @@ public final class SyncEngine {
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    private func loadCachedEnvelopeMapLocked() -> [String: DeviceSyncEnvelope] {
+    private func loadCachedEnvelopeMapLocked(for folderPath: String) -> [String: DeviceSyncEnvelope] {
         guard let data = try? Data(contentsOf: localCacheURL) else { return [:] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([String: DeviceSyncEnvelope].self, from: data)) ?? [:]
+        // Older caches did not record their source folder. Rebuild them from the selected folder.
+        guard let cache = try? decoder.decode(PeerCache.self, from: data),
+              cache.folderPath == folderPath else {
+            return [:]
+        }
+        return cache.envelopes
     }
 
-    private func saveCachedEnvelopeMapLocked(_ map: [String: DeviceSyncEnvelope]) {
+    private func saveCachedEnvelopeMapLocked(_ map: [String: DeviceSyncEnvelope], for folderPath: String) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(map) {
+        let cache = PeerCache(folderPath: folderPath, envelopes: map)
+        if let data = try? encoder.encode(cache) {
             try? data.write(to: localCacheURL, options: .atomic)
         }
     }
