@@ -1129,7 +1129,33 @@ public enum ObviousTypoCorrector {
             return false
         }
 
-        let prefixBeforeWord = String(context.dropLast(word.count))
+        return hasSentenceEndingPunctuation(before: String(context.dropLast(word.count)))
+    }
+
+    public static func sentenceContextAfterReturn(_ buffer: String) -> String {
+        let prefix = String(buffer.suffix(79)) + "\n"
+        return hasSentenceEndingPunctuation(before: prefix) ? prefix : "\n"
+    }
+
+    /// Rich editors can report only the current paragraph. Recover a preceding sentence ending
+    /// when the live context and the typed buffer agree on the first word of the new paragraph.
+    public static func sentenceContext(
+        forWord word: String,
+        liveContext: String,
+        bufferedContext: String
+    ) -> String {
+        let normalizedWord = normalizeApostrophes(word).lowercased()
+        let liveWord = liveContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalizeApostrophes(liveWord).lowercased() == normalizedWord,
+              let lastLine = bufferedContext.split(whereSeparator: \.isNewline).last,
+              normalizeApostrophes(lastLine.trimmingCharacters(in: .whitespaces)).lowercased() == normalizedWord,
+              isWordAtSentenceStart(word: word, inContextBeforeCursor: bufferedContext) else {
+            return liveContext
+        }
+        return bufferedContext
+    }
+
+    private static func hasSentenceEndingPunctuation(before prefixBeforeWord: String) -> Bool {
         // Must have at least one whitespace/newline separator after the sentence-ending punctuation
         guard let lastRaw = prefixBeforeWord.last, lastRaw.isWhitespace else {
             return false

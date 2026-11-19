@@ -114,6 +114,37 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertEqual(match, CompletionMatch(prefix: "colleag", fullWord: "colleague", suffix: "ue"))
     }
 
+    func testCapitalizesBeforeCommaAfterSentenceAndReturn() throws {
+        let bufferedContext = ObviousTypoCorrector.sentenceContextAfterReturn("The clickable part is below there.") + "also"
+        let target = try XCTUnwrap(ObviousTypoCorrector.extractPunctuationOrSpaceTarget(
+            rollingBuffer: bufferedContext,
+            typedDelimiter: ","
+        ))
+        let context = ObviousTypoCorrector.sentenceContext(
+            forWord: target.word,
+            liveContext: "also",
+            bufferedContext: target.bufferUpToWord
+        )
+        let replacement = ObviousTypoCorrector.spaceReplacement(
+            forWord: target.word,
+            lineContextIncludingWord: context,
+            autoCorrectTypos: false,
+            autoCapitalizeSentences: true,
+            habitTracker: nil,
+            historyStore: nil,
+            validWordChecker: { $0 == "also" }
+        )
+        XCTAssertEqual(replacement.map { $0 + target.outputDelimiter }, "Also,")
+
+        XCTAssertEqual(ObviousTypoCorrector.sentenceContextAfterReturn("The clickable part is below"), "\n")
+        XCTAssertEqual(ObviousTypoCorrector.sentenceContextAfterReturn("Examples, e.g."), "\n")
+        XCTAssertEqual(ObviousTypoCorrector.sentenceContext(
+            forWord: "also",
+            liveContext: "I also",
+            bufferedContext: bufferedContext
+        ), "I also")
+    }
+
     func testPersonalHistoryBoostOverridesDefaultOrder() {
         let history = makeTempHistory()
         let mock = MockSpellCompleter { _, _ in ["quantities", "quantitative"] }
