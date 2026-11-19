@@ -343,4 +343,220 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertTrue(allTime.topShortcuts.contains(RankedCountItem(label: "⌘V", count: 45)))
         XCTAssertTrue(allTime.topApps.contains(where: { $0.bundleID == "com.apple.Notes" && $0.keyPresses == 1200 }))
     }
+
+    func testContractionsSentenceCapitalizationAndDeveloperSafeGuards() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailTypo-\(UUID().uuidString)", isDirectory: true)
+        let adaptive = AdaptiveCorrectionStore(fileURL: tempDir.appendingPathComponent("adaptive.json"))
+        let validWords: Set<String> = ["hello", "world", "next", "lets", "the", "know", "definitely"]
+
+        // 1. Contractions & joined-word patterns ("im" -> "I'm", "dont" -> "don't", "alot" -> "a lot")
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "im",
+                lineContextIncludingWord: "so im",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            ),
+            "I'm"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "dont",
+                lineContextIncludingWord: "we dont",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            ),
+            "don't"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "alot",
+                lineContextIncludingWord: "thanks alot",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            ),
+            "a lot"
+        )
+
+        // 2. Sentence-start capitalization + standalone "i" + context-aware "lets" -> "Let's"
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "hello",
+                lineContextIncludingWord: "hello",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            ),
+            "Hello"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "next",
+                lineContextIncludingWord: "All done. next",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            ),
+            "Next"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "teh",
+                lineContextIncludingWord: "teh",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            ),
+            "The"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "i",
+                lineContextIncludingWord: "think i",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            ),
+            "I"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "lets",
+                lineContextIncludingWord: "lets",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            ),
+            "Let's"
+        )
+        // Mid-sentence "lets" ("it lets") must stay untouched!
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "lets",
+                lineContextIncludingWord: "it lets",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            )
+        )
+
+        // 3. Abbreviations ("e.g. "), mid-sentence words, CLI commands ("git"), and camelCase ("macOS") stay untouched!
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "next",
+                lineContextIncludingWord: "see e.g. next",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { validWords.contains($0) }
+            )
+        )
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "git",
+                lineContextIncludingWord: "git",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { _ in true }
+            )
+        )
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "macOS",
+                lineContextIncludingWord: "macOS",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { _ in true }
+            )
+        )
+    }
+
+    func testLearnableAutoCorrectPositiveGraduationNegativeUndoMutingAndInlineTabFix() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailLearn-\(UUID().uuidString)", isDirectory: true)
+        let adaptive = AdaptiveCorrectionStore(fileURL: tempDir.appendingPathComponent("adaptive.json"))
+        let history = UserHistoryStore(fileURL: tempDir.appendingPathComponent("accepted.json"))
+        let emptySpell = MockSpellCompleter { _, _ in [] }
+        let completer = WordCompleter(
+            spellCompleter: emptySpell,
+            historyStore: history,
+            adaptiveStore: adaptive,
+            enableTechLexicon: false,
+            enableInlineTypoFix: true
+        )
+
+        // 1. Inline Tab fix catches partial/full mistypes ("definatel" -> "definitely") with minimal-diff edit!
+        let inlineFix = completer.complete(textBeforeCursor: "I definatel")
+        XCTAssertEqual(inlineFix?.fullWord, "definitely")
+        XCTAssertEqual(inlineFix?.isTypoCorrection, true)
+        XCTAssertEqual(inlineFix?.replacementDeleteCount, 4) // deletes "atel"
+        XCTAssertEqual(inlineFix?.suffix, "itely")           // inserts "itely"
+
+        // 2. Positive self-learning: observing a personal mistype ("functoin" -> "function") twice graduates it to Space auto-correct!
+        XCTAssertNil(ObviousTypoCorrector.spaceAutoCorrection(forWord: "functoin", adaptiveStore: adaptive, habitTracker: nil, historyStore: history))
+        adaptive.recordObservedCorrection(mistype: "functoin", corrected: "function", persistAsync: false)
+        adaptive.recordObservedCorrection(mistype: "functoin", corrected: "function", persistAsync: false)
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "functoin", adaptiveStore: adaptive, habitTracker: nil, historyStore: history),
+            "function"
+        )
+
+        // 3. Negative self-learning: undoing "cant" -> "can't" twice with Backspace mutes "cant" automatically!
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "cant", adaptiveStore: adaptive, habitTracker: nil, historyStore: history),
+            "can't"
+        )
+        XCTAssertFalse(adaptive.recordUndo(forTrigger: "cant", persistAsync: false))
+        XCTAssertTrue(adaptive.recordUndo(forTrigger: "cant", persistAsync: false))
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "cant", adaptiveStore: adaptive, habitTracker: nil, historyStore: history)
+        )
+
+        // 4. Custom shorthand rule ("omw" -> "on my way") works on both Tab and Space
+        XCTAssertTrue(adaptive.addCustomRule(trigger: "omw", replacement: "on my way", persistAsync: false))
+        XCTAssertEqual(completer.complete(textBeforeCursor: "hey omw")?.fullWord, "on my way")
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "omw", adaptiveStore: adaptive, habitTracker: nil, historyStore: history),
+            "on my way"
+        )
+    }
 }

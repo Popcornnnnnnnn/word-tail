@@ -133,6 +133,20 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var autoCorrectOnSpace: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.autoCorrectOnSpace = autoCorrectOnSpace
+        }
+    }
+
+    @Published var autoCapitalizeSentences: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.autoCapitalizeSentences = autoCapitalizeSentences
+        }
+    }
+
     @Published var enableHabitLearning: Bool {
         didSet {
             guard !isRefreshing, !isStaticShowcase else { return }
@@ -226,6 +240,9 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var vocabularyEntries: [VocabularyEntry] = []
     @Published var newCustomWordInput: String = ""
+    @Published var correctionRules: [CorrectionRuleEntry] = []
+    @Published var newRuleTrigger: String = ""
+    @Published var newRuleReplacement: String = ""
     @Published var insights: TypingInsightsSnapshot = TypingInsightsSnapshot()
     @Published var learnedBigrams: [BigramHabitEntry] = []
     @Published var keyStatsRange: StatsTimeRange = .today {
@@ -251,6 +268,8 @@ final class SettingsViewModel: ObservableObject {
         self.globalOffset = Double(engine.globalVerticalAdjustment)
         self.ghostOpacity = Double(engine.ghostOpacity)
         self.appendSpaceOnAccept = engine.appendSpaceOnAccept
+        self.autoCorrectOnSpace = engine.autoCorrectOnSpace
+        self.autoCapitalizeSentences = engine.autoCapitalizeSentences
         self.enableHabitLearning = engine.enableHabitLearning
         self.enableKeyStatsTracking = engine.enableKeyStatsTracking
         self.showMenuBarKeyCount = engine.showMenuBarKeyCount
@@ -287,6 +306,8 @@ final class SettingsViewModel: ObservableObject {
         self.globalOffset = 0.70
         self.ghostOpacity = 0.38
         self.appendSpaceOnAccept = true
+        self.autoCorrectOnSpace = true
+        self.autoCapitalizeSentences = true
         self.enableHabitLearning = true
         self.enableKeyStatsTracking = true
         self.showMenuBarKeyCount = true
@@ -319,6 +340,8 @@ final class SettingsViewModel: ObservableObject {
         globalOffset = Double(engine.globalVerticalAdjustment)
         ghostOpacity = Double(engine.ghostOpacity)
         appendSpaceOnAccept = engine.appendSpaceOnAccept
+        autoCorrectOnSpace = engine.autoCorrectOnSpace
+        autoCapitalizeSentences = engine.autoCapitalizeSentences
         enableHabitLearning = engine.enableHabitLearning
         enableKeyStatsTracking = engine.enableKeyStatsTracking
         showMenuBarKeyCount = engine.showMenuBarKeyCount
@@ -334,6 +357,7 @@ final class SettingsViewModel: ObservableObject {
         }
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         vocabularyEntries = engine.vocabularyEntries()
+        correctionRules = engine.adaptiveStore.allEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
         keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
@@ -516,7 +540,28 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         engine.clearLearnedWords()
         vocabularyEntries = []
+        correctionRules = []
         learnedBigrams = []
+    }
+
+    func submitNewCorrectionRule() {
+        guard let engine,
+              engine.adaptiveStore.addCustomRule(
+                  trigger: newRuleTrigger,
+                  replacement: newRuleReplacement,
+                  persistAsync: false
+              ) else {
+            return
+        }
+        newRuleTrigger = ""
+        newRuleReplacement = ""
+        correctionRules = engine.adaptiveStore.allEntries()
+    }
+
+    func removeCorrectionRule(_ trigger: String) {
+        guard let engine else { return }
+        engine.adaptiveStore.removeRuleOrUnmute(trigger: trigger)
+        correctionRules = engine.adaptiveStore.allEntries()
     }
 
     func openAccessibilitySettings() {
@@ -1587,6 +1632,71 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
+                LinearSectionHeader(
+                    title: "Learnable Auto-Correct & Shorthand Rules",
+                    subtitle: "Built-in contractions (im → I'm, dont → don't) + rules auto-learned from your repairs and ⌫ undos."
+                )
+
+                LinearCard {
+                    HStack(spacing: 8) {
+                        TextField("Trigger (e.g. tmr)", text: $vm.newRuleTrigger)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5, design: .monospaced))
+                            .frame(width: 135)
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                        TextField("Replacement (e.g. tomorrow)", text: $vm.newRuleReplacement)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5))
+                            .onSubmit {
+                                vm.submitNewCorrectionRule()
+                            }
+                        LinearActionButton(title: "Add Rule", icon: nil) {
+                            vm.submitNewCorrectionRule()
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 42)
+
+                    ForEach(vm.correctionRules.prefix(25)) { rule in
+                        Rectangle()
+                            .fill(LinearUI.hairline(scheme))
+                            .frame(height: 1)
+                            .padding(.leading, 12)
+
+                        HStack(spacing: 8) {
+                            Text(rule.trigger)
+                                .font(.system(size: 12, design: .monospaced))
+                                .strikethrough(rule.source == .muted, color: .secondary)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                            Text(rule.replacement)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(rule.source == .muted ? .secondary : .primary)
+                            LinearKbd(label: rule.source.rawValue)
+                            Spacer()
+                            if rule.count > 0 && rule.source == .learned {
+                                Text("\(rule.count)×")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            LinearIconButton(
+                                symbol: "xmark",
+                                helpText: rule.source == .muted ? "Unmute trigger" : "Remove rule"
+                            ) {
+                                vm.removeCorrectionRule(rule.trigger)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 35)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     LinearSectionHeader(
                         title: "Custom & Learned Words",
@@ -1672,6 +1782,44 @@ struct SettingsView: View {
                         }
                         Spacer()
                         LinearSwitch(isOn: $vm.appendSpaceOnAccept)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Auto-Correct Typos & Contractions")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Fixes obvious typos & patterns (im → I'm, teh → the) on Tab/Space; ⌫ undoes & learns")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.autoCorrectOnSpace)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Auto-Capitalize Sentences")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Capitalizes sentence starts and standalone “I” on Space (skips CLI commands)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.autoCapitalizeSentences)
                     }
                     .padding(.horizontal, 14)
                     .frame(height: 52)

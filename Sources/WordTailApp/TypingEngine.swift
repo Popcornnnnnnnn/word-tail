@@ -9,6 +9,7 @@ final class TypingEngine {
     private let completer: WordCompleter
     private let historyStore: UserHistoryStore
     private let habitTracker: TypingHabitTracker
+    let adaptiveStore: AdaptiveCorrectionStore
     let keyStatsStore: KeyStatsStore
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
@@ -20,9 +21,17 @@ final class TypingEngine {
     private var telemetryRunLoopSource: CFRunLoopSource?
     private var debounceWorkItem: DispatchWorkItem?
     private var rollingBuffer: String = ""
+    private var lastCapturedLineText: String?
     private var lastObservedBundleID: String?
     private var lastObservedAppName: String?
     private var lastKnownRomanLayout: Bool = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
+
+    private struct PendingSpaceUndo {
+        let originalWord: String
+        let replacedWith: String
+    }
+    private var pendingSpaceUndo: PendingSpaceUndo?
+    private var suppressedWordOnce: String?
 
     private var activeCandidates: [CompletionMatch] = []
     private var activeCandidateIndex: Int = 0
@@ -32,8 +41,8 @@ final class TypingEngine {
 
     private struct PinnedLiveSample {
         let bundleID: String
-        let suffix: String
-        let fullWord: String
+        let match: CompletionMatch
+        let hasTextAfterOnLine: Bool
         let rawAXRect: CGRect
         let primaryScreenHeight: CGFloat
         let font: NSFont
@@ -124,6 +133,37 @@ final class TypingEngine {
         set { UserDefaults.standard.set(newValue, forKey: "WordTailAppendSpaceOnAccept") }
     }
 
+    var autoCorrectOnSpace: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "WordTailAutoCorrectOnSpace") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "WordTailAutoCorrectOnSpace")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailAutoCorrectOnSpace")
+            completer.enableInlineTypoFix = newValue
+            if !newValue {
+                pendingSpaceUndo = nil
+            }
+        }
+    }
+
+    var autoCapitalizeSentences: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "WordTailAutoCapitalizeSentences") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "WordTailAutoCapitalizeSentences")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailAutoCapitalizeSentences")
+            if !newValue {
+                pendingSpaceUndo = nil
+            }
+        }
+    }
+
     var enableTechLexicon: Bool {
         get { completer.enableTechLexicon }
         set {
@@ -176,6 +216,7 @@ final class TypingEngine {
 
     func clearLearnedWords() {
         historyStore.clearAll()
+        adaptiveStore.clearAll()
     }
 
     var enableHabitLearning: Bool {
@@ -246,15 +287,21 @@ final class TypingEngine {
         completer: WordCompleter,
         historyStore: UserHistoryStore,
         habitTracker: TypingHabitTracker = TypingHabitTracker(),
+        adaptiveStore: AdaptiveCorrectionStore = AdaptiveCorrectionStore(),
         keyStatsStore: KeyStatsStore = KeyStatsStore(),
         inputGuard: InputGuard
     ) {
         self.completer = completer
         self.historyStore = historyStore
         self.habitTracker = habitTracker
+        self.adaptiveStore = adaptiveStore
         self.keyStatsStore = keyStatsStore
         self.inputGuard = inputGuard
         completer.habitTracker = habitTracker
+        completer.adaptiveStore = adaptiveStore
+        if UserDefaults.standard.object(forKey: "WordTailAutoCorrectOnSpace") != nil {
+            completer.enableInlineTypoFix = UserDefaults.standard.bool(forKey: "WordTailAutoCorrectOnSpace")
+        }
         if let front = NSWorkspace.shared.frontmostApplication,
            front.bundleIdentifier != Bundle.main.bundleIdentifier {
             self.lastObservedBundleID = front.bundleIdentifier
@@ -560,15 +607,18 @@ final class TypingEngine {
            !flags.contains(.maskCommand),
            !flags.contains(.maskControl),
            (keyCode == kVK_ANSI_RightBracket || keyCode == kVK_ANSI_LeftBracket) {
+            pendingSpaceUndo = nil
             let delta = (keyCode == kVK_ANSI_RightBracket) ? 1 : -1
             let count = activeCandidates.count
             activeCandidateIndex = (activeCandidateIndex + delta + count) % count
             if let snapshot = activeSnapshot {
                 let chosen = activeCandidates[activeCandidateIndex]
                 overlay.show(
-                    suffix: chosen.suffix,
-                    fullWord: chosen.fullWord,
+                    match: chosen,
                     placement: snapshot.placement,
+                    rawAXRect: snapshot.rawAXRect,
+                    primaryScreenHeight: snapshot.primaryScreenHeight,
+                    hasTextAfterOnLine: snapshot.hasTextAfterOnLine,
                     font: snapshot.font,
                     opacity: ghostOpacity
                 )
@@ -578,54 +628,65 @@ final class TypingEngine {
 
         let hasCommandOrCtrlOrOption = flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate)
         if hasCommandOrCtrlOrOption {
+            pendingSpaceUndo = nil
             DispatchQueue.main.async { [weak self] in
                 self?.dismissOverlay(clearBuffer: true)
             }
             return Unmanaged.passUnretained(event)
         }
 
-        // Tab while ghost text is visible -> swallow Tab and inject the remaining word suffix (+ optional trailing space)!
+        // Tab while ghost text is visible -> swallow Tab and inject suffix or minimal-diff typo replacement!
         if keyCode == kVK_Tab, !flags.contains(.maskShift), overlay.isVisible,
-           let suffix = overlay.currentSuffix, let fullWord = overlay.currentFullWord {
+           let match = overlay.currentMatch {
+            pendingSpaceUndo = nil
+            suppressedWordOnce = nil
             debounceWorkItem?.cancel()
             let charAfter = activeSnapshot?.charAfterCursor
-            let prevWord = (activeCandidateIndex < activeCandidates.count)
-                ? activeCandidates[activeCandidateIndex].previousWord
-                : nil
+            let prevWord = match.previousWord
             let acceptedBundle = activeBundleID ?? lastObservedBundleID
             let acceptedAppName = activeAppName ?? lastObservedAppName
             let shouldAddSpace = appendSpaceOnAccept && WordCompleter.shouldAppendTrailingSpace(charAfterCursor: charAfter)
-            let textToInsert = shouldAddSpace ? (suffix + " ") : suffix
+            let textToInsert = shouldAddSpace ? (match.suffix + " ") : match.suffix
+            let deleteCount = match.replacementDeleteCount
 
             overlay.hide()
             activeCandidates.removeAll(keepingCapacity: true)
             activeSnapshot = nil
 
+            if deleteCount > 0 {
+                rollingBuffer = String(rollingBuffer.dropLast(min(rollingBuffer.count, deleteCount)))
+            }
             rollingBuffer.append(textToInsert)
             if rollingBuffer.count > 80 {
                 rollingBuffer = String(rollingBuffer.suffix(80))
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                if deleteCount > 0 {
+                    self.injectBackspaces(count: deleteCount)
+                }
                 self.injectUnicodeString(textToInsert)
                 if self.enableKeyStatsTracking {
                     self.keyStatsStore.recordWordTailCompletion(
-                        charsSaved: textToInsert.count,
+                        charsSaved: max(1, textToInsert.count - deleteCount),
                         appBundleID: acceptedBundle,
                         appName: acceptedAppName
                     )
                 }
                 let learnContext = self.enableHabitLearning
+                if learnContext && match.isTypoCorrection {
+                    self.adaptiveStore.recordObservedCorrection(mistype: match.prefix, corrected: match.fullWord)
+                }
                 let outcome = learnContext
                     ? self.habitTracker.recordTabAccepted(
-                        fullWord: fullWord,
+                        fullWord: match.fullWord,
                         insertedText: textToInsert,
                         previousWordFromContext: prevWord,
                         bundleID: acceptedBundle
                     )
                     : nil
                 self.historyStore.recordAcceptance(
-                    of: fullWord,
+                    of: match.fullWord,
                     previousWord: learnContext ? (outcome?.previousWord ?? prevWord) : nil,
                     bundleID: learnContext ? acceptedBundle : nil
                 )
@@ -635,14 +696,40 @@ final class TypingEngine {
 
         // Esc while ghost text is visible -> swallow Esc and dismiss ghost text only.
         if keyCode == kVK_Escape, overlay.isVisible {
+            pendingSpaceUndo = nil
             overlay.hide()
             activeCandidates.removeAll(keepingCapacity: true)
             activeSnapshot = nil
             return nil
         }
 
-        // Backspace -> trim rolling buffer and re-query or hide.
+        // Backspace -> first check 1-press Undo of an immediate `Space` auto-correction; otherwise normal delete!
         if keyCode == kVK_Delete {
+            if let undo = pendingSpaceUndo {
+                pendingSpaceUndo = nil
+                suppressedWordOnce = undo.originalWord
+                let diff = ObviousTypoCorrector.minimalDiff(from: undo.replacedWith + " ", to: undo.originalWord)
+                let dropLen = min(rollingBuffer.count, undo.replacedWith.count + 1)
+                rollingBuffer = String(rollingBuffer.dropLast(dropLen)) + undo.originalWord
+                if rollingBuffer.count > 80 {
+                    rollingBuffer = String(rollingBuffer.suffix(80))
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if self.enableHabitLearning {
+                        self.adaptiveStore.recordUndo(forTrigger: undo.originalWord)
+                    }
+                    if diff.deleteCount > 0 {
+                        self.injectBackspaces(count: diff.deleteCount)
+                    }
+                    if !diff.insertText.isEmpty {
+                        self.injectUnicodeString(diff.insertText)
+                    }
+                    self.schedulePredictionQuery()
+                }
+                return nil
+            }
+
             if !rollingBuffer.isEmpty {
                 rollingBuffer.removeLast()
             }
@@ -661,11 +748,90 @@ final class TypingEngine {
 
         // Navigation / Return / Tab (without suggestion) -> clear buffer and hide.
         if Self.navigationKeyCodes.contains(keyCode) {
+            pendingSpaceUndo = nil
+            suppressedWordOnce = nil
+            if keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter {
+                debounceWorkItem?.cancel()
+                overlay.hide()
+                activeCandidates.removeAll(keepingCapacity: true)
+                activeSnapshot = nil
+                rollingBuffer = "\n"
+                lastCapturedLineText = ""
+                DispatchQueue.main.async { [weak self] in
+                    self?.habitTracker.resetSessionContext()
+                }
+                return Unmanaged.passUnretained(event)
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.habitTracker.resetSessionContext()
                 self?.dismissOverlay(clearBuffer: true)
             }
             return Unmanaged.passUnretained(event)
+        }
+
+        // Space -> check high-confidence auto-correction ("im" -> "I'm", "teh" -> "the", learned patterns)
+        // and sentence-start / standalone-"I" capitalization!
+        if keyCode == kVK_Space, !flags.contains(.maskShift) {
+            pendingSpaceUndo = nil
+            let bid = activeBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            if bid != Bundle.main.bundleIdentifier,
+               (autoCorrectOnSpace || autoCapitalizeSentences),
+               inputGuard.shouldAllowPrediction(frontmostBundleID: bid),
+               let typedWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: rollingBuffer) {
+                let wasJustUndone = (suppressedWordOnce == typedWord)
+                suppressedWordOnce = nil
+
+                if !wasJustUndone {
+                    let lineCtx = resolvedLineContextForWord(typedWord)
+                    if let replacement = ObviousTypoCorrector.spaceReplacement(
+                        forWord: typedWord,
+                        lineContextIncludingWord: lineCtx,
+                        autoCorrectTypos: autoCorrectOnSpace,
+                        autoCapitalizeSentences: autoCapitalizeSentences,
+                        adaptiveStore: adaptiveStore,
+                        habitTracker: habitTracker,
+                        historyStore: historyStore
+                    ) {
+                        debounceWorkItem?.cancel()
+                        overlay.hide()
+                        activeCandidates.removeAll(keepingCapacity: true)
+                        activeSnapshot = nil
+
+                        let diff = ObviousTypoCorrector.minimalDiff(from: typedWord, to: replacement)
+                        rollingBuffer = String(rollingBuffer.dropLast(min(rollingBuffer.count, typedWord.count))) + replacement + " "
+                        if rollingBuffer.count > 80 {
+                            rollingBuffer = String(rollingBuffer.suffix(80))
+                        }
+                        if let lineCtx, lineCtx.lowercased().hasSuffix(typedWord.lowercased()) {
+                            lastCapturedLineText = String(lineCtx.dropLast(typedWord.count)) + replacement + " "
+                        }
+                        pendingSpaceUndo = PendingSpaceUndo(originalWord: typedWord, replacedWith: replacement)
+
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self else { return }
+                            if diff.deleteCount > 0 {
+                                self.injectBackspaces(count: diff.deleteCount)
+                            }
+                            self.injectUnicodeString(diff.insertText + " ")
+                            if self.enableHabitLearning {
+                                if let completed = self.habitTracker.recordTypedCharacters(" ", bundleID: bid) {
+                                    self.historyStore.recordNaturalWordUsage(
+                                        word: completed.word,
+                                        previousWord: completed.previousWord,
+                                        bundleID: completed.bundleID
+                                    )
+                                }
+                            }
+                        }
+                        return nil
+                    }
+                }
+            } else {
+                suppressedWordOnce = nil
+            }
+        } else {
+            pendingSpaceUndo = nil
+            suppressedWordOnce = nil
         }
 
         if let typed = Self.unicodeString(from: event), !typed.isEmpty {
@@ -683,6 +849,9 @@ final class TypingEngine {
                         return
                     }
                     if let completed = self.habitTracker.recordTypedCharacters(typed, bundleID: bid) {
+                        if let mistype = completed.detectedTypoMistype {
+                            self.adaptiveStore.recordObservedCorrection(mistype: mistype, corrected: completed.word)
+                        }
                         self.historyStore.recordNaturalWordUsage(
                             word: completed.word,
                             previousWord: completed.previousWord,
@@ -693,6 +862,11 @@ final class TypingEngine {
             }
 
             if let last = typed.last, (last.isLetter && last.isASCII) || last == "'" {
+                if rollingBuffer.count == 1 && lastCapturedLineText == nil {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.primeLineContextSnapshot()
+                    }
+                }
                 schedulePredictionQuery()
             } else {
                 DispatchQueue.main.async { [weak self] in
@@ -711,6 +885,23 @@ final class TypingEngine {
         }
         debounceWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16), execute: item)
+    }
+
+    private func primeLineContextSnapshot() {
+        let targetApp = axContext.effectiveFocusedApplication()
+        let frontBundle = targetApp?.bundleIdentifier
+        guard frontBundle != Bundle.main.bundleIdentifier,
+              inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle) else {
+            return
+        }
+        if let snap = axContext.capture(
+            targetApp: targetApp,
+            fallbackBuffer: rollingBuffer,
+            enableChromiumBridge: enableChromiumBridge,
+            verticalAdjustment: verticalAdjustment(forBundleID: frontBundle)
+        ) {
+            lastCapturedLineText = snap.textBeforeCursor
+        }
     }
 
     private func evaluateAndRenderPrediction() {
@@ -736,6 +927,7 @@ final class TypingEngine {
             overlay.hide()
             return
         }
+        lastCapturedLineText = snapshot.textBeforeCursor
 
         let matches = completer.candidates(
             textBeforeCursor: snapshot.textBeforeCursor,
@@ -759,15 +951,16 @@ final class TypingEngine {
         }
 
         axContext.recordOverlayOutcome(String(
-            format: "shown=yes(len=%d,n=%d,x=%.0f,y=%.0f)",
-            first.suffix.count, matches.count, snapshot.placement.anchorX, snapshot.placement.baselineY
+            format: "shown=yes(len=%d,n=%d,x=%.0f,y=%.0f,mid=%d)",
+            first.suffix.count, matches.count, snapshot.placement.anchorX, snapshot.placement.baselineY,
+            snapshot.hasTextAfterOnLine ? 1 : 0
         ))
 
         if let frontBundle {
             lastLiveSample = PinnedLiveSample(
                 bundleID: frontBundle,
-                suffix: first.suffix,
-                fullWord: first.fullWord,
+                match: first,
+                hasTextAfterOnLine: snapshot.hasTextAfterOnLine,
                 rawAXRect: snapshot.rawAXRect,
                 primaryScreenHeight: snapshot.primaryScreenHeight,
                 font: snapshot.font
@@ -775,9 +968,11 @@ final class TypingEngine {
         }
 
         overlay.show(
-            suffix: first.suffix,
-            fullWord: first.fullWord,
+            match: first,
             placement: snapshot.placement,
+            rawAXRect: snapshot.rawAXRect,
+            primaryScreenHeight: snapshot.primaryScreenHeight,
+            hasTextAfterOnLine: snapshot.hasTextAfterOnLine,
             font: snapshot.font,
             opacity: ghostOpacity
         )
@@ -793,9 +988,11 @@ final class TypingEngine {
             verticalAdjustment: offset
         )
         overlay.show(
-            suffix: sample.suffix,
-            fullWord: sample.fullWord,
+            match: sample.match,
             placement: placement,
+            rawAXRect: sample.rawAXRect,
+            primaryScreenHeight: sample.primaryScreenHeight,
+            hasTextAfterOnLine: sample.hasTextAfterOnLine,
             font: sample.font,
             opacity: ghostOpacity
         )
@@ -808,6 +1005,58 @@ final class TypingEngine {
         activeSnapshot = nil
         if clearBuffer {
             rollingBuffer.removeAll(keepingCapacity: true)
+            lastCapturedLineText = nil
+            pendingSpaceUndo = nil
+            suppressedWordOnce = nil
+        }
+    }
+
+    /// Reconstructs the current line's text up to and including `typedWord`, accounting for fast keystroke rollover
+    /// where `Space` arrives a few milliseconds before the last character's 16ms debounced AX snapshot.
+    private func resolvedLineContextForWord(_ typedWord: String) -> String? {
+        if rollingBuffer.contains("\n") || rollingBuffer.contains(".") || rollingBuffer.contains("!") || rollingBuffer.contains("?") {
+            return rollingBuffer
+        }
+        guard let snap = lastCapturedLineText else {
+            return nil
+        }
+        let lowerSnap = snap.lowercased()
+        let lowerWord = typedWord.lowercased()
+        if lowerSnap.hasSuffix(lowerWord) {
+            return String(snap.dropLast(typedWord.count)) + typedWord
+        }
+        // Check partial prefix overlap (e.g. snap ended with "hell" right before "o" + Space completed "hello")
+        let maxOverlap = min(snap.count, typedWord.count - 1)
+        if maxOverlap >= 1 {
+            for k in stride(from: maxOverlap, through: 1, by: -1) {
+                let wordPrefix = String(lowerWord.prefix(k))
+                if lowerSnap.hasSuffix(wordPrefix) {
+                    let beforeWord = String(snap.dropLast(k))
+                    let boundaryOK = beforeWord.isEmpty || " \t\n\r([{\"'“‘".contains(beforeWord.last!)
+                    if boundaryOK {
+                        return beforeWord + typedWord
+                    }
+                }
+            }
+        }
+        if snap.trimmingCharacters(in: .whitespaces).isEmpty {
+            return snap + typedWord
+        }
+        return nil
+    }
+
+    private func injectBackspaces(count: Int) {
+        guard count > 0, let src = CGEventSource(stateID: .hidSystemState) else { return }
+        let vkDelete = CGKeyCode(kVK_Delete)
+        for _ in 0..<count {
+            guard let down = CGEvent(keyboardEventSource: src, virtualKey: vkDelete, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: src, virtualKey: vkDelete, keyDown: false) else {
+                continue
+            }
+            down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+            up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
         }
     }
 

@@ -179,6 +179,7 @@ public final class TypingHabitTracker {
     private var lastCompletedWord: String?
     private var lastCompletedWordTime: TimeInterval = 0
     private var lastCompletedBundleID: String?
+    private var recentInvalidWord: (token: String, time: TimeInterval, sawBackspaceAfter: Bool)?
 
     private var burstStartTime: TimeInterval?
     private var lastBurstKeyTime: TimeInterval?
@@ -238,6 +239,36 @@ public final class TypingHabitTracker {
         let lower = word.lowercased()
         return queue.sync {
             state.typoTraps[lower]?.count ?? 0
+        }
+    }
+
+    /// Returns the learned clean word if the user has repeatedly mistyped `mistype` (`count >= 2`).
+    public func learnedAutoFix(forMistype mistype: String) -> String? {
+        let lower = mistype.lowercased()
+        return queue.sync {
+            let match = state.typoTraps.values
+                .filter { $0.count >= 2 && $0.commonMistype == lower && $0.word != lower }
+                .max(by: { $0.count < $1.count })
+            return match?.word
+        }
+    }
+
+    /// Returns the learned clean word for an inline `Tab` hint when `typedPrefix` matches or starts a recorded mistype.
+    public func matchingTypoTrapCorrection(forTypedPrefix typedPrefix: String) -> String? {
+        let lower = typedPrefix.lowercased()
+        guard lower.count >= 3 else { return nil }
+        return queue.sync {
+            if let exact = state.typoTraps.values
+                .filter({ $0.commonMistype == lower && $0.word != lower })
+                .max(by: { $0.count < $1.count }) {
+                return exact.word
+            }
+            guard lower.count >= 4 else { return nil }
+            let prefixMatches = state.typoTraps.values.filter {
+                $0.commonMistype.hasPrefix(lower) && !$0.word.hasPrefix(lower)
+            }
+            let distinct = Set(prefixMatches.map(\.word))
+            return distinct.count == 1 ? distinct.first : nil
         }
     }
 
@@ -336,6 +367,9 @@ public final class TypingHabitTracker {
             if !inProgressChars.isEmpty {
                 inProgressChars.removeLast()
                 backspacesInCurrentWord += 1
+            } else if var recent = recentInvalidWord, now - recent.time <= 4.0 {
+                recent.sawBackspaceAfter = true
+                recentInvalidWord = recent
             }
             lastBurstKeyTime = now
         }
@@ -420,7 +454,7 @@ public final class TypingHabitTracker {
             let resolvedPrev = previousWordFromContext?.lowercased()
                 ?? ((now - lastCompletedWordTime <= 6.0 && lastCompletedBundleID == bundleID) ? lastCompletedWord : nil)
 
-            let mistype = detectMistypeLocked(forFinalLowerWord: lower)
+            let mistype = detectMistypeLocked(forFinalLowerWord: lower, at: now)
 
             resetCurrentWordLocked(clearLastWord: false)
             if validWordChecker(lower) {
@@ -524,6 +558,11 @@ public final class TypingHabitTracker {
         }
 
         guard candidate.count >= 3, validWordChecker(candidate) else {
+            if candidate.count >= 3 && candidate.count <= 22 && candidate.allSatisfy({ $0.isASCII && $0.isLetter }) {
+                recentInvalidWord = (token: candidate, time: now, sawBackspaceAfter: false)
+            } else {
+                recentInvalidWord = nil
+            }
             lastCompletedWord = nil
             return nil
         }
@@ -542,7 +581,17 @@ public final class TypingHabitTracker {
             prev = nil
         }
 
-        let mistype = detectMistypeLocked(forFinalLowerWord: candidate)
+        var mistype = detectMistypeLocked(forFinalLowerWord: candidate, at: now)
+        if mistype == nil,
+           let recent = recentInvalidWord,
+           recent.sawBackspaceAfter,
+           now - recent.time <= 5.0,
+           recent.token != candidate,
+           ObviousTypoCorrector.damerauLevenshtein(recent.token, candidate) <= 2 {
+            recordTypoTrapEntryLocked(finalWord: candidate, rawMistype: recent.token)
+            mistype = recent.token
+        }
+        recentInvalidWord = nil
 
         if keepChainAlive {
             lastCompletedWord = candidate
@@ -560,25 +609,30 @@ public final class TypingHabitTracker {
         )
     }
 
-    private func detectMistypeLocked(forFinalLowerWord finalWord: String) -> String? {
+    private func detectMistypeLocked(forFinalLowerWord finalWord: String, at now: TimeInterval) -> String? {
         guard backspacesInCurrentWord >= 1,
-              finalWord.count >= 4,
+              finalWord.count >= 3,
               let rawPeak = peakBeforeBackspace?.lowercased(),
               rawPeak.count >= 3,
               rawPeak != finalWord,
               !finalWord.hasPrefix(rawPeak),
               abs(rawPeak.count - finalWord.count) <= 4,
-              rawPeak.prefix(2) == finalWord.prefix(2),
+              (rawPeak.prefix(2) == finalWord.prefix(2) || ObviousTypoCorrector.damerauLevenshtein(rawPeak, finalWord) <= 2),
               validWordChecker(finalWord) else {
             return nil
         }
 
+        recordTypoTrapEntryLocked(finalWord: finalWord, rawMistype: rawPeak)
+        return rawPeak
+    }
+
+    private func recordTypoTrapEntryLocked(finalWord: String, rawMistype: String) {
         if var existing = state.typoTraps[finalWord] {
             existing.count += 1
-            existing.commonMistype = rawPeak
+            existing.commonMistype = rawMistype
             state.typoTraps[finalWord] = existing
         } else {
-            state.typoTraps[finalWord] = TypoTrapEntry(word: finalWord, commonMistype: rawPeak, count: 1)
+            state.typoTraps[finalWord] = TypoTrapEntry(word: finalWord, commonMistype: rawMistype, count: 1)
             if state.typoTraps.count > 120 {
                 let keep = state.typoTraps.values
                     .sorted { $0.count > $1.count }
@@ -586,7 +640,6 @@ public final class TypingHabitTracker {
                 state.typoTraps = Dictionary(uniqueKeysWithValues: keep.map { ($0.word, $0) })
             }
         }
-        return rawPeak
     }
 
     private func resetCurrentWordLocked(clearLastWord: Bool) {

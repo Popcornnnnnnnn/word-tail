@@ -6,21 +6,41 @@ public struct CompletionMatch: Equatable {
     public let fullWord: String
     public let suffix: String
     public let previousWord: String?
+    public let replacementDeleteCount: Int
 
-    public init(prefix: String, fullWord: String, suffix: String, previousWord: String? = nil) {
+    public var isTypoCorrection: Bool {
+        replacementDeleteCount > 0
+    }
+
+    public init(
+        prefix: String,
+        fullWord: String,
+        suffix: String,
+        previousWord: String? = nil,
+        replacementDeleteCount: Int = 0
+    ) {
         self.prefix = prefix
         self.fullWord = fullWord
         self.suffix = suffix
         self.previousWord = previousWord
+        self.replacementDeleteCount = replacementDeleteCount
     }
 
     public static func == (lhs: CompletionMatch, rhs: CompletionMatch) -> Bool {
-        lhs.prefix == rhs.prefix && lhs.fullWord == rhs.fullWord && lhs.suffix == rhs.suffix
+        lhs.prefix == rhs.prefix
+            && lhs.fullWord == rhs.fullWord
+            && lhs.suffix == rhs.suffix
+            && lhs.replacementDeleteCount == rhs.replacementDeleteCount
     }
 }
 
 public protocol SpellCompleting {
     func completions(forPartialWordRange range: NSRange, in string: String, language: String) -> [String]
+    func correction(forWord word: String) -> String?
+}
+
+public extension SpellCompleting {
+    func correction(forWord word: String) -> String? { nil }
 }
 
 public struct SystemSpellCompleter: SpellCompleting {
@@ -34,6 +54,26 @@ public struct SystemSpellCompleter: SpellCompleting {
             inSpellDocumentWithTag: 0
         ) ?? []
     }
+
+    public func correction(forWord word: String) -> String? {
+        let ns = word as NSString
+        let fullRange = NSRange(location: 0, length: ns.length)
+        let misspelled = NSSpellChecker.shared.checkSpelling(
+            of: word,
+            startingAt: 0,
+            language: "en_US",
+            wrap: false,
+            inSpellDocumentWithTag: 0,
+            wordCount: nil
+        )
+        guard misspelled.location != NSNotFound else { return nil }
+        return NSSpellChecker.shared.correction(
+            forWordRange: fullRange,
+            in: word,
+            language: "en_US",
+            inSpellDocumentWithTag: 0
+        )
+    }
 }
 
 public final class WordCompleter {
@@ -43,24 +83,30 @@ public final class WordCompleter {
     private let spellCompleter: SpellCompleting
     private let historyStore: UserHistoryStore
     public weak var habitTracker: TypingHabitTracker?
+    public var adaptiveStore: AdaptiveCorrectionStore?
     public var minimumPrefixLength: Int
     public var minimumSuffixLength: Int
     public var enableTechLexicon: Bool
+    public var enableInlineTypoFix: Bool
 
     public init(
         spellCompleter: SpellCompleting = SystemSpellCompleter(),
         historyStore: UserHistoryStore = UserHistoryStore(),
         habitTracker: TypingHabitTracker? = nil,
+        adaptiveStore: AdaptiveCorrectionStore? = nil,
         minimumPrefixLength: Int = 2,
         minimumSuffixLength: Int = 2,
-        enableTechLexicon: Bool = true
+        enableTechLexicon: Bool = true,
+        enableInlineTypoFix: Bool = true
     ) {
         self.spellCompleter = spellCompleter
         self.historyStore = historyStore
         self.habitTracker = habitTracker
+        self.adaptiveStore = adaptiveStore
         self.minimumPrefixLength = minimumPrefixLength
         self.minimumSuffixLength = minimumSuffixLength
         self.enableTechLexicon = enableTechLexicon
+        self.enableInlineTypoFix = enableInlineTypoFix
     }
 
     /// Returns true only when appending a trailing space after `Tab` will not create a duplicate space
@@ -161,7 +207,59 @@ public final class WordCompleter {
             }
         }
 
-        guard !combined.isEmpty else { return [] }
+        // Surface explicit custom shorthand / graduated learned rules at #1 whenever their exact trigger is typed!
+        if enableInlineTypoFix,
+           let customFix = adaptiveStore?.customOrLearnedReplacement(for: lowerPrefix) {
+            let adaptedCustom = ObviousTypoCorrector.adaptCase(of: customFix, toTyped: prefix)
+            let diff = ObviousTypoCorrector.minimalDiff(from: prefix, to: adaptedCustom)
+            if diff.deleteCount > 0 || !diff.insertText.isEmpty {
+                let customMatch = CompletionMatch(
+                    prefix: prefix,
+                    fullWord: adaptedCustom,
+                    suffix: diff.insertText,
+                    previousWord: prevWord,
+                    replacementDeleteCount: diff.deleteCount
+                )
+                if combined.isEmpty {
+                    return [customMatch]
+                }
+                let rankedRest = combined.enumerated().sorted { lhs, rhs in
+                    let lScore = contextualPriority(for: lhs.element, previousWord: prevWord, bundleID: bundleID)
+                    let rScore = contextualPriority(for: rhs.element, previousWord: prevWord, bundleID: bundleID)
+                    if lScore != rScore { return lScore > rScore }
+                    return lhs.offset < rhs.offset
+                }
+                let restMatches = rankedRest.prefix(max(0, limit - 1)).map { entry in
+                    CompletionMatch(prefix: prefix, fullWord: entry.element, suffix: String(entry.element.dropFirst(prefix.count)), previousWord: prevWord)
+                }
+                return [customMatch] + restMatches
+            }
+        }
+
+        if combined.isEmpty {
+            // Fallback: Inline Typo Correction (`→ word` on Tab) when no valid prefix completions exist!
+            if enableInlineTypoFix,
+               let corrected = ObviousTypoCorrector.inlineTabCorrection(
+                   forPrefix: prefix,
+                   adaptiveStore: adaptiveStore,
+                   habitTracker: habitTracker,
+                   historyStore: historyStore,
+                   spellCompleter: spellCompleter
+               ) {
+                let diff = ObviousTypoCorrector.minimalDiff(from: prefix, to: corrected)
+                guard diff.deleteCount > 0 else { return [] }
+                return [
+                    CompletionMatch(
+                        prefix: prefix,
+                        fullWord: corrected,
+                        suffix: diff.insertText,
+                        previousWord: prevWord,
+                        replacementDeleteCount: diff.deleteCount
+                    )
+                ]
+            }
+            return []
+        }
 
         // Contextual ranking: custom pinned -> personal bigrams -> per-app vocabulary -> typo-trap rescue -> global accepts -> system grammar order.
         let ranked = combined.enumerated().sorted { lhs, rhs in
@@ -194,7 +292,6 @@ public final class WordCompleter {
             idx -= 1
         }
         guard sawWhitespace, idx > 0 else { return nil }
-        // Do not cross sentence boundaries (e.g. "done. re" should not treat "done" as previous word).
         let prevEnd = idx
         while idx > 0 {
             let ch = chars[idx - 1]

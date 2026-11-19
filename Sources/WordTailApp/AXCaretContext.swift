@@ -6,6 +6,7 @@ import WordTailCore
 struct CaretSnapshot {
     let textBeforeCursor: String
     let charAfterCursor: Character?
+    let hasTextAfterOnLine: Bool
     let placement: BaselinePlacement
     let font: NSFont
     let rawAXRect: CGRect
@@ -129,6 +130,7 @@ final class AXCaretContext {
 
             var textBefore = fallbackBuffer
             var charAfter: Character? = nil
+            var hasTextAfterOnLine = false
 
             if let fullValue = copyStringAttribute(element, attribute: kAXValueAttribute as String),
                !fullValue.isEmpty {
@@ -145,8 +147,10 @@ final class AXCaretContext {
                     }
 
                     if selectedRange.location < ns.length {
-                        let afterStr = ns.substring(with: NSRange(location: selectedRange.location, length: 1))
-                        charAfter = afterStr.first
+                        let lookaheadLen = min(64, ns.length - selectedRange.location)
+                        let afterSlice = ns.substring(with: NSRange(location: selectedRange.location, length: lookaheadLen))
+                        charAfter = afterSlice.first
+                        hasTextAfterOnLine = Self.lineHasVisibleTextAfterCaret(afterSlice)
                     }
                 }
             }
@@ -160,13 +164,14 @@ final class AXCaretContext {
                     verticalAdjustment: verticalAdjustment
                 )
                 recordStatus(String(
-                    format: "app=%@ pid=%d->%d role=%@ path=range rect=(%.1fx%.1f) font=%.1f",
+                    format: "app=%@ pid=%d->%d role=%@ path=range rect=(%.1fx%.1f) font=%.1f mid=%d",
                     app.bundleIdentifier ?? "?", app.processIdentifier, ownerPID, elemRole,
-                    axRect.width, axRect.height, font.pointSize
+                    axRect.width, axRect.height, font.pointSize, hasTextAfterOnLine ? 1 : 0
                 ))
                 return CaretSnapshot(
                     textBeforeCursor: textBefore,
                     charAfterCursor: charAfter,
+                    hasTextAfterOnLine: hasTextAfterOnLine,
                     placement: placement,
                     font: font,
                     rawAXRect: axRect,
@@ -507,6 +512,7 @@ final class AXCaretContext {
         // so Chromium never walks out of the end of a chat box into adjacent toolbar buttons!
         var textBefore = fallbackBuffer
         var charAfter: Character? = nil
+        var hasTextAfterOnLine = false
 
         var lineRangeRef: CFTypeRef?
         let hasLineRange = AXUIElementCopyParameterizedAttributeValue(
@@ -548,6 +554,7 @@ final class AXCaretContext {
                    let afterStr = stringForTextMarkerRange(element: element, markerRange: afterRangeRef),
                    !afterStr.isEmpty {
                     charAfter = afterStr.first
+                    hasTextAfterOnLine = Self.lineHasVisibleTextAfterCaret(afterStr)
                 }
             }
         } else {
@@ -584,6 +591,7 @@ final class AXCaretContext {
                     ) == .success, let nextRangeRef,
                        let nextStr = stringForTextMarkerRange(element: element, markerRange: nextRangeRef) {
                         charAfter = nextStr.first
+                        hasTextAfterOnLine = Self.lineHasVisibleTextAfterCaret(nextStr)
                     }
                 }
             }
@@ -601,11 +609,19 @@ final class AXCaretContext {
         return CaretSnapshot(
             textBeforeCursor: textBefore,
             charAfterCursor: charAfter,
+            hasTextAfterOnLine: hasTextAfterOnLine,
             placement: placement,
             font: font,
             rawAXRect: axRect,
             primaryScreenHeight: primaryHeight
         )
+    }
+
+    private static func lineHasVisibleTextAfterCaret(_ slice: String) -> Bool {
+        let sameLine = slice.prefix(while: { !$0.isNewline })
+        return sameLine.contains { ch in
+            !ch.isWhitespace && ch != "\u{FFFC}" && ch != "\u{200B}" && ch != "\u{FEFF}"
+        }
     }
 
     private func boundsForTextMarkerRange(element: AXUIElement, markerRange: CFTypeRef) -> CGRect? {

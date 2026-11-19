@@ -59,7 +59,9 @@ Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electr
 
 | Shortcut | Action |
 | --- | --- |
-| `Tab` | Accept visible word completion (with optional smart trailing space) |
+| `Tab` | Accept visible word completion or inline typo fix (`→ word`) |
+| `Space` | Auto-correct contractions/typos (`im` → `I'm`, `teh` → `the`) & capitalize sentence starts |
+| `⌫` (after `Space`) | Revert an auto-correction immediately (no re-correct loop; 2× mutes trigger) |
 | `⌥ ]` / `⌥ [` | Cycle next / previous single-word candidate (top 5 matches) |
 | `Esc` | Dismiss visible ghost completion |
 | `⌃ ⌥ W` | Toggle WordTail Active / Paused globally |
@@ -75,8 +77,10 @@ Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electr
    - Reads caret coordinates via standard AppKit character ranges (`AXSelectedTextRange` / `AXBoundsForRange`) and WebKit/Chromium/Electron rich `contenteditable` markers (`AXSelectedTextMarkerRange` / `AXBoundsForTextMarkerRange`).
    - Resolves non-activating floating panels (like **Raycast** and **Spotlight**) by inspecting the Accessibility-focused UI element's owning bundle rather than relying solely on `NSWorkspace.frontmostApplication`.
    - Automatically skips Monaco code-editor tabs inside hybrid Electron apps so `Tab` keeps indenting/completing code while AI chat panels still get prose completion.
-2. **Habit-Aware Contextual Ranking (`< 1 ms`, Zero Network):**
-   - **Pinned Custom Words** → **Personal Bigrams (`prevWord → word`)** → **Per-App Vocabulary (`bundleID → word`)** → **Typo-Trap Auto-Rescue** → **Accepted Word Frequency** → **macOS Grammar Completion** → **CS/AI Lexicon**.
+   - **Non-Overlapping Mid-Sentence Mode:** Renders pure inline gray text at the end of a line, and automatically lifts a compact pill just above the cursor whenever text follows on the same line so existing words are never covered.
+2. **Habit-Aware Contextual Ranking & Bidirectionally Learnable Auto-Correct (`< 1 ms`, Zero Network):**
+   - **Pinned Custom Words & Shorthand** → **Personal Bigrams (`prevWord → word`)** → **Per-App Vocabulary (`bundleID → word`)** → **Typo-Trap Auto-Rescue** → **Accepted Word Frequency** → **macOS Grammar Completion** → **CS/AI Lexicon**.
+   - **Learnable Patterns:** Built-in contractions (`im` → `I'm`, `dont` → `don't`, `alot` → `a lot`, sentence-start `lets` → `Let's`), sentence-start & standalone-`"I"` capitalization (skipping CLI/dev commands like `git`, `kubectl`, `macOS`), positive graduation from your own repairs (`2×`), and automatic muting when undone twice with `⌫`.
 3. **Strict Privacy Boundary:**
    - Zero network calls, zero telemetry, zero raw sentence storage.
    - Passive habit counters (`word_bigrams.json`, `app_vocabulary.json`, `typing_insights.json`) accept **only** dictionary/lexicon-verified single English words and aggregate hourly counts—and can be disabled or cleared in one click.
