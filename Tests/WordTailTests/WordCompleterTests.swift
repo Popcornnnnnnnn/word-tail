@@ -588,6 +588,60 @@ final class WordCompleterTests: XCTestCase {
         )
     }
 
+    func testBuiltInBrandAndProseTypoCorrectionsAtWordBoundaries() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailTypo-\(UUID().uuidString)", isDirectory: true)
+        let adaptive = AdaptiveCorrectionStore(fileURL: tempDir.appendingPathComponent("adaptive.json"))
+
+        func replacement(in buffer: String, delimiter: String, enabled: Bool = true) -> String? {
+            guard let target = ObviousTypoCorrector.extractPunctuationOrSpaceTarget(
+                rollingBuffer: buffer,
+                typedDelimiter: delimiter
+            ) else { return nil }
+            return ObviousTypoCorrector.spaceReplacement(
+                forWord: target.word,
+                lineContextIncludingWord: target.bufferUpToWord,
+                autoCorrectTypos: enabled,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        }
+
+        for typo in ["chtagpt", "Chtagpt", "ChtaGPT", "ChatGTP", "chatgtp", "chagpt", "chatgbt", "chatgptt"] {
+            XCTAssertEqual(replacement(in: "ask \(typo)", delimiter: " "), "ChatGPT", typo)
+            XCTAssertEqual(replacement(in: "ask \(typo)", delimiter: ","), "ChatGPT", typo)
+        }
+        XCTAssertEqual(replacement(in: "ask chtagpt.", delimiter: " "), "ChatGPT")
+        XCTAssertEqual(replacement(in: "ask chatgpt", delimiter: " "), "ChatGPT")
+        XCTAssertEqual(replacement(in: "built by OpneAI", delimiter: " "), "OpenAI")
+        XCTAssertEqual(replacement(in: "hosted on githbu", delimiter: " "), "GitHub")
+        XCTAssertEqual(replacement(in: "use airpdos", delimiter: " "), "AirPods")
+        XCTAssertEqual(replacement(in: "this exmaple", delimiter: " "), "example")
+        XCTAssertEqual(replacement(in: "send a reqeust", delimiter: ","), "request")
+        XCTAssertEqual(replacement(in: "a new dependecy", delimiter: " "), "dependency")
+
+        for text in ["ask ChatGPT", "use useState", "view https://chtagpt", "edit tool_chtagpt", "see chtagpt.com"] {
+            XCTAssertNil(replacement(in: text, delimiter: " "), text)
+        }
+        XCTAssertNil(replacement(in: "ask chtagpt", delimiter: " ", enabled: false))
+
+        let completer = WordCompleter(
+            spellCompleter: MockSpellCompleter { _, _ in [] },
+            historyStore: makeTempHistory()
+        )
+        let suggestion = try XCTUnwrap(completer.complete(textBeforeCursor: "ask chtagpt"))
+        XCTAssertEqual(suggestion.fullWord, "ChatGPT")
+        XCTAssertTrue(suggestion.isTypoCorrection)
+
+        adaptive.recordUndo(forTrigger: "chtagpt", persistAsync: false)
+        XCTAssertTrue(adaptive.recordUndo(forTrigger: "chtagpt", persistAsync: false))
+        XCTAssertNil(replacement(in: "ask chtagpt", delimiter: " "))
+        XCTAssertTrue(adaptive.addCustomRule(trigger: "chtagpt", replacement: "my assistant", persistAsync: false))
+        XCTAssertEqual(replacement(in: "ask chtagpt", delimiter: " "), "my assistant")
+    }
+
     func testLearnableAutoCorrectPositiveGraduationNegativeUndoMutingAndInlineTabFix() {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("WordTailLearn-\(UUID().uuidString)", isDirectory: true)
