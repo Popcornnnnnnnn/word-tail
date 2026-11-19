@@ -204,6 +204,9 @@ public final class TypingHabitTracker {
         loadSynchronously()
     }
 
+    private static let spellCacheLock = NSLock()
+    private static var spellValidityCache: [String: Bool] = [:]
+
     public static func defaultValidEnglishWordCheck(_ rawWord: String) -> Bool {
         let lower = rawWord.lowercased()
         guard lower.count >= 3, lower.count <= 28,
@@ -213,6 +216,14 @@ public final class TypingHabitTracker {
         if TechLexicon.wordSet.contains(lower) {
             return true
         }
+
+        spellCacheLock.lock()
+        if let cached = spellValidityCache[lower] {
+            spellCacheLock.unlock()
+            return cached
+        }
+        spellCacheLock.unlock()
+
         let range = NSSpellChecker.shared.checkSpelling(
             of: lower,
             startingAt: 0,
@@ -221,7 +232,15 @@ public final class TypingHabitTracker {
             inSpellDocumentWithTag: 0,
             wordCount: nil
         )
-        return range.location == NSNotFound
+        let isValid = (range.location == NSNotFound)
+
+        spellCacheLock.lock()
+        if spellValidityCache.count >= 640 {
+            spellValidityCache.removeAll(keepingCapacity: true)
+        }
+        spellValidityCache[lower] = isValid
+        spellCacheLock.unlock()
+        return isValid
     }
 
     private func loadSynchronously() {

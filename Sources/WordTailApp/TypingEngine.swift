@@ -877,15 +877,28 @@ final class TypingEngine {
                 suppressedWordOnce = nil
 
                 if !wasJustUndone {
-                    // Inspect live AX context directly on Space so 1–2 letter starters ("do ", "in ", "we ")
-                    // and soft-wrapped lines ("...back of a word rather ") always have exact ground truth!
-                    let liveInspect = axContext.inspectLiveSentenceContext(
-                        targetApp: nil,
-                        expectedTrailingWord: typedWord,
-                        enableChromiumBridge: enableChromiumBridge
-                    )
-                    let lineCtx = liveInspect.context ?? resolvedLineContextForWord(typedWord)
-                    let isDocStart = liveInspect.context != nil ? liveInspect.isAtDocumentStart : lastCapturedDocumentStart
+                    // Zero-IPC fast path: skip synchronous AX queries on Space for ~90%+ of words (when `rollingBuffer`
+                    // already confirms `<word/comma> <typedWord>` mid-sentence, or when capitalization isn't needed).
+                    let lineCtx: String?
+                    let isDocStart: Bool
+                    if ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
+                        forWord: typedWord,
+                        rollingBuffer: rollingBuffer,
+                        autoCorrectTypos: autoCorrectOnSpace,
+                        autoCapitalizeSentences: autoCapitalizeSentences,
+                        adaptiveStore: adaptiveStore
+                    ) {
+                        let liveInspect = axContext.inspectLiveSentenceContext(
+                            targetApp: nil,
+                            expectedTrailingWord: typedWord,
+                            enableChromiumBridge: enableChromiumBridge
+                        )
+                        lineCtx = liveInspect.context ?? resolvedLineContextForWord(typedWord)
+                        isDocStart = liveInspect.context != nil ? liveInspect.isAtDocumentStart : lastCapturedDocumentStart
+                    } else {
+                        lineCtx = rollingBuffer
+                        isDocStart = false
+                    }
 
                     if let replacement = ObviousTypoCorrector.spaceReplacement(
                         forWord: typedWord,

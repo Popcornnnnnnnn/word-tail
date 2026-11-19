@@ -544,6 +544,60 @@ public enum ObviousTypoCorrector {
         return working != word ? working : nil
     }
 
+    /// Fast O(1) pre-check deciding whether `Space` needs a synchronous live Accessibility read to resolve sentence-start capitalization.
+    /// Skips cross-process AX IPC for ~90%+ of words (mid-sentence words preceded by `<letter/comma> `, already-capitalized words,
+    /// developer/CLI safe tokens, muted triggers, and standalone `"i"`).
+    public static func needsLiveSentenceContextOnSpace(
+        forWord word: String,
+        rollingBuffer: String,
+        autoCorrectTypos: Bool,
+        autoCapitalizeSentences: Bool,
+        adaptiveStore: AdaptiveCorrectionStore? = nil
+    ) -> Bool {
+        guard !word.isEmpty, word.count <= 24 else { return false }
+        guard word.allSatisfy({ ($0.isASCII && $0.isLetter) || $0 == "'" }) else { return false }
+        if word.dropFirst().contains(where: \.isUppercase) { return false }
+        if word.count >= 2 && word.allSatisfy({ !$0.isLetter || $0.isUppercase }) { return false }
+
+        let lower = word.lowercased()
+        if lower == "i" { return false } // "i" -> "I" unconditionally regardless of sentence position!
+        if !autoCapitalizeSentences && !(autoCorrectTypos && lower == "lets") {
+            return false
+        }
+        if let first = word.first, first.isUppercase {
+            return false
+        }
+        if adaptiveStore?.customOrLearnedReplacement(for: lower) == nil {
+            if adaptiveStore?.isMuted(lower) == true || developerSafeWords.contains(lower) {
+                return false
+            }
+        }
+        // If `rollingBuffer` already has `<word/comma> <typedWord>` on the current line without `.`, `!`, `?`,
+        // `typedWord` is guaranteed mid-sentence (`isAtSentenceStart == false`) with zero AX IPC needed!
+        if hasConfirmedMidSentencePredecessor(forWord: word, inBuffer: rollingBuffer) {
+            return false
+        }
+        return true
+    }
+
+    public static func hasConfirmedMidSentencePredecessor(forWord word: String, inBuffer buffer: String) -> Bool {
+        guard buffer.count > word.count + 1,
+              buffer.lowercased().hasSuffix(word.lowercased()) else {
+            return false
+        }
+        let chars = Array(buffer.dropLast(word.count))
+        var i = chars.count
+        var sawHorizontalSpace = false
+        while i > 0 && (chars[i - 1] == " " || chars[i - 1] == "\t") {
+            sawHorizontalSpace = true
+            i -= 1
+        }
+        guard sawHorizontalSpace, i > 0 else { return false }
+        let prev = chars[i - 1]
+        // Preceded immediately by a normal word character or comma/semicolon -> guaranteed NOT after `.`, `!`, `?`, or doc start!
+        return (prev.isASCII && prev.isLetter) || prev == "," || prev == ";" || prev == ":"
+    }
+
     /// Returns true ONLY when:
     /// 1. `isAtDocumentStart` is true (the very first word at index 0 of the entire text field), OR
     /// 2. Preceding text before `word` ends with sentence-ending punctuation (`.`, `!`, `?`) followed by whitespace/newline.

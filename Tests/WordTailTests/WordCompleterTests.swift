@@ -689,4 +689,67 @@ final class WordCompleterTests: XCTestCase {
             "review this pull request"
         )
     }
+
+    func testRuntimeHotPathZeroIPCSpaceGateIndexedLexiconAndSpellCache() {
+        // 1. Mid-sentence words preceded by `<word> ` or `<word>, ` skip synchronous AX IPC on Space!
+        XCTAssertFalse(
+            ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
+                forWord: "rather",
+                rollingBuffer: "back of a word rather",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true
+            )
+        )
+        XCTAssertFalse(
+            ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
+                forWord: "im",
+                rollingBuffer: "well, im",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true
+            )
+        )
+        // Standalone "i" ("i" -> "I"), CLI safe words ("git"), and already-capitalized words also skip AX IPC!
+        XCTAssertFalse(
+            ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
+                forWord: "i",
+                rollingBuffer: "i",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true
+            )
+        )
+        XCTAssertFalse(
+            ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
+                forWord: "git",
+                rollingBuffer: "git",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true
+            )
+        )
+
+        // 2. First word in fresh buffer ("do") or word right after period ("done. next") DOES request live sentence context!
+        XCTAssertTrue(
+            ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
+                forWord: "do",
+                rollingBuffer: "do",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true
+            )
+        )
+        XCTAssertTrue(
+            ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
+                forWord: "next",
+                rollingBuffer: "done. next",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true
+            )
+        )
+
+        // 3. First-letter indexed TechLexicon & cached spellchecker return consistent results
+        let qMatches = TechLexicon.matching(lowercasedPrefix: "quant")
+        XCTAssertTrue(qMatches.contains("quantitative"))
+        XCTAssertTrue(TypingHabitTracker.defaultValidEnglishWordCheck("sentence"))
+        XCTAssertTrue(TypingHabitTracker.defaultValidEnglishWordCheck("sentence")) // cache hit
+        XCTAssertFalse(TypingHabitTracker.defaultValidEnglishWordCheck("zzzzqwxk"))
+        XCTAssertFalse(TypingHabitTracker.defaultValidEnglishWordCheck("zzzzqwxk")) // negative cache hit
+    }
 }

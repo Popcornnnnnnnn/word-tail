@@ -20,7 +20,7 @@ public enum TechLexicon {
         "ecosystem", "embedding", "embeddings", "encapsulation", "encryption",
         "endpoint", "endpoints", "environment", "environments", "ephemeral",
         "evaluation", "evaluations", "executable",
-        "fine-tuning", "framework", "frameworks", "frontend",
+        "framework", "frameworks", "frontend",
         "granularity", "heuristic", "heuristics", "homomorphic", "hyperparameter", "hyperparameters",
         "idempotent", "idempotency", "implementation", "implementations",
         "inference", "infrastructure", "initialization", "instrumentation", "integration", "integrations",
@@ -34,11 +34,11 @@ public enum TechLexicon {
         "observability", "orchestration", "optimization", "optimizations", "overfitting",
         "pagination", "parallelism", "parameter", "parameters", "parameterized",
         "performance", "persistence", "persistent", "pipeline", "pipelines",
-        "polymorphism", "postgresql", "postprocessing", "preprocessing", "probabilistic", "production", "profiling", " programmatic", "pytorch",
+        "polymorphism", "postgresql", "postprocessing", "preprocessing", "probabilistic", "production", "profiling", "programmatic", "pytorch",
         "quantization", "quantized", "quantitative", "quantitatively",
         "refactoring", "regression", "regressions", "reinforcement", "reliability",
         "reproducible", "reproducibility", "repository", "repositories", "resilience", "retrospective",
-        " sandbox", "sandboxing", "scalability", "scalable", "scheduler", "schema", "schemas",
+        "sandbox", "sandboxing", "scalability", "scalable", "scheduler", "schema", "schemas",
         "semantic", "semantics", "serialization", "serverless", "simulation", "simulations",
         "specification", "specifications", "stochastic", "stylesheet", "subagent", "subagents", "subprocess", "subpixel", "supabase", "synchronous", "synchronization", "synthesize",
         "tailwind", "telemetry", "template", "templates", "tensorflow", "throughput",
@@ -46,7 +46,18 @@ public enum TechLexicon {
         "underfitting", "upstream", "utilization",
         "validation", "vectorization", "verification", "virtualization", "visualization", "volatility", "vulnerability", "vulnerabilities",
         "webhook", "webhooks", "websocket", "websockets", "workflow", "workflows", "workspace", "worktree", "worktrees"
-    ].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.contains("-") && !$0.isEmpty }
+    ]
 
     public static let wordSet: Set<String> = Set(words)
+
+    /// Pre-indexed by first lowercase ASCII character for O(1) bucket lookup on every keystroke.
+    public static let wordsByFirstChar: [Character: [String]] = Dictionary(grouping: words) { $0.first! }
+
+    public static func matching(lowercasedPrefix: String) -> [String] {
+        guard let first = lowercasedPrefix.first,
+              let bucket = wordsByFirstChar[first] else {
+            return []
+        }
+        return bucket.filter { $0.hasPrefix(lowercasedPrefix) }
+    }
 }

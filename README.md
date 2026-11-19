@@ -119,17 +119,22 @@ On first launch, grant **Accessibility** (and **Input Monitoring** if prompted) 
 word-tail/
 ├── Sources/
 │   ├── WordTailCore/
-│   │   ├── WordCompleter.swift        # Contextual single-word completion & token guards
+│   │   ├── WordCompleter.swift        # Contextual word/phrase completion & token guards
+│   │   ├── PhrasePredictor.swift      # Conservative English idioms & self-learning n-grams
+│   │   ├── ObviousTypoCorrector.swift # Learnable typo/contraction rules & sentence capitalization
 │   │   ├── UserHistoryStore.swift     # Accepted words, custom dictionary, bigrams & per-app vocab
-│   │   ├── TypingHabitTracker.swift   # Local WPM, accuracy, hourly rhythm & typo-trap detector
-│   │   ├── TechLexicon.swift          # 180+ CS, AI, and quantitative English vocabulary
+│   │   ├── TypingHabitTracker.swift   # Local WPM, accuracy, hourly rhythm & cached spellcheck
+│   │   ├── KeyStatsStore.swift        # Local hardware telemetry, heatmap & JSON import/export
+│   │   ├── KeyCodeMapper.swift        # 65-key MacBook ANSI physical layout & shortcut formatting
+│   │   ├── TechLexicon.swift          # Indexed CS, AI, and quantitative English vocabulary
 │   │   ├── InputGuard.swift           # Roman keyboard layout, SecureEventInput & IDE exclusions
 │   │   └── ScreenGeometry.swift       # Quartz-to-Cocoa typography baseline math
 │   └── WordTailApp/
-│       ├── AXCaretContext.swift       # Multi-path macOS Accessibility & Chromium/Electron caret reader
-│       ├── GhostOverlayWindow.swift   # Click-through NSPanel with CoreText sub-Retina interpolation
+│       ├── AXCaretContext.swift       # Windowed O(1) Accessibility & Chromium/Electron caret reader
+│       ├── GhostOverlayWindow.swift   # Click-through NSPanel with inline suffix & mid-sentence pill
 │       ├── TypingEngine.swift         # Non-blocking CGEventTap & tagged Unicode suffix injection
-│       ├── SettingsWindowController.swift # Linear-style Calibration, Insights, Dictionary & Preferences UI
+│       ├── SettingsWindowController.swift # Main window shell & NSWindowController
+│       ├── Settings/                  # Modular SwiftUI views & SettingsViewModel per tab
 │       └── AppDelegate.swift          # Native macOS lifecycle, Dock/menu bar & Login Item setup
 ├── Tests/WordTailTests/               # Unit tests for grammar, bigrams, per-app vocab & habit tracking
 └── scripts/build_app.sh               # Clean-tree release builder & code-signing script

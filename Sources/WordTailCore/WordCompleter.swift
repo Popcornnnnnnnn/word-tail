@@ -269,7 +269,7 @@ public final class WordCompleter {
         )
         let lowerPrefix = prefix.lowercased()
         let techCandidates = enableTechLexicon
-            ? TechLexicon.words.filter { $0.hasPrefix(lowerPrefix) }
+            ? TechLexicon.matching(lowercasedPrefix: lowerPrefix)
             : []
 
         // Order: user contextual/pinned words -> macOS grammar-ranked completions -> curated Tech/AI lexicon fallback.
