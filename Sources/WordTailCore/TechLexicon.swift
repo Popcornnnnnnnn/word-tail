@@ -41,11 +41,11 @@ public enum TechLexicon {
         "sandbox", "sandboxing", "scalability", "scalable", "scheduler", "schema", "schemas",
         "semantic", "semantics", "serialization", "serverless", "simulation", "simulations",
         "specification", "specifications", "stochastic", "stylesheet", "subagent", "subagents", "subprocess", "subpixel", "supabase", "synchronous", "synchronization", "synthesize",
-        "tailwind", "telemetry", "template", "templates", "tensorflow", "throughput",
+        "tailscale", "tailwind", "telemetry", "template", "templates", "tensorflow", "throughput",
         "tokenization", "tokenizer", "transaction", "transactions", "transformer", "transformers", "transpiler", "troubleshooting", "typescript",
         "underfitting", "upstream", "utilization",
         "validation", "vectorization", "verification", "virtualization", "visualization", "volatility", "vulnerability", "vulnerabilities",
-        "webhook", "webhooks", "websocket", "websockets", "workflow", "workflows", "workspace", "worktree", "worktrees"
+        "webhook", "webhooks", "websocket", "websockets", "wireguard", "workflow", "workflows", "workspace", "worktree", "worktrees"
     ]
 
     public static let wordSet: Set<String> = Set(words)

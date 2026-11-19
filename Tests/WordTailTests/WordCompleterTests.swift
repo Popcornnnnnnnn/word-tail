@@ -984,5 +984,74 @@ final class WordCompleterTests: XCTestCase {
         // Abbreviations ("e.g.") and domain/file dots ("notes.md.") are never extracted as standalone dot-space targets!
         XCTAssertNil(ObviousTypoCorrector.extractPunctuationOrSpaceTarget(rollingBuffer: "e.g.", typedDelimiter: " "))
         XCTAssertNil(ObviousTypoCorrector.extractPunctuationOrSpaceTarget(rollingBuffer: "notes.md", typedDelimiter: "."))
+
+        // 8. Stale Chromium/Electron AX snapshot detection ("Wha" vs "What" overlap guard) + Proper Nouns ("tailscale" -> "Tailscale", "monday" -> "Monday", "california" -> "California")
+        XCTAssertTrue(
+            ObviousTypoCorrector.isSnapshotBehindRollingBuffer(
+                snapshotText: "Wha",
+                isFallbackText: false,
+                rollingBuffer: "What"
+            )
+        )
+        XCTAssertFalse(
+            ObviousTypoCorrector.isSnapshotBehindRollingBuffer(
+                snapshotText: "Hello What",
+                isFallbackText: false,
+                rollingBuffer: "What"
+            )
+        )
+
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "tailscale",
+                lineContextIncludingWord: "using tailscale",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Tailscale"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "monday",
+                lineContextIncludingWord: "see you monday",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Monday"
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "california",
+                lineContextIncludingWord: "in california",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "California"
+        )
+        // Words that also serve as common lowercase English words ("may", "march", "apple", "swift") stay lowercase mid-sentence!
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "may",
+                lineContextIncludingWord: "it may",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        )
     }
 }

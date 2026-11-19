@@ -291,8 +291,10 @@ public enum ObviousTypoCorrector {
         "iphone", "ipad", "airpods", "imac", "macbook", "ebay"
     ]
 
-    /// Mixed-case & camelCase technology/product brands auto-cased on Space/Tab (and preserved without turning "macOS" into "MacOS").
+    /// Unambiguous proper nouns, mixed-case brands, platforms, tools, and places auto-cased on Space/punctuation/Tab
+    /// (excludes words that also serve as common lowercase English words like "apple", "swift", "slack", "linear", "may", "march").
     public static let canonicalBrandCasing: [String: String] = [
+        // Apple & OS ecosystems
         "macos": "macOS",
         "ios": "iOS",
         "ipados": "iPadOS",
@@ -306,27 +308,108 @@ public enum ObviousTypoCorrector {
         "imac": "iMac",
         "airpods": "AirPods",
         "macbook": "MacBook",
-        "wechat": "WeChat",
-        "chatgpt": "ChatGPT",
-        "openai": "OpenAI",
-        "deepseek": "DeepSeek",
+        "xcode": "Xcode",
+        "testflight": "TestFlight",
+        "swiftui": "SwiftUI",
+        "appkit": "AppKit",
+        "uikit": "UIKit",
+        "webkit": "WebKit",
+        "coretext": "CoreText",
+        "linux": "Linux",
+        "ubuntu": "Ubuntu",
+        "debian": "Debian",
+        "fedora": "Fedora",
+        "nixos": "NixOS",
+        "freebsd": "FreeBSD",
+        "android": "Android",
+
+        // Networking, Cloud, Infra & Dev Tools ("Tailscale", "WireGuard", "Cloudflare", ...)
+        "tailscale": "Tailscale",
+        "wireguard": "WireGuard",
+        "cloudflare": "Cloudflare",
+        "supabase": "Supabase",
+        "vercel": "Vercel",
+        "netlify": "Netlify",
+        "digitalocean": "DigitalOcean",
+        "datadog": "Datadog",
+        "grafana": "Grafana",
+        "kubernetes": "Kubernetes",
+        "orbstack": "OrbStack",
+        "proxmox": "Proxmox",
+        "synology": "Synology",
+        "openwrt": "OpenWrt",
         "github": "GitHub",
         "gitlab": "GitLab",
-        "youtube": "YouTube",
-        "linkedin": "LinkedIn",
-        "ebay": "eBay",
+        "bitbucket": "Bitbucket",
+        "figma": "Figma",
+        "raycast": "Raycast",
+        "ghostty": "Ghostty",
+        "alacritty": "Alacritty",
+        "wezterm": "WezTerm",
+        "hammerspoon": "Hammerspoon",
+        "karabiner": "Karabiner",
+        "homebrew": "Homebrew",
+        "jetbrains": "JetBrains",
+
+        // AI, Languages, Frameworks & Databases
+        "chatgpt": "ChatGPT",
+        "openai": "OpenAI",
+        "anthropic": "Anthropic",
+        "claude": "Claude",
+        "deepmind": "DeepMind",
+        "gemini": "Gemini",
+        "deepseek": "DeepSeek",
+        "qwen": "Qwen",
+        "perplexity": "Perplexity",
+        "midjourney": "Midjourney",
+        "google": "Google",
+        "microsoft": "Microsoft",
+        "nvidia": "Nvidia",
         "javascript": "JavaScript",
         "typescript": "TypeScript",
         "pytorch": "PyTorch",
         "tensorflow": "TensorFlow",
         "postgresql": "PostgreSQL",
+        "mysql": "MySQL",
+        "sqlite": "SQLite",
+        "mongodb": "MongoDB",
+        "clickhouse": "ClickHouse",
+        "redis": "Redis",
         "graphql": "GraphQL",
         "fastapi": "FastAPI",
-        "swiftui": "SwiftUI",
-        "appkit": "AppKit",
-        "uikit": "UIKit",
-        "webkit": "WebKit",
-        "coretext": "CoreText"
+        "pydantic": "Pydantic",
+        "langchain": "LangChain",
+
+        // Apps, Services, Languages & Major Cities
+        "wechat": "WeChat",
+        "feishu": "Feishu",
+        "dingtalk": "DingTalk",
+        "doubao": "Doubao",
+        "bilibili": "Bilibili",
+        "xiaohongshu": "Xiaohongshu",
+        "taobao": "Taobao",
+        "todesk": "ToDesk",
+        "rustdesk": "RustDesk",
+        "anydesk": "AnyDesk",
+        "youtube": "YouTube",
+        "linkedin": "LinkedIn",
+        "reddit": "Reddit",
+        "telegram": "Telegram",
+        "whatsapp": "WhatsApp",
+        "spotify": "Spotify",
+        "netflix": "Netflix",
+        "instagram": "Instagram",
+        "tiktok": "TikTok",
+        "wikipedia": "Wikipedia",
+        "bluetooth": "Bluetooth",
+        "ebay": "eBay",
+        "wordtail": "WordTail",
+        "english": "English",
+        "shanghai": "Shanghai",
+        "beijing": "Beijing",
+        "shenzhen": "Shenzhen",
+        "hangzhou": "Hangzhou",
+        "guangzhou": "Guangzhou"
     ]
 
     /// Dual CLI/prose command binaries that stay lowercase on the 1st Space (`"git status"`),
@@ -654,10 +737,15 @@ public enum ObviousTypoCorrector {
 
         var working = word
 
-        // 2. Canonical mixed-case brands ("macos" -> "macOS", "iphone" -> "iPhone", "chatgpt" -> "ChatGPT")
-        if autoCorrectTypos, word == lower, let brand = canonicalBrandCasing[lower] {
-            working = brand
-        } else if !developerSafeWords.contains(lower) {
+        // 2. User-pinned capitalized dictionary words & canonical proper nouns/brands ("tailscale" -> "Tailscale", "macos" -> "macOS")
+        if autoCorrectTypos, word == lower {
+            if let pinnedCased = historyStore?.customPinnedCasing(for: lower) {
+                working = pinnedCased
+            } else if let brand = canonicalBrandCasing[lower] {
+                working = brand
+            }
+        }
+        if working == word && !developerSafeWords.contains(lower) {
             // 3. Context-aware "lets" -> "Let's" + typo/contraction auto-correction
             if autoCorrectTypos && lower == "lets" && atSentenceStart {
                 working = "Let's"
@@ -944,8 +1032,13 @@ public enum ObviousTypoCorrector {
         if let customOrLearned = adaptiveStore?.customOrLearnedReplacement(for: lower) {
             return adaptCase(of: customOrLearned, toTyped: word)
         }
-        if word == lower, let brand = canonicalBrandCasing[lower] {
-            return brand
+        if word == lower {
+            if let pinnedCased = historyStore?.customPinnedCasing(for: lower) {
+                return pinnedCased
+            }
+            if let brand = canonicalBrandCasing[lower] {
+                return brand
+            }
         }
 
         guard isEligibleTypoToken(word, minLength: 2, historyStore: historyStore) else {
@@ -954,6 +1047,11 @@ public enum ObviousTypoCorrector {
 
         if let fixed = unambiguousTypos[lower] {
             return adaptCase(of: fixed, toTyped: word)
+        }
+
+        // Apple dictionary capitalization-only proper nouns ("monday" -> "Monday", "california" -> "California", "tokyo" -> "Tokyo", "chinese" -> "Chinese")
+        if word == lower, let dictProper = dictionaryProperNounCasing(forLowerWord: lower) {
+            return dictProper
         }
 
         if let personalFix = habitTracker?.learnedAutoFix(forMistype: lower),
@@ -972,6 +1070,81 @@ public enum ObviousTypoCorrector {
         }
 
         return nil
+    }
+
+    private static let properNounLock = NSLock()
+    private static var properNounCache: [String: String?] = [:]
+
+    /// Detects unambiguous proper nouns in macOS `NSSpellChecker` that are invalid in lowercase (`monday`, `january`,
+    /// `california`, `tokyo`, `london`, `chinese`, `microsoft`) while valid when TitleCased (`Monday`, `January`, `California`).
+    /// Words with valid lowercase meanings (`may`, `march`, `apple`, `swift`) are automatically excluded.
+    public static func dictionaryProperNounCasing(forLowerWord lower: String) -> String? {
+        guard lower.count >= 4, lower.count <= 24,
+              lower.allSatisfy({ $0.isASCII && $0.isLetter }),
+              !cliCommandWords.contains(lower),
+              !nonCapitalizedAcronyms.contains(lower),
+              !developerSafeWords.contains(lower),
+              !TypingHabitTracker.defaultValidEnglishWordCheck(lower) else {
+            return nil
+        }
+
+        properNounLock.lock()
+        if let cached = properNounCache[lower] {
+            properNounLock.unlock()
+            return cached
+        }
+        properNounLock.unlock()
+
+        let cap = lower.prefix(1).uppercased() + lower.dropFirst()
+        let miss = NSSpellChecker.shared.checkSpelling(
+            of: cap,
+            startingAt: 0,
+            language: "en_US",
+            wrap: false,
+            inSpellDocumentWithTag: 0,
+            wordCount: nil
+        )
+        let resolved: String? = (miss.location == NSNotFound) ? cap : nil
+
+        properNounLock.lock()
+        if properNounCache.count >= 512 {
+            properNounCache.removeAll(keepingCapacity: true)
+        }
+        properNounCache[lower] = resolved
+        properNounLock.unlock()
+        return resolved
+    }
+
+    /// Detects when an Accessibility text snapshot (`"Wha"`) is lagging 1+ keystrokes behind `rollingBuffer` (`"What"`),
+    /// preventing Electron/Chromium async frame lag from drawing `"Wha" -> "tever"` directly over an already-painted `'t'`!
+    public static func isSnapshotBehindRollingBuffer(
+        snapshotText: String,
+        isFallbackText: Bool,
+        rollingBuffer: String
+    ) -> Bool {
+        if isFallbackText {
+            return false
+        }
+        guard let lastLineSub = rollingBuffer.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).last else {
+            return false
+        }
+        let recentExpected = String(lastLineSub.suffix(12))
+        guard !recentExpected.isEmpty else { return false }
+
+        let normSnap = normalizeQuotes(snapshotText).lowercased()
+        let normExpected = normalizeQuotes(recentExpected).lowercased()
+        return !normSnap.hasSuffix(normExpected)
+    }
+
+    private static func normalizeQuotes(_ text: String) -> String {
+        var out = text
+        if out.contains("’") || out.contains("‘") {
+            out = out.replacingOccurrences(of: "’", with: "'").replacingOccurrences(of: "‘", with: "'")
+        }
+        if out.contains("“") || out.contains("”") {
+            out = out.replacingOccurrences(of: "“", with: "\"").replacingOccurrences(of: "”", with: "\"")
+        }
+        return out
     }
 
     private static let qwertyNeighbors: [Character: Set<Character>] = [

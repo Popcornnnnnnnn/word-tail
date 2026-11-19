@@ -9,6 +9,8 @@ struct CaretSnapshot {
     let textAfterOnLine: String
     let hasTextAfterOnLine: Bool
     let isAtDocumentStart: Bool
+    let isFallbackText: Bool
+    let isGlyphWidthZeroOnPrevChar: Bool
     let placement: BaselinePlacement
     let font: NSFont
     let rawAXRect: CGRect
@@ -131,6 +133,7 @@ final class AXCaretContext {
             guard selectedRange.length == 0 else { return nil }
 
             var textBefore = fallbackBuffer
+            var usedFallbackText = true
             var charAfter: Character? = nil
             var textAfterOnLine = ""
             var hasTextAfterOnLine = false
@@ -146,12 +149,14 @@ final class AXCaretContext {
                 if let slice = probedBefore {
                     if slice.contains(where: { $0.isASCII && $0.isLetter }) {
                         textBefore = slice
+                        usedFallbackText = false
                     }
                     if windowStart == 0 {
                         isAtDocumentStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
                     }
                 } else {
                     isAtDocumentStart = true
+                    usedFallbackText = false
                 }
 
                 let totalCount = numberOfCharacters(element)
@@ -177,6 +182,7 @@ final class AXCaretContext {
                         let candidate = ns.substring(with: NSRange(location: windowStart, length: beforeLen))
                         if candidate.contains(where: { $0.isASCII && $0.isLetter }) {
                             textBefore = candidate
+                            usedFallbackText = false
                         }
                     }
 
@@ -196,13 +202,14 @@ final class AXCaretContext {
             }
 
             if !textBefore.isEmpty,
-               let (axRect, font) = characterRectAndFont(element: element, caretLocation: selectedRange.location) {
+               let (axRect, font, prevCharWasZeroWidth) = characterRectAndFont(element: element, caretLocation: selectedRange.location) {
                 let placement = ScreenGeometry.baselinePlacement(
                     forAXCharRect: axRect,
                     primaryScreenHeight: primaryHeight,
                     font: font,
                     verticalAdjustment: verticalAdjustment
                 )
+                let endsWithLetter = textBefore.last.map { $0.isASCII && $0.isLetter } ?? false
                 recordStatus(String(
                     format: "app=%@ pid=%d->%d role=%@ path=range rect=(%.1fx%.1f) font=%.1f mid=%d doc0=%d",
                     app.bundleIdentifier ?? "?", app.processIdentifier, ownerPID, elemRole,
@@ -214,6 +221,8 @@ final class AXCaretContext {
                     textAfterOnLine: textAfterOnLine,
                     hasTextAfterOnLine: hasTextAfterOnLine,
                     isAtDocumentStart: isAtDocumentStart,
+                    isFallbackText: usedFallbackText,
+                    isGlyphWidthZeroOnPrevChar: prevCharWasZeroWidth && endsWithLetter,
                     placement: placement,
                     font: font,
                     rawAXRect: axRect,
@@ -418,8 +427,9 @@ final class AXCaretContext {
         return range
     }
 
-    private func characterRectAndFont(element: AXUIElement, caretLocation: Int) -> (CGRect, NSFont)? {
+    private func characterRectAndFont(element: AXUIElement, caretLocation: Int) -> (CGRect, NSFont, Bool)? {
         var resolvedRect: CGRect?
+        var prevCharZeroWidth = false
         if caretLocation > 0, var prevRect = boundsForRange(element, location: caretLocation - 1, length: 1),
            Self.isValidCaretRect(prevRect) {
             if let caretRect = boundsForRange(element, location: caretLocation, length: 0),
@@ -429,6 +439,7 @@ final class AXCaretContext {
                (caretRect.origin.x - prevRect.maxX) <= 18 {
                 prevRect.size.width = caretRect.origin.x - prevRect.origin.x
             }
+            prevCharZeroWidth = (prevRect.width < 1.5)
             resolvedRect = prevRect
         } else if let caretRect = boundsForRange(element, location: caretLocation, length: 0),
                   Self.isValidCaretRect(caretRect) {
@@ -438,11 +449,11 @@ final class AXCaretContext {
         guard let rect = resolvedRect else { return nil }
 
         if caretLocation > 0, let axFont = fontForRange(element, location: caretLocation - 1, length: 1) {
-            return (rect, axFont)
+            return (rect, axFont, prevCharZeroWidth)
         }
 
         let estimatedSize = ScreenGeometry.estimatedFontSize(forLineHeight: rect.height)
-        return (rect, NSFont.systemFont(ofSize: estimatedSize))
+        return (rect, NSFont.systemFont(ofSize: estimatedSize), prevCharZeroWidth)
     }
 
     private func stringForRange(_ element: AXUIElement, location: Int, length: Int) -> String? {
@@ -547,6 +558,7 @@ final class AXCaretContext {
         // because WebKit/Blink often returns (0,0,0,0) for collapsed zero-length marker ranges!
         var resolvedRect: CGRect?
         var resolvedFont: NSFont?
+        var prevCharZeroWidth = false
 
         var prevMarkerRef: CFTypeRef?
         if AXUIElementCopyParameterizedAttributeValue(
@@ -566,6 +578,7 @@ final class AXCaretContext {
                 if let rect = boundsForTextMarkerRange(element: element, markerRange: prevRangeRef),
                    Self.isValidCaretRect(rect) {
                     resolvedRect = rect
+                    prevCharZeroWidth = (rect.width < 1.5)
                 }
                 resolvedFont = fontForTextMarkerRange(element: element, markerRange: prevRangeRef)
             }
@@ -582,6 +595,7 @@ final class AXCaretContext {
                    collapsedRect.origin.x > prev.maxX,
                    (collapsedRect.origin.x - prev.maxX) <= 18 {
                     prev.size.width = collapsedRect.origin.x - prev.origin.x
+                    prevCharZeroWidth = (prev.width < 1.5)
                     resolvedRect = prev
                 }
             } else if Self.isValidCaretRect(collapsedRect) {
@@ -597,6 +611,7 @@ final class AXCaretContext {
         // Scope textBefore and charAfter strictly to the current visual line inside `element`
         // so Chromium never walks out of the end of a chat box into adjacent toolbar buttons!
         var textBefore = fallbackBuffer
+        var usedFallbackText = true
         var charAfter: Character? = nil
         var textAfterOnLine = ""
         var hasTextAfterOnLine = false
@@ -606,6 +621,9 @@ final class AXCaretContext {
         if let resolved = readBoundedMarkerContext(element: element, endMarker: endMarker) {
             if resolved.prefix.contains(where: { $0.isASCII && $0.isLetter }) {
                 textBefore = resolved.prefix
+                usedFallbackText = false
+            } else if resolved.prefix.isEmpty && resolved.isAtDocumentStart {
+                usedFallbackText = false
             }
             isAtDocumentStart = resolved.isAtDocumentStart
         }
@@ -625,11 +643,12 @@ final class AXCaretContext {
             let lineStart = AXTextMarkerRangeCopyStartMarker(lineMarkerRange)
             let lineEnd = AXTextMarkerRangeCopyEndMarker(lineMarkerRange)
 
-            if textBefore == fallbackBuffer && !CFEqual(lineStart, endMarker) {
+            if usedFallbackText && !CFEqual(lineStart, endMarker) {
                 if let beforeRangeRef = makeMarkerRange(element: element, start: lineStart, end: endMarker),
                    let beforeStr = stringForTextMarkerRange(element: element, markerRange: beforeRangeRef),
                    beforeStr.contains(where: { $0.isASCII && $0.isLetter }) {
                     textBefore = String(beforeStr.suffix(80))
+                    usedFallbackText = false
                 }
             }
 
@@ -683,12 +702,15 @@ final class AXCaretContext {
             font: font,
             verticalAdjustment: verticalAdjustment
         )
+        let endsWithLetter = textBefore.last.map { $0.isASCII && $0.isLetter } ?? false
         return CaretSnapshot(
             textBeforeCursor: textBefore,
             charAfterCursor: charAfter,
             textAfterOnLine: textAfterOnLine,
             hasTextAfterOnLine: hasTextAfterOnLine,
             isAtDocumentStart: isAtDocumentStart,
+            isFallbackText: usedFallbackText,
+            isGlyphWidthZeroOnPrevChar: prevCharZeroWidth && endsWithLetter,
             placement: placement,
             font: font,
             rawAXRect: axRect,

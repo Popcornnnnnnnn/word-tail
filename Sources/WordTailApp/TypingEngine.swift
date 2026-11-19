@@ -723,8 +723,29 @@ final class TypingEngine {
                 charAfterCursor: charAfter,
                 appendSpacePreference: appendSpaceOnAccept
             )
-            let textToInsert = shouldAddSpace ? (match.suffix + " ") : match.suffix
-            let deleteCount = match.replacementDeleteCount
+            var resolvedFullWord = match.fullWord
+            var deleteCount = match.replacementDeleteCount
+            var rawInsertSuffix = match.suffix
+
+            // Upgrade Tab-accepted lowercase proper nouns/brands ("tailsc" -> "Tailscale", "macos" -> "macOS") cleanly!
+            if !match.isTypoCorrection,
+               !match.fullWord.contains(" "),
+               autoCorrectOnSpace,
+               match.prefix == match.prefix.lowercased(),
+               !adaptiveStore.isMuted(match.fullWord.lowercased()) {
+                let lowerFull = match.fullWord.lowercased()
+                if let cased = historyStore.customPinnedCasing(for: lowerFull)
+                    ?? ObviousTypoCorrector.canonicalBrandCasing[lowerFull]
+                    ?? ObviousTypoCorrector.dictionaryProperNounCasing(forLowerWord: lowerFull),
+                   cased != match.fullWord {
+                    let diff = ObviousTypoCorrector.minimalDiff(from: match.prefix, to: cased)
+                    resolvedFullWord = cased
+                    deleteCount = diff.deleteCount
+                    rawInsertSuffix = diff.insertText
+                }
+            }
+
+            let textToInsert = shouldAddSpace ? (rawInsertSuffix + " ") : rawInsertSuffix
 
             overlay.hide()
             activeCandidates.removeAll(keepingCapacity: true)
@@ -752,24 +773,24 @@ final class TypingEngine {
                 }
                 let learnContext = self.enableHabitLearning
                 if learnContext && match.isTypoCorrection {
-                    self.adaptiveStore.recordObservedCorrection(mistype: match.prefix, corrected: match.fullWord)
+                    self.adaptiveStore.recordObservedCorrection(mistype: match.prefix, corrected: resolvedFullWord)
                 }
                 let outcome = learnContext
                     ? self.habitTracker.recordTabAccepted(
-                        fullWord: match.fullWord,
+                        fullWord: resolvedFullWord,
                         insertedText: textToInsert,
                         previousWordFromContext: prevWord,
                         bundleID: acceptedBundle
                     )
                     : nil
-                if !match.fullWord.contains(" ") {
+                if !resolvedFullWord.contains(" ") {
                     self.historyStore.recordAcceptance(
-                        of: match.fullWord,
+                        of: resolvedFullWord,
                         previousWord: learnContext ? (outcome?.previousWord ?? prevWord) : nil,
                         bundleID: learnContext ? acceptedBundle : nil
                     )
                     if shouldAddSpace {
-                        self.recordPhraseWordIfValid(match.fullWord, endedSentence: false)
+                        self.recordPhraseWordIfValid(resolvedFullWord, endedSentence: false)
                         if self.enablePhrasePrediction {
                             self.schedulePredictionQuery()
                         }
@@ -819,6 +840,9 @@ final class TypingEngine {
                 return nil
             }
 
+            overlay.hide()
+            activeCandidates.removeAll(keepingCapacity: true)
+            activeSnapshot = nil
             if !rollingBuffer.isEmpty {
                 rollingBuffer.removeLast()
             }
@@ -1047,6 +1071,10 @@ final class TypingEngine {
             }
 
             if let last = typed.last, (last.isLetter && last.isASCII) || last == "'" || last == "’" {
+                // Immediately hide the previous character's overlay so a newly typed glyph never renders underneath stale ghost text!
+                overlay.hide()
+                activeCandidates.removeAll(keepingCapacity: true)
+                activeSnapshot = nil
                 if rollingBuffer.count == 1 && lastCapturedLineText == nil {
                     DispatchQueue.main.async { [weak self] in
                         self?.primeLineContextSnapshot()
@@ -1094,13 +1122,13 @@ final class TypingEngine {
         }
     }
 
-    private func schedulePredictionQuery() {
+    private func schedulePredictionQuery(delayMs: Int = 16, retryCount: Int = 0) {
         debounceWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            self?.evaluateAndRenderPrediction()
+            self?.evaluateAndRenderPrediction(retryCount: retryCount)
         }
         debounceWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16), execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delayMs), execute: item)
     }
 
     private func primeLineContextSnapshot() {
@@ -1121,7 +1149,7 @@ final class TypingEngine {
         }
     }
 
-    private func evaluateAndRenderPrediction() {
+    private func evaluateAndRenderPrediction(retryCount: Int = 0) {
         let targetApp = axContext.effectiveFocusedApplication()
         let frontBundle = targetApp?.bundleIdentifier
         if frontBundle == Bundle.main.bundleIdentifier {
@@ -1142,8 +1170,35 @@ final class TypingEngine {
             verticalAdjustment: verticalAdjustment(forBundleID: frontBundle)
         ) else {
             overlay.hide()
+            if retryCount < 2 {
+                schedulePredictionQuery(delayMs: 18, retryCount: retryCount + 1)
+            }
             return
         }
+
+        // Guard against Electron/Chromium async frame lag (e.g. user typed "What", but at t=16ms AX still reports "Wha"
+        // or reports zero glyph width for 't' before layout commits—which would otherwise draw "tever"/"ever" over 't'!):
+        let isStaleText = ObviousTypoCorrector.isSnapshotBehindRollingBuffer(
+            snapshotText: snapshot.textBeforeCursor,
+            isFallbackText: snapshot.isFallbackText,
+            rollingBuffer: rollingBuffer
+        )
+        if isStaleText || (snapshot.isGlyphWidthZeroOnPrevChar && retryCount < 3) {
+            overlay.hide()
+            if retryCount < 4 {
+                schedulePredictionQuery(delayMs: 18, retryCount: retryCount + 1)
+                return
+            }
+            if isStaleText {
+                let snapWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: snapshot.textBeforeCursor)?.lowercased()
+                let bufWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: rollingBuffer)?.lowercased()
+                if snapWord != bufWord {
+                    axContext.recordOverlayOutcome("shown=no(staleAX)")
+                    return
+                }
+            }
+        }
+
         lastCapturedLineText = snapshot.textBeforeCursor
         lastCapturedDocumentStart = snapshot.isAtDocumentStart
 

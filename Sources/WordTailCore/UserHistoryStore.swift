@@ -92,6 +92,17 @@ public final class UserHistoryStore {
         }
     }
 
+    /// Returns the user's pinned casing when a custom word was added with intentional capitalization (e.g. "Tailscale", "WordTail").
+    public func customPinnedCasing(for word: String) -> String? {
+        let lower = word.lowercased()
+        return queue.sync {
+            guard customWords.contains(lower), let cased = customCasing[lower], cased != lower else {
+                return nil
+            }
+            return cased
+        }
+    }
+
     /// Computes contextual relevance combining pinned words, personal 2-word bigrams, per-app vocabulary, and global frequency.
     public func contextualScore(
         for word: String,
