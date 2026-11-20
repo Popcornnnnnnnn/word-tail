@@ -197,6 +197,15 @@ final class SettingsWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.center()
         self.window = window
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.viewModel.refreshUpdateAndSyncStatus()
+            }
+        }
     }
 
     @available(*, unavailable)

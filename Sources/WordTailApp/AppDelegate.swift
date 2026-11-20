@@ -44,12 +44,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         engine.onStateChanged = { [weak self] in
             self?.updateStatusIcon()
+            self?.settingsWindowController?.refreshUpdateAndSyncStatus()
         }
         autoUpdater.onBeforeTerminateForUpdate = { [weak self] in
             self?.engine.flushAllTelemetry()
         }
         autoUpdater.onUpdateStateChanged = { [weak self] in
             self?.settingsWindowController?.refreshUpdateAndSyncStatus()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if !self.engine.isTapActive {
+                    self.attemptStartEngine(promptIfNeeded: false)
+                }
+                self.updateStatusIcon()
+                self.settingsWindowController?.refreshUpdateAndSyncStatus()
+            }
         }
         ensureLoginItemRegisteredOnFirstInstall()
         setupBackgroundSyncAndUpdates()
@@ -324,7 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func attemptStartEngine(promptIfNeeded: Bool) {
-        if promptIfNeeded {
+        if promptIfNeeded && !AXIsProcessTrusted() {
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
             if !CGPreflightListenEventAccess() {
@@ -336,14 +351,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             permissionPollTimer?.invalidate()
             permissionPollTimer = nil
             updateStatusIcon()
+            settingsWindowController?.refreshUpdateAndSyncStatus()
         } else if permissionPollTimer == nil {
-            permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     if AXIsProcessTrusted() && self.engine.start() {
                         self.permissionPollTimer?.invalidate()
                         self.permissionPollTimer = nil
                         self.updateStatusIcon()
+                        self.settingsWindowController?.refreshUpdateAndSyncStatus()
                     }
                 }
             }

@@ -702,6 +702,8 @@ final class SettingsViewModel: ObservableObject {
         guard let engine, !isStaticShowcase else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        isEnabled = engine.isEnabled
+        isTrusted = AXIsProcessTrusted() && engine.isTapActive
         let snap = engine.syncEngine.statusSnapshot()
         syncStatus = snap
         syncEnabled = snap.isEnabled
