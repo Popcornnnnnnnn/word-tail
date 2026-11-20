@@ -619,6 +619,16 @@ public enum ObviousTypoCorrector {
 
     /// Comprehensive built-in dictionary of contractions, joined-word slips, transpositions, and misspellings.
     public static let unambiguousTypos: [String: String] = [
+        // Product names that the system spell checker may not recognize.
+        "chtagpt": "ChatGPT", "chatgtp": "ChatGPT", "chagpt": "ChatGPT",
+        "chtgpt": "ChatGPT", "chatgptt": "ChatGPT", "chatgbt": "ChatGPT", "chatgp": "ChatGPT",
+        "opneai": "OpenAI", "openia": "OpenAI",
+        "githbu": "GitHub", "gihub": "GitHub",
+        "airpdos": "AirPods", "macobok": "MacBook",
+        "raycsat": "Raycast",
+        "javasript": "JavaScript", "javascirpt": "JavaScript", "typesript": "TypeScript",
+        "kubernets": "Kubernetes",
+
         // First-person contractions & capitalization patterns ("im" -> "I'm", "ive" -> "I've", "i'll" -> "I'll")
         "im": "I'm",
         "i'm": "I'm",
@@ -723,7 +733,17 @@ public enum ObviousTypoCorrector {
         "makeing": "making", "takeing": "taking", "comming": "coming", "writting": "writing", "begining": "beginning",
         "runing": "running", "stoping": "stopping", "geting": "getting", "puting": "putting", "seting": "setting",
 
+        "actaul": "actual", "artcile": "article", "defualt": "default",
+        "descripiton": "description", "exmaple": "example", "exmple": "example",
+        "feautre": "feature", "fitler": "filter", "mesage": "message", "messsage": "message",
+        "reqeust": "request", "resposne": "response", "typign": "typing",
+        "upate": "update", "uploda": "upload",
+
         // Classic English misspellings
+        "autocorect": "autocorrect", "autoocorrect": "autocorrect",
+        "capitlaize": "capitalize", "capitilize": "capitalize", "capitlization": "capitalization",
+        "mispell": "misspell", "mispelled": "misspelled", "mispelling": "misspelling",
+        "instalation": "installation", "throughtout": "throughout", "seperat": "separate",
         "definately": "definitely", "definatly": "definitely", "definetly": "definitely", "definitly": "definitely",
         "recieve": "receive", "recieved": "received", "recieving": "receiving", "recevie": "receive",
         "seperate": "separate", "seperated": "separated", "seperately": "separately", "seperating": "separating",
@@ -775,6 +795,7 @@ public enum ObviousTypoCorrector {
         "configuraiton": "configuration", "implementaiton": "implementation",
         "documentaiton": "documentation", "autentication": "authentication", "authorizaiton": "authorization",
         "reporsitory": "repository", "dependancy": "dependency", "dependancies": "dependencies",
+        "dependecy": "dependency", "paramter": "parameter",
         "performace": "performance", "compatability": "compatibility",
         "availibility": "availability", "reproducable": "reproducible", "herustic": "heuristic",
         "architecure": "architecture", "infrastruture": "infrastructure", "optmize": "optimize", "optmization": "optimization"
@@ -852,15 +873,9 @@ public enum ObviousTypoCorrector {
         guard !word.isEmpty, word.count <= 24 else { return nil }
         guard word.allSatisfy({ ($0.isASCII && $0.isLetter) || isApostrophe($0) }) else { return nil }
 
-        // Never alter already mixedCase ("macOS", "iPhone", "useState") or ALL-CAPS ("API", "HTTP")
-        if word.dropFirst().contains(where: \.isUppercase) {
-            return nil
-        }
-        if word.count >= 2 && word.allSatisfy({ !$0.isLetter || $0.isUppercase }) {
-            return nil
-        }
-
         let lower = normalizeApostrophes(word).lowercased()
+        guard !hasProtectedCasing(word, lower: lower) else { return nil }
+
         let atSentenceStart = isWordAtSentenceStart(
             word: word,
             inContextBeforeCursor: lineContextIncludingWord,
@@ -1045,8 +1060,8 @@ public enum ObviousTypoCorrector {
         if word.count >= 2 && word.allSatisfy({ !$0.isLetter || $0.isUppercase }) { return false }
 
         let lower = normalizeApostrophes(word).lowercased()
-        if lower == "i" || canonicalBrandCasing[lower] != nil {
-            return false // "i" -> "I" and mixed-case brands ("macos" -> "macOS") don't depend on sentence position!
+        if lower == "i" || canonicalBrandCasing[lower] != nil || (autoCorrectTypos && isCanonicalBrandTypo(lower)) {
+            return false // Built-in brand casing and standalone "I" do not depend on sentence position.
         }
 
         // Check if `<cliWord> <word>` might need live doc-start verification for 2nd-word CLI->Prose promotion ("git is ")!
@@ -1610,14 +1625,9 @@ public enum ObviousTypoCorrector {
         guard token.count >= minLength, token.count <= 24 else { return false }
         guard token.allSatisfy({ ($0.isASCII && $0.isLetter) || isApostrophe($0) }) else { return false }
 
-        if token.count >= 2 && token.allSatisfy({ !$0.isLetter || $0.isUppercase }) {
-            return false
-        }
-        if token.dropFirst().contains(where: \.isUppercase) {
-            return false
-        }
-
         let lower = normalizeApostrophes(token).lowercased()
+        guard !hasProtectedCasing(token, lower: lower) else { return false }
+
         if developerSafeWords.contains(lower) || TechLexicon.wordSet.contains(lower) {
             return false
         }
@@ -1625,6 +1635,17 @@ public enum ObviousTypoCorrector {
             return false
         }
         return true
+    }
+
+    private static func hasProtectedCasing(_ token: String, lower: String) -> Bool {
+        (token.dropFirst().contains(where: \.isUppercase)
+            || (token.count >= 2 && token.allSatisfy({ !$0.isLetter || $0.isUppercase })))
+            && !isCanonicalBrandTypo(lower)
+    }
+
+    private static func isCanonicalBrandTypo(_ lower: String) -> Bool {
+        guard let replacement = unambiguousTypos[lower] else { return false }
+        return canonicalBrandCasing[replacement.lowercased()] == replacement
     }
 
     public static func adaptCase(of target: String, toTyped typed: String) -> String {
