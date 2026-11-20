@@ -759,7 +759,9 @@ final class AXCaretContext {
         if AXUIElementCopyAttributeValue(element, "AXSelectedTextMarkerRange" as CFString, &markerRangeRef) == .success,
            let markerRangeRef {
             let endMarker = AXTextMarkerRangeCopyEndMarker(markerRangeRef as! AXTextMarkerRange)
-            if let resolved = readBoundedMarkerContext(element: element, endMarker: endMarker),
+            if let resolved = readBoundedMarkerContext(
+                element: element, endMarker: endMarker, sentenceBoundaryWord: expectedTrailingWord
+            ),
                ObviousTypoCorrector.normalizeApostrophes(resolved.prefix).lowercased().hasSuffix(expectedNorm) {
                 return (resolved.prefix, resolved.isAtDocumentStart, resolved.sliceStartsAtDocumentZero)
             }
@@ -775,7 +777,8 @@ final class AXCaretContext {
     ///   so soft-wrapped lines keep full sentence context without ever copying large documents!
     private func readBoundedMarkerContext(
         element: AXUIElement,
-        endMarker: AXTextMarker
+        endMarker: AXTextMarker,
+        sentenceBoundaryWord: String? = nil
     ) -> (prefix: String, isAtDocumentStart: Bool, sliceStartsAtDocumentZero: Bool)? {
         let role = copyStringAttribute(element, attribute: kAXRoleAttribute as String) ?? ""
         var confirmedPastDocStart = false
@@ -837,6 +840,14 @@ final class AXCaretContext {
                 }
                 if let rawPara = stringForTextMarkerRange(element: element, markerRange: paraPairRange) {
                     let cleaned = rawPara.replacingOccurrences(of: "\u{FFFC}", with: "").replacingOccurrences(of: "\u{200B}", with: "")
+                    if let sentenceBoundaryWord,
+                       let withPrevious = ObviousTypoCorrector.sentenceContext(
+                           forFirstWord: sentenceBoundaryWord,
+                           paragraphPrefix: cleaned,
+                           readPreviousTail: { previousParagraphTail(element: element, before: paraStart) }
+                       ) {
+                        return (withPrevious, false, false)
+                    }
                     var docStart = false
                     var startsAtZero = false
                     if !confirmedPastDocStart {
@@ -858,6 +869,33 @@ final class AXCaretContext {
         }
 
         return nil
+    }
+
+    private func previousParagraphTail(element: AXUIElement, before paragraphStart: AXTextMarker) -> String? {
+        // Text markers can cross accessibility nodes. Stay inside this editor's start marker.
+        var documentStart: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &documentStart) == .success,
+              let documentStart, !CFEqual(documentStart, paragraphStart) else {
+            return nil
+        }
+        var previousWord: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element, "AXPreviousWordStartTextMarkerForTextMarker" as CFString, paragraphStart, &previousWord
+        ) == .success, let previousWord, !CFEqual(previousWord, paragraphStart),
+           let startRange = makeMarkerRange(element: element, start: documentStart, end: previousWord),
+           CFEqual(AXTextMarkerRangeCopyStartMarker(startRange as! AXTextMarkerRange), documentStart),
+           let tailRange = makeMarkerRange(element: element, start: previousWord, end: paragraphStart) else {
+            return nil
+        }
+        var lengthRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element, "AXLengthForTextMarkerRange" as CFString, tailRange, &lengthRef
+        ) == .success, let length = (lengthRef as? NSNumber)?.intValue, (1...120).contains(length) else {
+            return nil
+        }
+        return stringForTextMarkerRange(element: element, markerRange: tailRange)?
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+            .replacingOccurrences(of: "\u{200B}", with: "")
     }
 
     private func makeMarkerRange(element: AXUIElement, start: CFTypeRef, end: CFTypeRef) -> CFTypeRef? {
