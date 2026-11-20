@@ -465,7 +465,8 @@ public final class WordCompleter {
         } else {
             if candidate.hasPrefix(prefix) {
                 adapted = candidate
-            } else if historyStore.contextualScore(for: candidate, previousWord: previousWord, bundleID: bundleID) > 0 {
+            } else if ObviousTypoCorrector.canonicalBrandCasing[candidate.lowercased()] != nil
+                || historyStore.contextualScore(for: candidate, previousWord: previousWord, bundleID: bundleID) > 0 {
                 adapted = prefix + candidate.dropFirst(prefix.count)
             } else {
                 return nil

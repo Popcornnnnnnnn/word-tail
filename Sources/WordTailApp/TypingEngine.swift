@@ -736,23 +736,25 @@ final class TypingEngine {
             var deleteCount = match.replacementDeleteCount
             var rawInsertSuffix = match.suffix
 
-            // Upgrade Tab-accepted lowercase proper nouns/brands ("tailsc" -> "Tailscale", "macos" -> "macOS")
+            // Upgrade Tab-accepted lowercase/Title-case proper nouns/brands ("imess" / "Imess" -> "iMessage", "tailsc" -> "Tailscale")
             // AND sentence-start / numbered-list-start completions ("1. quant" -> "1. Quantitative") cleanly!
+            let prefixIsAllCaps = match.prefix.count >= 2 && match.prefix.allSatisfy({ !$0.isLetter || $0.isUppercase })
             if !match.isTypoCorrection,
                !match.fullWord.contains(" "),
-               match.prefix == match.prefix.lowercased() {
+               !prefixIsAllCaps {
                 let lowerFull = match.fullWord.lowercased()
                 if autoCorrectOnSpace,
                    !adaptiveStore.isMuted(lowerFull),
-                   let cased = historyStore.customPinnedCasing(for: lowerFull)
+                   let cased = (match.prefix == match.prefix.lowercased() ? historyStore.customPinnedCasing(for: lowerFull) : nil)
                     ?? ObviousTypoCorrector.canonicalBrandCasing[lowerFull]
-                    ?? ObviousTypoCorrector.dictionaryProperNounCasing(forLowerWord: lowerFull),
+                    ?? (match.prefix == match.prefix.lowercased() ? ObviousTypoCorrector.dictionaryProperNounCasing(forLowerWord: lowerFull) : nil),
                    cased != match.fullWord {
                     let diff = ObviousTypoCorrector.minimalDiff(from: match.prefix, to: cased)
                     resolvedFullWord = cased
                     deleteCount = diff.deleteCount
                     rawInsertSuffix = diff.insertText
                 } else if autoCapitalizeSentences,
+                          match.prefix == match.prefix.lowercased(),
                           let first = resolvedFullWord.first,
                           first.isLowercase,
                           !resolvedFullWord.dropFirst().contains(where: \.isUppercase),

@@ -511,7 +511,8 @@ public enum ObviousTypoCorrector {
         "pls", "plz", "thx", "nvm", "idk", "ikr", "smh", "lmao", "hodl", "saas", "paas", "iaas",
         "onnx", "uuid", "uids", "conf", "confs", "sync", "awesun", "todesk", "rustdesk", "anydesk", "tailscale",
         "keystat", "keystats", "wordtail", "nihao", "xie", "xiexie", "shanghai", "beijing", "shenzhen",
-        "iphone", "ipad", "airpods", "imac", "macbook", "ebay"
+        "iphone", "ipad", "airpods", "imac", "macbook", "imessage", "imessages", "icloud", "facetime",
+        "airdrop", "airplay", "airtag", "airtags", "carplay", "ebay"
     ]
 
     /// Unambiguous proper nouns, mixed-case brands, platforms, tools, and places auto-cased on Space/punctuation/Tab
@@ -529,8 +530,19 @@ public enum ObviousTypoCorrector {
         "ipad": "iPad",
         "ipads": "iPads",
         "imac": "iMac",
+        "imacs": "iMacs",
+        "imessage": "iMessage",
+        "imessages": "iMessages",
+        "icloud": "iCloud",
+        "facetime": "FaceTime",
         "airpods": "AirPods",
+        "airdrop": "AirDrop",
+        "airplay": "AirPlay",
+        "airtag": "AirTag",
+        "airtags": "AirTags",
+        "carplay": "CarPlay",
         "macbook": "MacBook",
+        "macbooks": "MacBooks",
         "xcode": "Xcode",
         "testflight": "TestFlight",
         "swiftui": "SwiftUI",
@@ -538,6 +550,15 @@ public enum ObviousTypoCorrector {
         "uikit": "UIKit",
         "webkit": "WebKit",
         "coretext": "CoreText",
+        "coredata": "CoreData",
+        "coreml": "CoreML",
+        "coregraphics": "CoreGraphics",
+        "homekit": "HomeKit",
+        "cloudkit": "CloudKit",
+        "storekit": "StoreKit",
+        "healthkit": "HealthKit",
+        "arkit": "ARKit",
+        "applescript": "AppleScript",
         "linux": "Linux",
         "ubuntu": "Ubuntu",
         "debian": "Debian",
@@ -873,7 +894,8 @@ public enum ObviousTypoCorrector {
         "dependecy": "dependency", "paramter": "parameter",
         "performace": "performance", "compatability": "compatibility",
         "availibility": "availability", "reproducable": "reproducible", "herustic": "heuristic",
-        "architecure": "architecture", "infrastruture": "infrastructure", "optmize": "optimize", "optmization": "optimization"
+        "architecure": "architecture", "infrastruture": "infrastructure", "optmize": "optimize", "optmization": "optimization",
+        "imesage": "iMessage", "imessgae": "iMessage", "imeesage": "iMessage"
     ]
 
     /// Computes minimal backspace + suffix edit between `source` and `target` so the editor only replaces
@@ -976,9 +998,10 @@ public enum ObviousTypoCorrector {
         var working = word
 
         if !isSpellingMuted {
-            // 2. User-pinned capitalized dictionary words & canonical proper nouns/brands ("tailscale" -> "Tailscale", "macos" -> "macOS")
-            if autoCorrectTypos, word == lower {
-                if let pinnedCased = historyStore?.customPinnedCasing(for: lower) {
+            // 2. User-pinned capitalized dictionary words & canonical proper nouns/brands
+            //    ("imessage" / "Imessage" -> "iMessage", "tailscale" -> "Tailscale", "macos" / "Macos" -> "macOS")
+            if autoCorrectTypos {
+                if word == lower, let pinnedCased = historyStore?.customPinnedCasing(for: lower) {
                     working = pinnedCased
                 } else if let brand = canonicalBrandCasing[lower] {
                     working = brand
@@ -1386,13 +1409,13 @@ public enum ObviousTypoCorrector {
         if let customOrLearned = adaptiveStore?.customOrLearnedReplacement(for: lower) {
             return adaptCase(of: customOrLearned, toTyped: word)
         }
-        if word == lower {
-            if let pinnedCased = historyStore?.customPinnedCasing(for: lower) {
-                return pinnedCased
-            }
-            if let brand = canonicalBrandCasing[lower] {
-                return brand
-            }
+        if word == lower, let pinnedCased = historyStore?.customPinnedCasing(for: lower) {
+            return pinnedCased
+        }
+        if !(word.count >= 2 && word.allSatisfy({ !$0.isLetter || $0.isUppercase })),
+           let brand = canonicalBrandCasing[lower],
+           brand != word {
+            return brand
         }
 
         guard isEligibleTypoToken(word, minLength: 2, historyStore: historyStore) else {
