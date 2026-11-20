@@ -18,7 +18,7 @@ final class AutoUpdateManager: ObservableObject {
     static let autoCheckDefaultsKey = "WordTailAutoCheckUpdates"
     static let lastPromptedTagDefaultsKey = "WordTailLastPromptedReleaseTag"
     static let latestReleaseEndpoint = URL(string: "https://api.github.com/repos/Popcornnnnnnnn/word-tail/releases/latest")!
-    static let expectedBundleID = "app.wordtail.macos"
+    nonisolated static let expectedBundleID = "app.wordtail.macos"
 
     @Published var autoCheckEnabled: Bool {
         didSet {
