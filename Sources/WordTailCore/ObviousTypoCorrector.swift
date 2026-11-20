@@ -108,6 +108,63 @@ public final class AdaptiveCorrectionStore {
         }
         decoded.syncRecords = records
         state = decoded
+        if sanitizeLegacyFalseMutesAndPairsLocked() {
+            persistLocked()
+        }
+    }
+
+    /// Cleans up legacy false-positive mutes on normal English sentence-starter words (like `"can"`, `"what"`, `"that"`, `"i"`, `"git is"`)
+    /// that accumulated when a user pressed Backspace after sentence-start capitalization, plus accidental fragment pairs shadowing `unambiguousTypos`.
+    private func sanitizeLegacyFalseMutesAndPairsLocked() -> Bool {
+        var dirty = false
+        var records = state.syncRecords ?? [:]
+        let now = Date().timeIntervalSince1970
+
+        for (mistype, targetMap) in state.candidatePairs {
+            let cleanedTargets = targetMap.filter { target, _ in
+                !Self.isOverBackspacedFragment(mistype: mistype, corrected: target)
+            }
+            if cleanedTargets.count != targetMap.count {
+                if cleanedTargets.isEmpty {
+                    state.candidatePairs.removeValue(forKey: mistype)
+                    // If `mistype` was muted solely because this bogus over-backspaced fragment (e.g. "wnat" -> "ant") fired, unmute it!
+                    if state.mutedTriggers.contains(mistype) && state.customRules[mistype] == nil {
+                        state.mutedTriggers.remove(mistype)
+                        state.undoCounts.removeValue(forKey: mistype)
+                        records[mistype] = RuleSyncRecord(replacement: nil, isMuted: false, isDeleted: true, updatedAt: now)
+                    }
+                } else {
+                    state.candidatePairs[mistype] = cleanedTargets
+                }
+                dirty = true
+            }
+        }
+
+        let allUndoOrMutedKeys = Set(state.undoCounts.keys).union(state.mutedTriggers)
+        for key in allUndoOrMutedKeys {
+            guard state.customRules[key] == nil,
+                  ObviousTypoCorrector.unambiguousTypos[key] == nil,
+                  ObviousTypoCorrector.canonicalBrandCasing[key] == nil,
+                  state.candidatePairs[key] == nil else {
+                continue
+            }
+            let isPlainSentenceWord = key == "i"
+                || key.contains(" ")
+                || TypingHabitTracker.defaultValidEnglishWordCheck(key)
+            if isPlainSentenceWord {
+                let wasMuted = state.mutedTriggers.remove(key) != nil
+                state.undoCounts.removeValue(forKey: key)
+                if wasMuted {
+                    records[key] = RuleSyncRecord(replacement: nil, isMuted: false, isDeleted: true, updatedAt: now)
+                }
+                dirty = true
+            }
+        }
+
+        if dirty {
+            state.syncRecords = records
+        }
+        return dirty
     }
 
     public func exportLocalShard() -> SyncShard {
@@ -236,6 +293,23 @@ public final class AdaptiveCorrectionStore {
         }
     }
 
+    /// Detects when the user accidentally pressed Backspace one extra time (deleting the initial letter of a word,
+    /// e.g. typing `"wnat"`, deleting all 4 chars instead of 3, and typing `"ant"` when they meant `"want"`, or `"waht"` -> `"hat"` for `"what"`).
+    private static func isOverBackspacedFragment(mistype: String, corrected: String) -> Bool {
+        let lowerMistype = mistype.lowercased()
+        let lowerCorrected = corrected.lowercased()
+        guard lowerMistype.count >= 3, lowerCorrected.count >= 2,
+              let firstChar = lowerMistype.first else {
+            return false
+        }
+        let reconstructed = String(firstChar) + lowerCorrected
+        guard reconstructed != lowerCorrected,
+              TypingHabitTracker.defaultValidEnglishWordCheck(reconstructed) else {
+            return false
+        }
+        return ObviousTypoCorrector.damerauLevenshtein(lowerMistype, reconstructed) <= 1
+    }
+
     /// Records a user correction observation (from Backspace repair or explicit `Tab` on a typo fix).
     /// Once observed `>= 2` times, it automatically activates on `Space`!
     public func recordObservedCorrection(mistype rawMistype: String, corrected rawCorrected: String, persistAsync: Bool = true) {
@@ -244,6 +318,7 @@ public final class AdaptiveCorrectionStore {
         guard mistype.count >= 2, mistype.count <= 24,
               corrected.count >= 2, corrected.count <= 32,
               mistype != corrected.lowercased(),
+              !Self.isOverBackspacedFragment(mistype: mistype, corrected: corrected),
               !ObviousTypoCorrector.developerSafeWords.contains(mistype),
               !TypingHabitTracker.defaultValidEnglishWordCheck(mistype) else {
             return
@@ -893,33 +968,34 @@ public enum ObviousTypoCorrector {
             return res != word ? SpaceTransformResult(replacedSourceSpan: word, replacementText: res) : nil
         }
 
-        // Respect triggers the user muted by undoing with Backspace twice!
-        if adaptiveStore?.isMuted(lower) == true {
-            return nil
-        }
+        // Respect triggers the user muted by undoing with Backspace twice (for spelling/brand substitutions ONLY;
+        // normal sentence-start capitalization in Step 4 still applies to valid English words!).
+        let isSpellingMuted = (adaptiveStore?.isMuted(lower) == true)
 
         var working = word
 
-        // 2. User-pinned capitalized dictionary words & canonical proper nouns/brands ("tailscale" -> "Tailscale", "macos" -> "macOS")
-        if autoCorrectTypos, word == lower {
-            if let pinnedCased = historyStore?.customPinnedCasing(for: lower) {
-                working = pinnedCased
-            } else if let brand = canonicalBrandCasing[lower] {
-                working = brand
+        if !isSpellingMuted {
+            // 2. User-pinned capitalized dictionary words & canonical proper nouns/brands ("tailscale" -> "Tailscale", "macos" -> "macOS")
+            if autoCorrectTypos, word == lower {
+                if let pinnedCased = historyStore?.customPinnedCasing(for: lower) {
+                    working = pinnedCased
+                } else if let brand = canonicalBrandCasing[lower] {
+                    working = brand
+                }
             }
-        }
-        if working == word && !developerSafeWords.contains(lower) {
-            // 3. Context-aware "lets" -> "Let's" + typo/contraction auto-correction
-            if autoCorrectTypos && lower == "lets" && atSentenceStart {
-                working = "Let's"
-            } else if autoCorrectTypos,
-                      let typoFixed = spaceAutoCorrection(
-                          forWord: working,
-                          adaptiveStore: adaptiveStore,
-                          habitTracker: habitTracker,
-                          historyStore: historyStore
-                      ) {
-                working = typoFixed
+            if working == word && !developerSafeWords.contains(lower) {
+                // 3. Context-aware "lets" -> "Let's" + typo/contraction auto-correction
+                if autoCorrectTypos && lower == "lets" && atSentenceStart {
+                    working = "Let's"
+                } else if autoCorrectTypos,
+                          let typoFixed = spaceAutoCorrection(
+                              forWord: working,
+                              adaptiveStore: adaptiveStore,
+                              habitTracker: habitTracker,
+                              historyStore: historyStore
+                          ) {
+                    working = typoFixed
+                }
             }
         }
 
@@ -930,7 +1006,8 @@ public enum ObviousTypoCorrector {
         if autoCapitalizeSentences {
             if working == "i" {
                 working = "I"
-            } else if let first = working.first,
+            } else if !(lower == "lets" && isSpellingMuted),
+                      let first = working.first,
                       first.isLowercase,
                       !working.dropFirst().contains(where: \.isUppercase),
                       atSentenceStart,
@@ -1076,7 +1153,7 @@ public enum ObviousTypoCorrector {
             return false
         }
         if adaptiveStore?.customOrLearnedReplacement(for: lower) == nil {
-            if adaptiveStore?.isMuted(lower) == true
+            if (!autoCapitalizeSentences && adaptiveStore?.isMuted(lower) == true)
                 || cliCommandWords.contains(lower)
                 || nonCapitalizedAcronyms.contains(lower) {
                 return false

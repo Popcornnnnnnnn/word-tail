@@ -820,8 +820,35 @@ final class TypingEngine {
             return nil
         }
 
-        // Backspace -> first check 1-press Undo of an immediate Space/punctuation auto-correction; otherwise normal delete!
+        // Backspace -> first handle modifier deletes (⌥⌫ word / ⌘⌫ line), then 1-press Undo, otherwise normal 1-char delete!
         if keyCode == kVK_Delete {
+            if flags.contains(.maskCommand) || flags.contains(.maskAlternate) || flags.contains(.maskControl) {
+                pendingSpaceUndo = nil
+                suppressedWordOnce = nil
+                overlay.hide()
+                activeCandidates.removeAll(keepingCapacity: true)
+                activeSnapshot = nil
+                if flags.contains(.maskCommand) {
+                    if let nl = rollingBuffer.lastIndex(of: "\n") {
+                        rollingBuffer = String(rollingBuffer[...nl])
+                    } else {
+                        rollingBuffer.removeAll(keepingCapacity: true)
+                    }
+                } else {
+                    while let last = rollingBuffer.last, last == " " || last == "\t" {
+                        rollingBuffer.removeLast()
+                    }
+                    while let last = rollingBuffer.last, !last.isWhitespace {
+                        rollingBuffer.removeLast()
+                    }
+                }
+                DispatchQueue.main.async { [weak self] in
+                    self?.habitTracker.resetSessionContext()
+                    self?.schedulePredictionQuery()
+                }
+                return Unmanaged.passUnretained(event)
+            }
+
             if let undo = pendingSpaceUndo {
                 pendingSpaceUndo = nil
                 let baseTrigger = undo.originalWord.hasSuffix(".") ? String(undo.originalWord.dropLast()) : undo.originalWord
@@ -835,7 +862,14 @@ final class TypingEngine {
                 }
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    if self.enableHabitLearning {
+                    let origNorm = ObviousTypoCorrector.normalizeApostrophes(baseTrigger).lowercased()
+                    let repBase = undo.replacedWith.hasSuffix(".") ? String(undo.replacedWith.dropLast()) : undo.replacedWith
+                    let repNorm = ObviousTypoCorrector.normalizeApostrophes(repBase).lowercased()
+                    let isSubstantiveWordOrBrandRule = (origNorm != repNorm)
+                        || ObviousTypoCorrector.canonicalBrandCasing[origNorm] != nil
+                        || self.historyStore.customPinnedCasing(for: origNorm) != nil
+                        || ObviousTypoCorrector.dictionaryProperNounCasing(forLowerWord: origNorm) != nil
+                    if self.enableHabitLearning && isSubstantiveWordOrBrandRule {
                         self.adaptiveStore.recordUndo(forTrigger: baseTrigger)
                     }
                     if diff.deleteCount > 0 {

@@ -1306,4 +1306,64 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertFalse(VersionComparator.isNewer(remote: "0.5.6", current: "0.6.0"))
         XCTAssertFalse(VersionComparator.isNewer(remote: "invalid", current: "0.6.0"))
     }
+
+    func testSentenceStartCapitalizationNeverBlockedByLegacyMutedEnglishWords() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailMutedCap-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let adaptiveFile = tempDir.appendingPathComponent("adaptive_corrections.json")
+        // Simulate a legacy `adaptive_corrections.json` where pressing Backspace twice after sentence-start `"Can "`
+        // falsely muted `"can"`, and where an accidental extra Backspace learned `"wnat" -> "ant"`.
+        let legacyJSON = """
+        {
+          "customRules": {},
+          "candidatePairs": { "wnat": { "ant": 2 } },
+          "undoCounts": { "can": 2, "what": 1, "wnat": 2, "cant": 2 },
+          "mutedTriggers": ["can", "wnat", "cant"]
+        }
+        """
+        try Data(legacyJSON.utf8).write(to: adaptiveFile)
+
+        let adaptive = AdaptiveCorrectionStore(fileURL: adaptiveFile)
+
+        // 1. Legacy false mute on valid English starter `"can"` is automatically scrubbed on load!
+        XCTAssertFalse(adaptive.isMuted("can"))
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "can",
+                lineContextIncludingWord: "What's going on with this attention? can",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Can"
+        )
+        XCTAssertTrue(
+            ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
+                forWord: "can",
+                rollingBuffer: "can",
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: adaptive
+            )
+        )
+
+        // 2. Bogus fragment pair `"wnat" -> "ant"` shadowing built-in `"wnat" -> "want"` is scrubbed and unmuted!
+        XCTAssertFalse(adaptive.isMuted("wnat"))
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "wnat", adaptiveStore: adaptive, habitTracker: nil, historyStore: nil),
+            "want"
+        )
+
+        // 3. Genuine spelling/contraction mute (`"cant"` -> `"can't"`) stays muted, while sentence-start capitalization still works!
+        XCTAssertTrue(adaptive.isMuted("cant"))
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceAutoCorrection(forWord: "cant", adaptiveStore: adaptive, habitTracker: nil, historyStore: nil)
+        )
+    }
 }
