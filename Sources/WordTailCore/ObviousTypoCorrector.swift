@@ -954,7 +954,8 @@ public enum ObviousTypoCorrector {
         let atSentenceStart = isWordAtSentenceStart(
             word: word,
             inContextBeforeCursor: lineContextIncludingWord,
-            isAtDocumentStart: isAtDocumentStart
+            isAtDocumentStart: isAtDocumentStart,
+            sliceStartsAtDocumentZero: sliceStartsAtDocumentZero
         )
 
         // 1. User's explicit custom shorthand rules ALWAYS take priority
@@ -1110,7 +1111,8 @@ public enum ObviousTypoCorrector {
         guard isWordAtSentenceStart(
             word: cliWord,
             inContextBeforeCursor: contextUpToCli,
-            isAtDocumentStart: cliIsAtDocStart
+            isAtDocumentStart: cliIsAtDocStart,
+            sliceStartsAtDocumentZero: sliceStartsAtDocumentZero
         ) else {
             return nil
         }
@@ -1204,12 +1206,14 @@ public enum ObviousTypoCorrector {
 
     /// Returns true ONLY when:
     /// 1. `isAtDocumentStart` is true (the very first word at index 0 of the entire text field), OR
-    /// 2. Preceding text before `word` ends with sentence-ending punctuation (`.`, `!`, `?`) followed by whitespace/newline.
-    /// Soft-wrapped visual lines and plain line breaks (`\n`) without `.`, `!`, or `?` NEVER trigger sentence capitalization.
+    /// 2. Preceding text before `word` ends with sentence-ending punctuation (`.`, `!`, `?`) followed by whitespace/newline, OR
+    /// 3. Preceding text on the current line is a line-leading numbered list marker (`"1. "`, `"2. "`, `"10. "`, `"1) "`, `"\t1.\t"`).
+    /// Soft-wrapped visual lines and plain line breaks (`\n`) without `.`, `!`, `?`, or a numbered list prefix NEVER trigger capitalization.
     public static func isWordAtSentenceStart(
         word: String,
         inContextBeforeCursor context: String?,
-        isAtDocumentStart: Bool = false
+        isAtDocumentStart: Bool = false,
+        sliceStartsAtDocumentZero: Bool = false
     ) -> Bool {
         if isAtDocumentStart {
             return true
@@ -1221,7 +1225,15 @@ public enum ObviousTypoCorrector {
             return false
         }
 
-        return hasSentenceEndingPunctuation(before: String(context.dropLast(word.count)))
+        let prefixBeforeWord = String(context.dropLast(word.count))
+        if hasSentenceEndingPunctuation(before: prefixBeforeWord) {
+            return true
+        }
+        return isLineLeadingNumberedListPrefix(
+            prefixBeforeWord,
+            fullContextLength: context.count,
+            sliceStartsAtDocumentZero: sliceStartsAtDocumentZero
+        )
     }
 
     public static func sentenceContextAfterReturn(_ buffer: String) -> String {
@@ -1240,11 +1252,14 @@ public enum ObviousTypoCorrector {
               !previousTail.isEmpty else {
             return nil
         }
+        if isStandaloneNumberedListMarker(previousTail) {
+            return "\n" + previousTail + " " + paragraphPrefix
+        }
         return previousTail + "\n" + paragraphPrefix
     }
 
-    /// Rich editors can report only the current paragraph. Recover a preceding sentence ending
-    /// when the live context and the typed buffer agree on the first word of the new paragraph.
+    /// Rich editors can report only the current paragraph (or strip `"1. "` into a native `<ol><li>` list item).
+    /// Recover a preceding sentence ending or numbered-list marker when the live context and typed buffer agree on the first word.
     public static func sentenceContext(
         forWord word: String,
         liveContext: String,
@@ -1252,7 +1267,7 @@ public enum ObviousTypoCorrector {
     ) -> String {
         guard containsOnlyWord(word, in: liveContext),
               let lastLine = bufferedContext.split(whereSeparator: \.isNewline).last,
-              containsOnlyWord(word, in: String(lastLine)),
+              containsOnlyWordOrNumberedListItem(word, inLine: String(lastLine)),
               isWordAtSentenceStart(word: word, inContextBeforeCursor: bufferedContext) else {
             return liveContext
         }
@@ -1262,6 +1277,62 @@ public enum ObviousTypoCorrector {
     private static func containsOnlyWord(_ word: String, in text: String) -> Bool {
         let normalizedText = normalizeApostrophes(text.trimmingCharacters(in: .whitespacesAndNewlines))
         return normalizedText.lowercased() == normalizeApostrophes(word).lowercased()
+    }
+
+    private static func containsOnlyWordOrNumberedListItem(_ word: String, inLine line: String) -> Bool {
+        if containsOnlyWord(word, in: line) {
+            return true
+        }
+        let normLine = normalizeApostrophes(line)
+        let normWord = normalizeApostrophes(word)
+        guard normLine.lowercased().hasSuffix(normWord.lowercased()) else { return false }
+        let beforeWord = String(line.dropLast(word.count))
+        return isLineLeadingNumberedListPrefix(beforeWord, fullContextLength: line.count, sliceStartsAtDocumentZero: true)
+    }
+
+    private static func isStandaloneNumberedListMarker(_ token: String) -> Bool {
+        guard let last = token.last, last == "." || last == ")" else { return false }
+        let digits = token.dropLast()
+        return !digits.isEmpty && digits.count <= 4 && digits.allSatisfy({ $0.isASCII && $0.isNumber })
+    }
+
+    private static func isLineLeadingNumberedListPrefix(
+        _ prefixBeforeWord: String,
+        fullContextLength: Int,
+        sliceStartsAtDocumentZero: Bool
+    ) -> Bool {
+        let linePrefix: Substring
+        if let lastNL = prefixBeforeWord.lastIndex(where: { $0.isNewline }) {
+            linePrefix = prefixBeforeWord[prefixBeforeWord.index(after: lastNL)...]
+        } else if sliceStartsAtDocumentZero || fullContextLength < 120 {
+            linePrefix = prefixBeforeWord[...]
+        } else {
+            return false
+        }
+
+        let chars = Array(linePrefix)
+        var idx = 0
+        while idx < chars.count && (chars[idx] == " " || chars[idx] == "\t") {
+            idx += 1
+        }
+        let digitStart = idx
+        while idx < chars.count && chars[idx].isASCII && chars[idx].isNumber {
+            idx += 1
+        }
+        let digitCount = idx - digitStart
+        guard digitCount >= 1 && digitCount <= 4, idx < chars.count else {
+            return false
+        }
+        let marker = chars[idx]
+        guard marker == "." || marker == ")" else {
+            return false
+        }
+        idx += 1
+        let spaceStart = idx
+        while idx < chars.count && (chars[idx] == " " || chars[idx] == "\t") {
+            idx += 1
+        }
+        return idx == chars.count && idx > spaceStart
     }
 
     private static func hasSentenceEndingPunctuation(before prefixBeforeWord: String) -> Bool {

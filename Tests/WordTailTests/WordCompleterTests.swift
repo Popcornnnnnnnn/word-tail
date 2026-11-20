@@ -1366,4 +1366,99 @@ final class WordCompleterTests: XCTestCase {
             ObviousTypoCorrector.spaceAutoCorrection(forWord: "cant", adaptiveStore: adaptive, habitTracker: nil, historyStore: nil)
         )
     }
+
+    func testNumberedListCapitalizationAndMidLineNumberGuard() {
+        // 1. Start-of-field and multi-line numbered list items (`"1. "`, `"2. "`, `"  10. "`, `"1) "`, `"\t1.\t"`) capitalize!
+        for context in [
+            "1. first",
+            "Steps:\n1. first",
+            "1. Done\n2. first",
+            "   10. first",
+            "Notes:\n\t1.\tfirst",
+            "1) first"
+        ] {
+            XCTAssertEqual(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: "first",
+                    lineContextIncludingWord: context,
+                    isAtDocumentStart: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                "First",
+                "Expected capitalization in context: \(context)"
+            )
+        }
+
+        // 2. Smart 2nd-word CLI -> Prose promotion works inside numbered list items (`"1. git status"` stays lowercase, `"1. git is"` -> `"Git is"`)!
+        XCTAssertNil(
+            ObviousTypoCorrector.evaluateSpaceTransform(
+                forWord: "git",
+                lineContextIncludingWord: "1. git",
+                isAtDocumentStart: false,
+                sliceStartsAtDocumentZero: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        )
+        XCTAssertEqual(
+            ObviousTypoCorrector.evaluateSpaceTransform(
+                forWord: "is",
+                lineContextIncludingWord: "1. git is",
+                isAtDocumentStart: false,
+                sliceStartsAtDocumentZero: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            SpaceTransformResult(replacedSourceSpan: "git is", replacementText: "Git is")
+        )
+
+        // 3. Rich editors that swallow `"1. "` into `<ol><li>` (reporting only `"first"` in AX) still capitalize from buffer or AXListMarker!
+        let recoveredFromBuffer = ObviousTypoCorrector.sentenceContext(
+            forWord: "first",
+            liveContext: "first",
+            bufferedContext: "1. first"
+        )
+        XCTAssertEqual(recoveredFromBuffer, "1. first")
+        XCTAssertTrue(ObviousTypoCorrector.isWordAtSentenceStart(word: "first", inContextBeforeCursor: recoveredFromBuffer))
+
+        let recoveredFromMarker = ObviousTypoCorrector.sentenceContext(
+            forFirstWord: "second",
+            paragraphPrefix: "second",
+            readPreviousTail: { "2. " }
+        )
+        XCTAssertEqual(recoveredFromMarker, "\n2. second")
+        XCTAssertTrue(ObviousTypoCorrector.isWordAtSentenceStart(word: "second", inContextBeforeCursor: recoveredFromMarker))
+
+        // 4. Mid-sentence numbers (`"See item 1. below"`, `"Version 2. now"`, `"3.14 is"`) must NOT falsely capitalize!
+        for midSentence in [
+            "See item 1. below",
+            "Read chapter 2. now",
+            "3.14 is"
+        ] {
+            let word = String(midSentence.split(separator: " ").last!)
+            XCTAssertNil(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: word,
+                    lineContextIncludingWord: midSentence,
+                    isAtDocumentStart: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                "Expected NO capitalization in mid-sentence context: \(midSentence)"
+            )
+        }
+    }
 }

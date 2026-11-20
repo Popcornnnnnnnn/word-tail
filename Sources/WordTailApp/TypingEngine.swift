@@ -736,14 +736,15 @@ final class TypingEngine {
             var deleteCount = match.replacementDeleteCount
             var rawInsertSuffix = match.suffix
 
-            // Upgrade Tab-accepted lowercase proper nouns/brands ("tailsc" -> "Tailscale", "macos" -> "macOS") cleanly!
+            // Upgrade Tab-accepted lowercase proper nouns/brands ("tailsc" -> "Tailscale", "macos" -> "macOS")
+            // AND sentence-start / numbered-list-start completions ("1. quant" -> "1. Quantitative") cleanly!
             if !match.isTypoCorrection,
                !match.fullWord.contains(" "),
-               autoCorrectOnSpace,
-               match.prefix == match.prefix.lowercased(),
-               !adaptiveStore.isMuted(match.fullWord.lowercased()) {
+               match.prefix == match.prefix.lowercased() {
                 let lowerFull = match.fullWord.lowercased()
-                if let cased = historyStore.customPinnedCasing(for: lowerFull)
+                if autoCorrectOnSpace,
+                   !adaptiveStore.isMuted(lowerFull),
+                   let cased = historyStore.customPinnedCasing(for: lowerFull)
                     ?? ObviousTypoCorrector.canonicalBrandCasing[lowerFull]
                     ?? ObviousTypoCorrector.dictionaryProperNounCasing(forLowerWord: lowerFull),
                    cased != match.fullWord {
@@ -751,6 +752,31 @@ final class TypingEngine {
                     resolvedFullWord = cased
                     deleteCount = diff.deleteCount
                     rawInsertSuffix = diff.insertText
+                } else if autoCapitalizeSentences,
+                          let first = resolvedFullWord.first,
+                          first.isLowercase,
+                          !resolvedFullWord.dropFirst().contains(where: \.isUppercase),
+                          !ObviousTypoCorrector.cliCommandWords.contains(lowerFull),
+                          !ObviousTypoCorrector.nonCapitalizedAcronyms.contains(lowerFull) {
+                    let liveBefore = activeSnapshot?.textBeforeCursor
+                    let tabContext = liveBefore.flatMap {
+                        ObviousTypoCorrector.sentenceContext(
+                            forWord: match.prefix,
+                            liveContext: $0,
+                            bufferedContext: rollingBuffer
+                        )
+                    } ?? rollingBuffer
+                    if ObviousTypoCorrector.isWordAtSentenceStart(
+                        word: match.prefix,
+                        inContextBeforeCursor: tabContext,
+                        isAtDocumentStart: activeSnapshot?.isAtDocumentStart ?? false
+                    ) {
+                        let cased = resolvedFullWord.prefix(1).uppercased() + resolvedFullWord.dropFirst()
+                        let diff = ObviousTypoCorrector.minimalDiff(from: match.prefix, to: cased)
+                        resolvedFullWord = cased
+                        deleteCount = diff.deleteCount
+                        rawInsertSuffix = diff.insertText
+                    }
                 }
             }
 
@@ -986,7 +1012,7 @@ final class TypingEngine {
                                 ? (liveInspect.sliceStartsAtDocumentZero && AXCaretContext.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: strippedLive))
                                 : liveInspect.isAtDocumentStart
                             sliceAtZero = liveInspect.sliceStartsAtDocumentZero
-                            lineCtx = isDocStart || sliceAtZero
+                            lineCtx = isDocStart
                                 ? strippedLive
                                 : ObviousTypoCorrector.sentenceContext(
                                     forWord: typedWord,
@@ -1338,7 +1364,7 @@ final class TypingEngine {
     /// Reconstructs the current line's text up to and including `typedWord`, accounting for fast keystroke rollover
     /// where `Space` arrives a few milliseconds before the last character's 16ms debounced AX snapshot.
     private func resolvedLineContextForWord(_ typedWord: String, bufferUpToWord: String) -> String? {
-        if bufferUpToWord.contains("\n") || bufferUpToWord.contains(".") || bufferUpToWord.contains("!") || bufferUpToWord.contains("?") {
+        if bufferUpToWord.contains("\n") || bufferUpToWord.contains(".") || bufferUpToWord.contains("!") || bufferUpToWord.contains("?") || bufferUpToWord.contains(")") {
             return bufferUpToWord
         }
         guard let snap = lastCapturedLineText else {
