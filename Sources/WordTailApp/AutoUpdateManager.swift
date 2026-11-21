@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import WordTailCore
 
 struct AvailableRelease: Equatable, Sendable {
@@ -27,16 +28,29 @@ final class AutoUpdateManager: ObservableObject {
         }
     }
 
-    @Published private(set) var availableRelease: AvailableRelease?
+    @Published private(set) var availableRelease: AvailableRelease? {
+        didSet {
+            if availableRelease != oldValue {
+                updateWindow?.close()
+                updateWindow = nil
+            }
+        }
+    }
     @Published private(set) var isChecking: Bool = false
     @Published private(set) var isInstalling: Bool = false
-    @Published private(set) var statusMessage: String = ""
+    @Published private(set) var statusMessage: String = "" {
+        didSet {
+            updateWindowState.progress = isInstalling ? statusMessage : nil
+        }
+    }
 
     var onBeforeTerminateForUpdate: (() -> Void)?
     var onUpdateStateChanged: (() -> Void)?
 
     private var periodicTimer: Timer?
     private var initialCheckScheduled = false
+    private let updateWindowState = UpdateWindowState()
+    private var updateWindow: NSWindow?
 
     init() {
         if UserDefaults.standard.object(forKey: Self.autoCheckDefaultsKey) == nil {
@@ -78,7 +92,13 @@ final class AutoUpdateManager: ObservableObject {
     }
 
     func checkForUpdates(userInitiated: Bool) {
-        guard !isChecking, !isInstalling else { return }
+        if isInstalling {
+            if userInitiated {
+                showUpdateWindow()
+            }
+            return
+        }
+        guard !isChecking else { return }
         isChecking = true
         statusMessage = "Checking GitHub Releases…"
         onUpdateStateChanged?()
@@ -97,6 +117,7 @@ final class AutoUpdateManager: ObservableObject {
                 request.setValue("WordTail/\(currentVer)", forHTTPHeaderField: "User-Agent")
 
                 let (data, response) = try await URLSession.shared.data(for: request)
+                guard !isInstalling else { return }
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                     statusMessage = "Could not check updates right now"
                     if userInitiated {
@@ -137,7 +158,7 @@ final class AutoUpdateManager: ObservableObject {
                     htmlURL: pageURL,
                     zipAssetURL: zipURL,
                     assetName: zipAsset.name,
-                    releaseNotes: Self.trimmedReleaseSummary(payload.body ?? "")
+                    releaseNotes: payload.body ?? ""
                 )
                 availableRelease = release
                 statusMessage = "Update available: v\(release.version)"
@@ -149,6 +170,7 @@ final class AutoUpdateManager: ObservableObject {
                     promptForUpdate(release)
                 }
             } catch {
+                guard !isInstalling else { return }
                 statusMessage = "Update check failed"
                 if userInitiated {
                     showInfoAlert(
@@ -240,30 +262,33 @@ final class AutoUpdateManager: ObservableObject {
         }
     }
 
-    // MARK: - Native Alerts
+    // MARK: - Update Presentation
 
     private func promptForUpdate(_ release: AvailableRelease) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.icon = NSApp.applicationIconImage
-        alert.messageText = "WordTail v\(release.version) is available"
-        let current = currentVersion
-        var detail = "You are currently running v\(current). Would you like to download, verify, and restart into v\(release.version) now?"
-        if !release.releaseNotes.isEmpty {
-            detail += "\n\nWhat’s new:\n\(release.releaseNotes)"
+        if updateWindow == nil {
+            let view = UpdateWindowView(
+                currentVersion: currentVersion,
+                availableVersion: release.version,
+                icon: NSApp.applicationIconImage,
+                release: release.htmlURL,
+                markdown: release.releaseNotes,
+                state: updateWindowState,
+                dismiss: { [weak self] in self?.updateWindow?.close() },
+                install: { [weak self] in self?.installReleaseNow(release) }
+            )
+            let window = NSWindow(contentViewController: NSHostingController(rootView: view))
+            window.styleMask = [.titled, .closable]
+            window.title = "Software Update"
+            window.isReleasedWhenClosed = false
+            window.center()
+            updateWindow = window
         }
-        alert.informativeText = detail
-        alert.addButton(withTitle: "Update & Restart")
-        alert.addButton(withTitle: "Later")
-        alert.addButton(withTitle: "View on GitHub")
+        showUpdateWindow()
+    }
 
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            installReleaseNow(release)
-        } else if response == .alertThirdButtonReturn {
-            NSWorkspace.shared.open(release.htmlURL)
-        }
+    private func showUpdateWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        updateWindow?.makeKeyAndOrderFront(nil)
     }
 
     private func showUpToDateAlert(version: String) {
@@ -475,18 +500,6 @@ final class AutoUpdateManager: ObservableObject {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         try proc.run()
-    }
-
-    private nonisolated static func trimmedReleaseSummary(_ raw: String) -> String {
-        let lines = raw
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-        let preview = lines.prefix(5).joined(separator: "\n")
-        if preview.count > 360 {
-            return String(preview.prefix(357)) + "…"
-        }
-        return preview
     }
 
     // MARK: - GitHub API Schema
