@@ -5,7 +5,7 @@ import WordTailCore
 enum PopoverHistoryMetric: String, CaseIterable, Identifiable {
     case keys = "Keys"
     case clicks = "Clicks"
-    case movement = "Movement"
+    case movement = "Mouse"
     case scroll = "Scroll"
 
     var id: String { rawValue }
@@ -27,6 +27,7 @@ final class MenuBarPopoverViewModel: ObservableObject {
 
     @Published var isEnabled: Bool = true
     @Published var hasAccessibility: Bool = true
+    @Published var brandIcon: NSImage? = nil
 
     @Published var activeAppName: String = ""
     @Published var activeAppBundleID: String = ""
@@ -81,7 +82,8 @@ final class MenuBarPopoverViewModel: ObservableObject {
         historyThisMac: KeyStatsAggregateSnapshot,
         activeAppName: String,
         activeAppBundleID: String,
-        activeAppIcon: NSImage
+        activeAppIcon: NSImage,
+        brandIcon: NSImage? = nil
     ) -> MenuBarPopoverViewModel {
         let vm = MenuBarPopoverViewModel(isStaticShowcase: true)
         vm.today = today
@@ -90,6 +92,7 @@ final class MenuBarPopoverViewModel: ObservableObject {
         vm.rates = (0, 0, today.peakKPS, today.peakCPS)
         vm.isEnabled = true
         vm.hasAccessibility = true
+        vm.brandIcon = brandIcon
         vm.activeAppName = activeAppName
         vm.activeAppBundleID = activeAppBundleID
         vm.activeAppIcon = activeAppIcon
@@ -249,6 +252,33 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
     }
 }
 
+// MARK: - Popover Visual Tokens
+
+private enum PopoverPalette {
+    static let emerald = Color(red: 0.16, green: 0.66, blue: 0.38)
+    static let amber = Color(red: 0.91, green: 0.56, blue: 0.16)
+
+    static func cardFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.065) : Color.white.opacity(0.62)
+    }
+
+    static func elevatedPillFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.94)
+    }
+
+    static func trackFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.055)
+    }
+
+    static func cardBorder(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.11) : Color.black.opacity(0.075)
+    }
+
+    static func divider(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
+    }
+}
+
 // MARK: - SwiftUI Popover View
 
 struct MenuBarPopoverView: View {
@@ -258,14 +288,7 @@ struct MenuBarPopoverView: View {
 
     @State private var showRateDetail: Bool = false
     @State private var hoveredTrendIndex: Int? = nil
-
-    private var blueAccent: Color {
-        Color(red: 0.14, green: 0.49, blue: 0.92)
-    }
-
-    private var orangeAccent: Color {
-        Color(red: 0.93, green: 0.56, blue: 0.16)
-    }
+    @State private var hoveredAppRow: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8.5) {
@@ -274,28 +297,40 @@ struct MenuBarPopoverView: View {
                 liveRateDetailStrip
             }
             activeAppBar
-
-            thinDivider
             todayStatsSection
-            thinDivider
             keyBreakdownSection
-            thinDivider
             historySection
-            thinDivider
             footerToolbar
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(width: 360)
+        .padding(.vertical, 11)
+        .frame(width: 368)
     }
 
     // MARK: - Header
 
     private var headerSection: some View {
         HStack(spacing: 8) {
-            Text("WordTail")
-                .font(.system(size: 15.5, weight: .semibold))
-                .foregroundStyle(Color.primary)
+            HStack(spacing: 6) {
+                Image(nsImage: vm.brandIcon ?? NSApp.applicationIconImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.7)
+                    )
+
+                Text("WordTail")
+                    .font(.system(size: 14.5, weight: .semibold))
+                    .foregroundStyle(Color.primary)
+
+                Circle()
+                    .fill(!vm.hasAccessibility ? Color.orange : (vm.isEnabled ? PopoverPalette.emerald : Color.secondary))
+                    .frame(width: 5.5, height: 5.5)
+                    .help(!vm.hasAccessibility ? "Accessibility required" : (vm.isEnabled ? "Inline completion active" : "Paused"))
+            }
 
             liveSpeedPill
 
@@ -308,14 +343,14 @@ struct MenuBarPopoverView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 10))
+                            .font(.system(size: 9.5, weight: .semibold))
                         Text("Grant Access")
                             .font(.system(size: 11, weight: .semibold))
                     }
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 9)
                     .padding(.vertical, 4)
-                    .background(orangeAccent, in: Capsule())
+                    .background(PopoverPalette.amber, in: Capsule())
                 }
                 .buttonStyle(.plain)
             } else {
@@ -334,44 +369,26 @@ struct MenuBarPopoverView: View {
             ? "\(vm.rates.currentKPS)/\(vm.rates.peakKPS) · \(vm.rates.currentCPS)/\(vm.rates.peakCPS)"
             : "\(vm.rates.peakKPS) · \(vm.rates.peakCPS)"
 
-        return Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
+        return PopoverSpeedPillButton(
+            text: text,
+            liveActive: liveActive,
+            isExpanded: showRateDetail
+        ) {
+            withAnimation(.easeInOut(duration: 0.16)) {
                 showRateDetail.toggle()
             }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(liveActive ? blueAccent : Color(red: 0.92, green: 0.65, blue: 0.12))
-                Text(text)
-                    .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(liveActive ? blueAccent : Color.secondary)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(Color.primary.opacity(scheme == .dark ? 0.10 : 0.06))
-            )
-            .overlay(
-                Capsule()
-                    .stroke(Color.primary.opacity(scheme == .dark ? 0.14 : 0.08), lineWidth: 0.8)
-            )
         }
-        .buttonStyle(.plain)
-        .help("Live KPS / CPS (click for details)")
     }
 
     private var liveRateDetailStrip: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             HStack(spacing: 4) {
                 Text("Keys:")
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(Color.secondary)
                 Text("\(vm.rates.currentKPS) KPS")
                     .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(blueAccent)
+                    .foregroundStyle(LinearUI.accent)
                 Text("(Peak \(vm.rates.peakKPS))")
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(Color.secondary)
@@ -383,7 +400,7 @@ struct MenuBarPopoverView: View {
                     .foregroundStyle(Color.secondary)
                 Text("\(vm.rates.currentCPS) CPS")
                     .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(orangeAccent)
+                    .foregroundStyle(PopoverPalette.amber)
                 Text("(Peak \(vm.rates.peakCPS))")
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(Color.secondary)
@@ -393,14 +410,18 @@ struct MenuBarPopoverView: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.08 : 0.045))
+                .fill(PopoverPalette.cardFill(scheme))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.8)
         )
     }
 
     // MARK: - Active-App Bar
 
     private var activeAppBar: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 8) {
             if !vm.activeAppBundleID.isEmpty {
                 Button {
                     onClosePopover()
@@ -414,12 +435,14 @@ struct MenuBarPopoverView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
                         Text(vm.activeAppName)
                             .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(Color.primary)
+                            .foregroundStyle(hoveredAppRow ? LinearUI.accent : Color.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { hoveredAppRow = $0 }
                 .help("Open Calibration & Per-App Settings")
             } else {
                 HStack(spacing: 5) {
@@ -436,228 +459,267 @@ struct MenuBarPopoverView: View {
 
             if !vm.activeAppBundleID.isEmpty {
                 if vm.activeAppDefaultExcluded {
-                    Text("Excluded IDE")
+                    Text("IDE Excluded")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Color.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
                         .background(
                             Capsule()
-                                .fill(Color.primary.opacity(scheme == .dark ? 0.10 : 0.06))
+                                .fill(PopoverPalette.trackFill(scheme))
                         )
                 } else {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 7) {
                         PopoverMiniSwitch(isOn: Binding(
                             get: { !vm.activeAppUserDisabled },
                             set: { _ in vm.onToggleAppDisabled(vm.activeAppBundleID) }
                         ))
                         .help(vm.activeAppUserDisabled ? "Enable WordTail in \(vm.activeAppName)" : "Disable WordTail in \(vm.activeAppName)")
 
-                        HStack(spacing: 2) {
-                            tinyStepButton(symbol: "minus", help: "Nudge baseline down (-0.05)") {
+                        HStack(spacing: 0) {
+                            PopoverStepperIconButton(symbol: "minus", help: "Nudge baseline down (-0.05)") {
                                 vm.onAdjustAppBaseline(vm.activeAppBundleID, -0.05)
                             }
+                            Rectangle()
+                                .fill(PopoverPalette.divider(scheme))
+                                .frame(width: 1, height: 11)
                             Text(String(format: "%+.2f", vm.activeAppVerticalAdjustment))
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                                 .monospacedDigit()
                                 .foregroundStyle(Color.secondary)
-                                .frame(width: 34, alignment: .center)
-                            tinyStepButton(symbol: "plus", help: "Nudge baseline up (+0.05)") {
+                                .frame(width: 36, alignment: .center)
+                            Rectangle()
+                                .fill(PopoverPalette.divider(scheme))
+                                .frame(width: 1, height: 11)
+                            PopoverStepperIconButton(symbol: "plus", help: "Nudge baseline up (+0.05)") {
                                 vm.onAdjustAppBaseline(vm.activeAppBundleID, +0.05)
                             }
                         }
-                        .padding(.horizontal, 3)
-                        .padding(.vertical, 2)
+                        .frame(height: 20)
                         .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(Color.primary.opacity(scheme == .dark ? 0.08 : 0.05))
+                            RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                                .fill(PopoverPalette.trackFill(scheme))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                                .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.75)
                         )
                     }
                 }
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5.5)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.07 : 0.04))
+                .fill(PopoverPalette.cardFill(scheme))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.primary.opacity(scheme == .dark ? 0.10 : 0.06), lineWidth: 0.8)
+                .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.8)
         )
     }
 
-    private func tinyStepButton(symbol: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Color.primary)
-                .frame(width: 15, height: 15)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
-    // MARK: - Today Stats
+    // MARK: - Today Stats (2-Tier Bento Grid)
 
     private var todayStatsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(Color.secondary)
-                        .frame(width: 20, height: 18)
-                    Text("Key Presses")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.primary)
-                }
-                Spacer()
-                Text(formattedInteger(vm.today.totalKeyPresses))
-                    .font(.system(size: 14, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(blueAccent)
-            }
+        let sideSum = vm.today.sideBackClicks + vm.today.sideForwardClicks
+        let clicksSubtitle: String = sideSum > 0
+            ? "L \(formattedInteger(vm.today.leftClicks)) · R \(formattedInteger(vm.today.rightClicks)) · Side \(formattedInteger(sideSum))"
+            : "L \(formattedInteger(vm.today.leftClicks)) · R \(formattedInteger(vm.today.rightClicks))"
+        let clicksTooltip = "Left: \(formattedInteger(vm.today.leftClicks)) · Right: \(formattedInteger(vm.today.rightClicks)) · Side Back: \(formattedInteger(vm.today.sideBackClicks)) · Side Forward: \(formattedInteger(vm.today.sideForwardClicks))"
+        let keysSubtitle = vm.rates.currentKPS > 0
+            ? "Live \(vm.rates.currentKPS) KPS · Peak \(vm.rates.peakKPS)"
+            : "Peak \(vm.rates.peakKPS) KPS · \(vm.rates.peakCPS) CPS"
 
-            HStack(spacing: 14) {
-                clickStatPair(
-                    highlight: .left,
-                    label: "Left Clicks",
-                    value: vm.today.leftClicks
+        return VStack(spacing: 7) {
+            HStack(spacing: 7) {
+                bentoHeroCard(
+                    icon: "keyboard",
+                    accent: LinearUI.accent,
+                    label: "KEYSTROKES",
+                    value: formattedInteger(vm.today.totalKeyPresses),
+                    subtitle: keysSubtitle
                 )
-                clickStatPair(
-                    highlight: .right,
-                    label: "Right Clicks",
-                    value: vm.today.rightClicks
+                bentoHeroCard(
+                    icon: "computermouse",
+                    accent: PopoverPalette.emerald,
+                    label: "CLICKS",
+                    value: formattedInteger(vm.today.totalClicks),
+                    subtitle: clicksSubtitle
                 )
+                .help(clicksTooltip)
             }
 
-            if vm.today.sideBackClicks > 0 || vm.today.sideForwardClicks > 0 {
-                HStack(spacing: 14) {
-                    clickStatPair(
-                        highlight: .sideBack,
-                        label: "Side Back Clicks",
-                        value: vm.today.sideBackClicks
-                    )
-                    clickStatPair(
-                        highlight: .sideForward,
-                        label: "Side Forward Clicks",
-                        value: vm.today.sideForwardClicks
-                    )
-                }
-            }
-
-            HStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    distanceBadge(symbol: "arrow.left.and.right")
-                    Text("Mouse Distance")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.primary)
-                }
-                Spacer()
-                Text(KeyStatsAggregateSnapshot.formatDistance(vm.today.mouseDistanceMeters))
-                    .font(.system(size: 14, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(blueAccent)
-            }
-
-            HStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    distanceBadge(symbol: "arrow.up.and.down")
-                    Text("Scroll Distance")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.primary)
-                }
-                Spacer()
-                Text(KeyStatsAggregateSnapshot.formatScrollPx(vm.today.scrollDistancePx))
-                    .font(.system(size: 14, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(blueAccent)
+            HStack(spacing: 7) {
+                compactDistancePill(
+                    icon: "arrow.left.and.right",
+                    accent: LinearUI.accent,
+                    label: "Mouse",
+                    value: KeyStatsAggregateSnapshot.formatDistance(vm.today.mouseDistanceMeters)
+                )
+                compactDistancePill(
+                    icon: "arrow.up.and.down",
+                    accent: PopoverPalette.amber,
+                    label: "Scroll",
+                    value: KeyStatsAggregateSnapshot.formatScrollPx(vm.today.scrollDistancePx)
+                )
             }
         }
     }
 
-    private func clickStatPair(highlight: MiniMouseHighlight, label: String, value: Int) -> some View {
-        HStack(spacing: 6) {
-            MiniMouseGlyph(highlight: highlight, accent: blueAccent)
-            Text(label)
-                .font(.system(size: 12.5))
+    private func bentoHeroCard(
+        icon: String,
+        accent: Color,
+        label: String,
+        value: String,
+        subtitle: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                iconBadge(symbol: icon, accent: accent)
+                Text(label)
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.55)
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+            }
+
+            Text(value)
+                .font(.system(size: 19, weight: .semibold, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(Color.primary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.82)
-            Spacer(minLength: 4)
-            Text(formattedInteger(value))
-                .font(.system(size: 13.5, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(blueAccent)
+                .minimumScaleFactor(0.8)
+
+            Text(subtitle)
+                .font(.system(size: 10))
+                .foregroundStyle(Color.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(PopoverPalette.cardFill(scheme))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.8)
+        )
     }
 
-    private func distanceBadge(symbol: String) -> some View {
+    private func compactDistancePill(
+        icon: String,
+        accent: Color,
+        label: String,
+        value: String
+    ) -> some View {
+        HStack(spacing: 6) {
+            iconBadge(symbol: icon, accent: accent)
+            Text(label)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Color.secondary)
+            Spacer(minLength: 4)
+            Text(value)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.primary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(PopoverPalette.cardFill(scheme))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.8)
+        )
+    }
+
+    private func iconBadge(symbol: String, accent: Color) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.24 : 0.45))
-                .frame(width: 20, height: 18)
+                .fill(accent.opacity(scheme == .dark ? 0.22 : 0.13))
+                .frame(width: 18, height: 18)
             Image(systemName: symbol)
-                .font(.system(size: 9.5, weight: .bold))
-                .foregroundStyle(.white)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(accent)
         }
     }
 
     // MARK: - Key Breakdown
 
     private var keyBreakdownSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Key Breakdown")
-                    .font(.system(size: 13, weight: .semibold))
+        let items = Array(vm.today.topKeys.prefix(15))
+        let maxCount = max(1, items.first?.count ?? 1)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center) {
+                Text("Top Keys")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.primary)
                 Spacer()
-                popoverActionPill(title: "Heatmap") {
+                PopoverGhostPill(title: "Heatmap ↗") {
                     onClosePopover()
                     vm.onOpenSettingsSection(.keyStats, nil)
                 }
             }
 
-            let items = Array(vm.today.topKeys.prefix(15))
-            if items.isEmpty {
-                Text("Start typing to populate today's top 15 keys.")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Color.secondary)
-                    .padding(.vertical, 8)
-            } else {
-                HStack(alignment: .top, spacing: 0) {
-                    keyBreakdownColumn(items: items, columnIndex: 0)
-                    verticalColumnRule
-                    keyBreakdownColumn(items: items, columnIndex: 1)
-                    verticalColumnRule
-                    keyBreakdownColumn(items: items, columnIndex: 2)
+            Group {
+                if items.isEmpty {
+                    Text("Start typing to populate today's top 15 keys.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 10)
+                } else {
+                    HStack(alignment: .top, spacing: 0) {
+                        keyBreakdownColumn(items: items, maxCount: maxCount, columnIndex: 0)
+                        verticalColumnRule
+                        keyBreakdownColumn(items: items, maxCount: maxCount, columnIndex: 1)
+                        verticalColumnRule
+                        keyBreakdownColumn(items: items, maxCount: maxCount, columnIndex: 2)
+                    }
+                    .padding(8)
                 }
             }
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(PopoverPalette.cardFill(scheme))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.8)
+            )
         }
     }
 
-    private func keyBreakdownColumn(items: [RankedCountItem], columnIndex: Int) -> some View {
+    private func keyBreakdownColumn(items: [RankedCountItem], maxCount: Int, columnIndex: Int) -> some View {
         let start = columnIndex * 5
         let end = min(items.count, start + 5)
         let slice: [RankedCountItem] = start < end ? Array(items[start..<end]) : []
         let leadingPad: CGFloat = columnIndex == 0 ? 0 : 8
         let trailingPad: CGFloat = columnIndex == 2 ? 0 : 8
 
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 3.5) {
             ForEach(Array(slice.enumerated()), id: \.offset) { _, item in
+                let isHot = Double(item.count) / Double(maxCount) >= 0.45
                 HStack(spacing: 4) {
-                    keycapLabel(compactKeyDisplay(item.label))
+                    keycapLabel(compactKeyDisplay(item.label), isHot: isHot)
                     Spacer(minLength: 2)
                     Text(formattedInteger(item.count))
-                        .font(.system(size: 11.5, weight: .regular))
+                        .font(.system(size: 11, weight: isHot ? .medium : .regular))
                         .monospacedDigit()
                         .foregroundStyle(Color.secondary)
                 }
-                .frame(height: 18)
+                .frame(height: 17)
             }
         }
         .padding(.leading, leadingPad)
@@ -667,20 +729,32 @@ struct MenuBarPopoverView: View {
 
     private var verticalColumnRule: some View {
         Rectangle()
-            .fill(Color.primary.opacity(scheme == .dark ? 0.12 : 0.08))
-            .frame(width: 1, height: 104)
+            .fill(PopoverPalette.divider(scheme))
+            .frame(width: 1, height: 98)
     }
 
-    private func keycapLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11, weight: .medium, design: .rounded))
-            .foregroundStyle(Color.primary)
+    private func keycapLabel(_ text: String, isHot: Bool) -> some View {
+        let fill: Color = isHot
+            ? LinearUI.accent.opacity(scheme == .dark ? 0.28 : 0.14)
+            : Color.primary.opacity(scheme == .dark ? 0.11 : 0.055)
+        let stroke: Color = isHot
+            ? LinearUI.accent.opacity(scheme == .dark ? 0.45 : 0.30)
+            : Color.primary.opacity(scheme == .dark ? 0.15 : 0.09)
+        let fg: Color = isHot ? LinearUI.accent : Color.primary
+
+        return Text(text)
+            .font(.system(size: 10.5, weight: isHot ? .semibold : .medium, design: .rounded))
+            .foregroundStyle(fg)
             .lineLimit(1)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 5.5)
+            .padding(.vertical, 1.5)
             .background(
                 RoundedRectangle(cornerRadius: 4.5, style: .continuous)
-                    .fill(Color.primary.opacity(scheme == .dark ? 0.13 : 0.075))
+                    .fill(fill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                    .stroke(stroke, lineWidth: 0.75)
             )
     }
 
@@ -689,68 +763,53 @@ struct MenuBarPopoverView: View {
     private var historySection: some View {
         let totalText = formattedHistoryTotal(snapshot: vm.historySynced, metric: vm.historyMetric)
 
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text("History")
-                    .font(.system(size: 13, weight: .semibold))
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Activity")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.primary)
-                Spacer()
-                popoverActionPill(title: "Hourly Trends") {
+
+                Spacer(minLength: 4)
+
+                PopoverCompactSegment(
+                    options: [("7D", StatsTimeRange.days7), ("30D", StatsTimeRange.days30)],
+                    selection: $vm.historyRange
+                )
+
+                PopoverStyleIconToggle(selection: $vm.historyStyle)
+
+                PopoverGhostPill(title: "Hourly ↗") {
                     onClosePopover()
                     vm.onOpenSettingsSection(.keyStats, .today)
                 }
             }
 
-            PopoverSegmentedBar(
-                options: [("Last 7 Days", StatsTimeRange.days7), ("Last 30 Days", StatsTimeRange.days30)],
-                selection: $vm.historyRange
-            )
-
-            PopoverSegmentedBar(
-                options: [
-                    ("Keys", PopoverHistoryMetric.keys),
-                    ("Clicks", PopoverHistoryMetric.clicks),
-                    ("Movement", PopoverHistoryMetric.movement),
-                    ("Scroll", PopoverHistoryMetric.scroll)
-                ],
-                selection: $vm.historyMetric
-            )
-
-            PopoverSegmentedBar(
-                options: [("Line", PopoverHistoryStyle.line), ("Bar", PopoverHistoryStyle.bar)],
-                selection: $vm.historyStyle
-            )
-
             PopoverHistoryChartCard(
                 synced: vm.historySynced,
                 thisMac: vm.historyThisMac,
-                metric: vm.historyMetric,
+                metric: $vm.historyMetric,
                 style: vm.historyStyle,
-                blueColor: blueAccent,
-                orangeColor: orangeAccent,
+                totalText: totalText,
+                accentColor: LinearUI.accent,
+                amberColor: PopoverPalette.amber,
                 hoveredIndex: $hoveredTrendIndex
             )
-
-            Text("Total: \(totalText)")
-                .font(.system(size: 11.5, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(Color.secondary)
         }
     }
 
     // MARK: - Footer Toolbar
 
     private var footerToolbar: some View {
-        HStack(spacing: 8) {
-            footerIconButton(symbol: "gearshape", help: "Preferences") {
+        HStack(spacing: 6) {
+            PopoverFooterIconButton(symbol: "gearshape", help: "Preferences") {
                 onClosePopover()
                 vm.onOpenSettingsSection(.preferences, nil)
             }
-            footerIconButton(symbol: "square.grid.2x2", help: "App Statistics") {
+            PopoverFooterIconButton(symbol: "square.grid.2x2", help: "App Statistics") {
                 onClosePopover()
                 vm.onOpenSettingsSection(.keyStats, nil)
             }
-            footerIconButton(symbol: "chart.bar.fill", help: "All-Time Stats") {
+            PopoverFooterIconButton(symbol: "chart.bar.fill", help: "All-Time Stats") {
                 onClosePopover()
                 vm.onOpenSettingsSection(.keyStats, .allTime)
             }
@@ -758,72 +817,26 @@ struct MenuBarPopoverView: View {
             Spacer(minLength: 4)
 
             if vm.isInstallingUpdate {
-                popoverActionPill(title: "Updating...", accentFill: true, disabled: true) {}
+                PopoverFooterActionButton(title: "Updating...", accentFill: true, disabled: true) {}
             } else if let release = vm.availableRelease {
-                popoverActionPill(title: "Update v\(release.version)", accentFill: true) {
+                PopoverFooterActionButton(title: "Update v\(release.version)", accentFill: true) {
                     onClosePopover()
                     vm.onInstallRelease(release)
                 }
             } else if vm.isCheckingUpdates {
-                popoverActionPill(title: "Checking...", disabled: true) {}
+                PopoverFooterActionButton(title: "Checking...", disabled: true) {}
             } else {
-                popoverActionPill(title: "Update Now") {
+                PopoverFooterActionButton(title: "Update Now") {
                     onClosePopover()
                     vm.onCheckForUpdates()
                 }
             }
 
-            popoverActionPill(title: "Quit") {
+            PopoverFooterActionButton(title: "Quit") {
                 vm.onQuit()
             }
         }
-    }
-
-    private func footerIconButton(symbol: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 13.5, weight: .medium))
-                .foregroundStyle(Color.primary)
-                .frame(width: 26, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-
-    private func popoverActionPill(
-        title: String,
-        accentFill: Bool = false,
-        disabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(accentFill ? Color.white : Color.primary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 6.5, style: .continuous)
-                        .fill(accentFill ? blueAccent : Color.primary.opacity(scheme == .dark ? 0.12 : 0.065))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6.5, style: .continuous)
-                        .stroke(
-                            accentFill ? blueAccent.opacity(0.6) : Color.primary.opacity(scheme == .dark ? 0.14 : 0.08),
-                            lineWidth: 0.8
-                        )
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.6 : 1.0)
-    }
-
-    private var thinDivider: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(scheme == .dark ? 0.12 : 0.08))
-            .frame(height: 1)
+        .padding(.top, 1)
     }
 
     // MARK: - Formatting Helpers
@@ -877,107 +890,160 @@ struct MenuBarPopoverView: View {
     }()
 }
 
-// MARK: - Custom Mouse Icon
+// MARK: - Interactive Popover Controls
 
-private enum MiniMouseHighlight {
-    case left, right, sideBack, sideForward
-}
-
-private struct MiniMouseGlyph: View {
+private struct PopoverSpeedPillButton: View {
     @Environment(\.colorScheme) private var scheme
-    let highlight: MiniMouseHighlight
-    let accent: Color
+    let text: String
+    let liveActive: Bool
+    let isExpanded: Bool
+    let action: () -> Void
+    @State private var hovered = false
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 4.5, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.16 : 0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4.5, style: .continuous)
-                        .stroke(Color.primary.opacity(scheme == .dark ? 0.28 : 0.22), lineWidth: 0.8)
-                )
-
-            switch highlight {
-            case .left:
-                Path { p in
-                    p.move(to: CGPoint(x: 1, y: 7))
-                    p.addLine(to: CGPoint(x: 1, y: 3))
-                    p.addQuadCurve(to: CGPoint(x: 6, y: 1), control: CGPoint(x: 1, y: 1))
-                    p.addLine(to: CGPoint(x: 6, y: 7))
-                    p.closeSubpath()
-                }
-                .fill(accent)
-            case .right:
-                Path { p in
-                    p.move(to: CGPoint(x: 6, y: 7))
-                    p.addLine(to: CGPoint(x: 6, y: 1))
-                    p.addQuadCurve(to: CGPoint(x: 11, y: 3), control: CGPoint(x: 11, y: 1))
-                    p.addLine(to: CGPoint(x: 11, y: 7))
-                    p.closeSubpath()
-                }
-                .fill(accent)
-            case .sideBack:
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(accent)
-                    .frame(width: 2.4, height: 5)
-                    .offset(x: -4.2, y: 1.5)
-            case .sideForward:
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(accent)
-                    .frame(width: 2.4, height: 5)
-                    .offset(x: -4.2, y: -2.2)
+        Button(action: action) {
+            HStack(spacing: 3.5) {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(liveActive ? LinearUI.accent : PopoverPalette.amber)
+                Text(text)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(liveActive ? LinearUI.accent : Color.secondary)
             }
+            .padding(.horizontal, 7.5)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(isExpanded
+                          ? LinearUI.accent.opacity(scheme == .dark ? 0.20 : 0.12)
+                          : (hovered ? PopoverPalette.elevatedPillFill(scheme) : PopoverPalette.cardFill(scheme)))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(isExpanded ? LinearUI.accent.opacity(0.45) : PopoverPalette.cardBorder(scheme), lineWidth: 0.75)
+            )
         }
-        .frame(width: 12, height: 15)
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .help("Live KPS / CPS (click for details)")
     }
 }
 
-// MARK: - Segmented Pill Bar
-
-private struct PopoverSegmentedBar<Option: Hashable>: View {
+private struct PopoverStepperIconButton: View {
     @Environment(\.colorScheme) private var scheme
-    let options: [(label: String, value: Option)]
-    @Binding var selection: Option
-
-    private let activeBlue = Color(red: 0.14, green: 0.49, blue: 0.92)
+    let symbol: String
+    let help: String
+    let action: () -> Void
+    @State private var hovered = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(options.enumerated()), id: \.offset) { index, item in
-                let isSelected = item.value == selection
-                let prevSelected = index > 0 && options[index - 1].value == selection
-                let sepOpacity: Double = (isSelected || prevSelected) ? 0.0 : (scheme == .dark ? 0.18 : 0.12)
-
-                if index > 0 {
-                    Rectangle()
-                        .fill(Color.primary.opacity(sepOpacity))
-                        .frame(width: 1, height: 12)
-                }
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.14)) {
-                        selection = item.value
-                    }
-                } label: {
-                    Text(item.label)
-                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 22)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isSelected ? activeBlue : Color.clear)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(hovered ? LinearUI.accent : Color.primary)
+                .frame(width: 19, height: 18)
+                .background(hovered ? Color.primary.opacity(scheme == .dark ? 0.12 : 0.06) : Color.clear)
+                .contentShape(Rectangle())
         }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.11 : 0.065))
-        )
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .help(help)
+    }
+}
+
+private struct PopoverGhostPill: View {
+    @Environment(\.colorScheme) private var scheme
+    let title: String
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(hovered ? LinearUI.accent : Color.secondary)
+                .padding(.horizontal, 7.5)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(hovered ? PopoverPalette.elevatedPillFill(scheme) : PopoverPalette.cardFill(scheme))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.75)
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+    }
+}
+
+private struct PopoverFooterIconButton: View {
+    @Environment(\.colorScheme) private var scheme
+    let symbol: String
+    let help: String
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(hovered ? Color.primary : Color.secondary)
+                .frame(width: 28, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                        .fill(hovered ? PopoverPalette.elevatedPillFill(scheme) : PopoverPalette.cardFill(scheme))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                        .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.75)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .help(help)
+    }
+}
+
+private struct PopoverFooterActionButton: View {
+    @Environment(\.colorScheme) private var scheme
+    let title: String
+    var accentFill: Bool = false
+    var disabled: Bool = false
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        let fg: Color = accentFill ? Color.white : Color.primary
+        let bg: Color = accentFill
+            ? LinearUI.accent
+            : (hovered ? PopoverPalette.elevatedPillFill(scheme) : PopoverPalette.cardFill(scheme))
+        let border: Color = accentFill
+            ? LinearUI.accent.opacity(0.8)
+            : PopoverPalette.cardBorder(scheme)
+
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(fg)
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                        .fill(bg)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                        .stroke(border, lineWidth: 0.75)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.6 : 1.0)
+        .onHover { hovered = $0 }
     }
 }
 
@@ -1008,21 +1074,109 @@ private struct PopoverMiniSwitch: View {
     }
 }
 
+// MARK: - Elevated Segmented Controls
+
+private struct PopoverCompactSegment<Option: Hashable>: View {
+    @Environment(\.colorScheme) private var scheme
+    let options: [(label: String, value: Option)]
+    @Binding var selection: Option
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, item in
+                let active = item.value == selection
+                Button {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        selection = item.value
+                    }
+                } label: {
+                    Text(item.label)
+                        .font(.system(size: 10.5, weight: active ? .semibold : .regular))
+                        .foregroundStyle(active ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 7)
+                        .frame(height: 18)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(active ? PopoverPalette.elevatedPillFill(scheme) : Color.clear)
+                                .shadow(color: active ? .black.opacity(scheme == .dark ? 0.22 : 0.08) : .clear, radius: 1, x: 0, y: 0.5)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                .fill(PopoverPalette.trackFill(scheme))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.6)
+        )
+    }
+}
+
+private struct PopoverStyleIconToggle: View {
+    @Environment(\.colorScheme) private var scheme
+    @Binding var selection: PopoverHistoryStyle
+
+    var body: some View {
+        HStack(spacing: 1) {
+            iconButton(style: .line, symbol: "chart.xyaxis.line", help: "Smooth Line")
+            iconButton(style: .bar, symbol: "chart.bar.fill", help: "Bar Chart")
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                .fill(PopoverPalette.trackFill(scheme))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.6)
+        )
+    }
+
+    private func iconButton(style: PopoverHistoryStyle, symbol: String, help: String) -> some View {
+        let active = (selection == style)
+        return Button {
+            withAnimation(.easeInOut(duration: 0.14)) {
+                selection = style
+            }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? LinearUI.accent : Color.secondary)
+                .frame(width: 21, height: 18)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(active ? PopoverPalette.elevatedPillFill(scheme) : Color.clear)
+                        .shadow(color: active ? .black.opacity(scheme == .dark ? 0.22 : 0.08) : .clear, radius: 1, x: 0, y: 0.5)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
 // MARK: - Dual-Series Monotonic History Chart
 
 private struct PopoverHistoryChartCard: View {
     @Environment(\.colorScheme) private var scheme
     let synced: KeyStatsAggregateSnapshot
     let thisMac: KeyStatsAggregateSnapshot
-    let metric: PopoverHistoryMetric
+    @Binding var metric: PopoverHistoryMetric
     let style: PopoverHistoryStyle
-    let blueColor: Color
-    let orangeColor: Color
+    let totalText: String
+    let accentColor: Color
+    let amberColor: Color
     @Binding var hoveredIndex: Int?
 
-    private let yAxisWidth: CGFloat = 38
-    private let plotWidth: CGFloat = 270
-    private let plotHeight: CGFloat = 86
+    // 368 outer - 28 outer pad - 20 card pad - 36 yAxis - 6 gap = 278
+    private let yAxisWidth: CGFloat = 36
+    private let plotWidth: CGFloat = 278
+    private let plotHeight: CGFloat = 92
 
     private var showThisMac: Bool {
         synced.deviceCount > 1
@@ -1043,7 +1197,7 @@ private struct PopoverHistoryChartCard: View {
         )
         let yMax = niceAxisMax(rawMax)
 
-        return VStack(alignment: .leading, spacing: 5) {
+        return VStack(alignment: .leading, spacing: 6) {
             chartTopBar(
                 points: syncedPoints,
                 syncedValues: syncedValues,
@@ -1063,70 +1217,68 @@ private struct PopoverHistoryChartCard: View {
                 .foregroundStyle(Color.secondary)
                 .frame(width: yAxisWidth, height: plotHeight, alignment: .trailing)
 
-                ZStack {
-                    Canvas { context, size in
-                        drawGridAndAxes(in: &context, size: size)
-                        guard !syncedPoints.isEmpty else { return }
+                Canvas { context, size in
+                    drawGridAndBaseline(in: &context, size: size)
+                    guard !syncedPoints.isEmpty else { return }
 
-                        switch style {
-                        case .line:
-                            if showThisMac {
-                                drawSmoothSeries(
-                                    in: &context,
-                                    size: size,
-                                    values: localValues,
-                                    yMax: yMax,
-                                    color: orangeColor,
-                                    dashed: true,
-                                    fillGradient: false,
-                                    hoveredIdx: hoveredIndex
-                                )
-                            }
+                    switch style {
+                    case .line:
+                        if showThisMac {
                             drawSmoothSeries(
                                 in: &context,
                                 size: size,
-                                values: syncedValues,
+                                values: localValues,
                                 yMax: yMax,
-                                color: blueColor,
-                                dashed: false,
-                                fillGradient: true,
-                                hoveredIdx: hoveredIndex
-                            )
-                        case .bar:
-                            drawBarSeries(
-                                in: &context,
-                                size: size,
-                                syncedValues: syncedValues,
-                                localValues: localValues,
-                                yMax: yMax,
-                                showLocal: showThisMac,
+                                color: amberColor,
+                                dashed: true,
+                                fillGradient: false,
                                 hoveredIdx: hoveredIndex
                             )
                         }
-                    }
-                    .frame(width: plotWidth, height: plotHeight)
-                    .onContinuousHover { phase in
-                        switch phase {
-                        case .active(let location):
-                            guard !syncedPoints.isEmpty else {
-                                hoveredIndex = nil
-                                return
-                            }
-                            let count = syncedPoints.count
-                            if count == 1 {
-                                hoveredIndex = 0
-                            } else {
-                                let usableW = max(1.0, plotWidth - 12.0)
-                                let norm = max(0.0, min(1.0, (location.x - 6.0) / usableW))
-                                let idx = Int((norm * Double(count - 1)).rounded())
-                                hoveredIndex = max(0, min(count - 1, idx))
-                            }
-                        case .ended:
-                            hoveredIndex = nil
-                        }
+                        drawSmoothSeries(
+                            in: &context,
+                            size: size,
+                            values: syncedValues,
+                            yMax: yMax,
+                            color: accentColor,
+                            dashed: false,
+                            fillGradient: true,
+                            hoveredIdx: hoveredIndex
+                        )
+                    case .bar:
+                        drawBarSeries(
+                            in: &context,
+                            size: size,
+                            syncedValues: syncedValues,
+                            localValues: localValues,
+                            yMax: yMax,
+                            showLocal: showThisMac,
+                            hoveredIdx: hoveredIndex
+                        )
                     }
                 }
                 .frame(width: plotWidth, height: plotHeight)
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        guard !syncedPoints.isEmpty else {
+                            hoveredIndex = nil
+                            return
+                        }
+                        let count = syncedPoints.count
+                        if count == 1 {
+                            hoveredIndex = 0
+                        } else {
+                            let usableW = max(1.0, plotWidth - 12.0)
+                            let norm = max(0.0, min(1.0, (location.x - 6.0) / usableW))
+                            let idx = Int((norm * Double(count - 1)).rounded())
+                            hoveredIndex = max(0, min(count - 1, idx))
+                        }
+                    case .ended:
+                        hoveredIndex = nil
+                    }
+                }
             }
 
             let ticks = xTickIndices(count: syncedPoints.count)
@@ -1143,16 +1295,30 @@ private struct PopoverHistoryChartCard: View {
             }
             .padding(.leading, yAxisWidth + 6)
             .padding(.trailing, 2)
+
+            Rectangle()
+                .fill(PopoverPalette.divider(scheme))
+                .frame(height: 1)
+
+            HStack {
+                Text("Total: \(totalText)")
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.primary)
+                Spacer()
+                Text(showThisMac ? "\(synced.deviceCount) Macs synced" : "This Mac")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.secondary)
+            }
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
+        .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.08 : 0.045))
+                .fill(PopoverPalette.cardFill(scheme))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.primary.opacity(scheme == .dark ? 0.11 : 0.065), lineWidth: 0.8)
+                .stroke(PopoverPalette.cardBorder(scheme), lineWidth: 0.8)
         )
     }
 
@@ -1161,47 +1327,50 @@ private struct PopoverHistoryChartCard: View {
         syncedValues: [Double],
         localValues: [Double]
     ) -> some View {
-        HStack(spacing: 8) {
-            if let idx = hoveredIndex, idx >= 0, idx < points.count {
-                let dLabel = shortDateLabel(points[idx].dateKey)
-                let syncedStr = formatMetricTooltip(syncedValues[idx])
-                HStack(spacing: 5) {
-                    Text(dLabel)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Color.secondary)
-                    Text(syncedStr)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(blueColor)
-                    if showThisMac {
-                        Text("· Mac \(formatMetricTooltip(localValues[idx]))")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(orangeColor)
-                    }
-                }
-            }
+        HStack(spacing: 6) {
+            PopoverCompactSegment(
+                options: PopoverHistoryMetric.allCases.map { ($0.rawValue, $0) },
+                selection: $metric
+            )
 
             Spacer(minLength: 4)
 
-            HStack(spacing: 10) {
+            if let idx = hoveredIndex, idx >= 0, idx < points.count {
+                let dLabel = shortDateLabel(points[idx].dateKey)
                 HStack(spacing: 4) {
-                    Rectangle()
-                        .fill(blueColor)
-                        .frame(width: 11, height: 2)
-                    Text("Synced total")
-                        .font(.system(size: 10))
+                    Text(dLabel)
                         .foregroundStyle(Color.secondary)
+                    Text(formatMetricTooltip(syncedValues[idx]))
+                        .foregroundStyle(accentColor)
+                    if showThisMac {
+                        Text("/ \(formatMetricTooltip(localValues[idx]))")
+                            .foregroundStyle(amberColor)
+                    }
                 }
-
-                if showThisMac {
-                    HStack(spacing: 4) {
-                        HStack(spacing: 1.5) {
-                            Rectangle().fill(orangeColor).frame(width: 3, height: 2)
-                            Rectangle().fill(orangeColor).frame(width: 3, height: 2)
-                            Rectangle().fill(orangeColor).frame(width: 3, height: 2)
-                        }
-                        Text("This Mac")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+            } else {
+                HStack(spacing: 8) {
+                    HStack(spacing: 3.5) {
+                        Capsule()
+                            .fill(accentColor)
+                            .frame(width: 9, height: 2)
+                        Text("All")
                             .font(.system(size: 10))
                             .foregroundStyle(Color.secondary)
+                    }
+
+                    if showThisMac {
+                        HStack(spacing: 3.5) {
+                            HStack(spacing: 1.5) {
+                                Rectangle().fill(amberColor).frame(width: 2.5, height: 2)
+                                Rectangle().fill(amberColor).frame(width: 2.5, height: 2)
+                                Rectangle().fill(amberColor).frame(width: 2.5, height: 2)
+                            }
+                            Text("Mac")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.secondary)
+                        }
                     }
                 }
             }
@@ -1210,26 +1379,24 @@ private struct PopoverHistoryChartCard: View {
 
     // MARK: - Drawing
 
-    private func drawGridAndAxes(in context: inout GraphicsContext, size: CGSize) {
+    private func drawGridAndBaseline(in context: inout GraphicsContext, size: CGSize) {
         let topY: CGFloat = 6
         let bottomY: CGFloat = size.height - 4
         let midY: CGFloat = (topY + bottomY) * 0.5
-        let gridColor = Color.primary.opacity(scheme == .dark ? 0.12 : 0.08)
-        let axisColor = Color.primary.opacity(scheme == .dark ? 0.28 : 0.24)
+        let gridColor = Color.primary.opacity(scheme == .dark ? 0.11 : 0.08)
+        let baselineColor = Color.primary.opacity(scheme == .dark ? 0.20 : 0.16)
 
         for y in [topY, midY] {
             var line = Path()
             line.move(to: CGPoint(x: 0, y: y))
             line.addLine(to: CGPoint(x: size.width, y: y))
-            context.stroke(line, with: .color(gridColor), lineWidth: 0.75)
+            context.stroke(line, with: .color(gridColor), style: StrokeStyle(lineWidth: 0.75, dash: [3, 3]))
         }
 
-        // Left Y axis & Bottom X axis
-        var axes = Path()
-        axes.move(to: CGPoint(x: 0.5, y: 0))
-        axes.addLine(to: CGPoint(x: 0.5, y: bottomY))
-        axes.addLine(to: CGPoint(x: size.width, y: bottomY))
-        context.stroke(axes, with: .color(axisColor), lineWidth: 1.0)
+        var baseline = Path()
+        baseline.move(to: CGPoint(x: 0, y: bottomY))
+        baseline.addLine(to: CGPoint(x: size.width, y: bottomY))
+        context.stroke(baseline, with: .color(baselineColor), lineWidth: 0.9)
     }
 
     private func drawSmoothSeries(
@@ -1249,7 +1416,7 @@ private struct PopoverHistoryChartCard: View {
             var crosshair = Path()
             crosshair.move(to: CGPoint(x: pts[hi].x, y: 4))
             crosshair.addLine(to: CGPoint(x: pts[hi].x, y: size.height - 4))
-            context.stroke(crosshair, with: .color(color.opacity(0.32)), lineWidth: 1)
+            context.stroke(crosshair, with: .color(color.opacity(0.32)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         }
 
         if pts.count > 1 {
@@ -1263,7 +1430,7 @@ private struct PopoverHistoryChartCard: View {
                 context.fill(
                     area,
                     with: .linearGradient(
-                        Gradient(colors: [color.opacity(0.14), color.opacity(0.01)]),
+                        Gradient(colors: [color.opacity(0.20), color.opacity(0.01)]),
                         startPoint: CGPoint(x: 0, y: 6),
                         endPoint: CGPoint(x: 0, y: size.height - 4)
                     )
@@ -1271,7 +1438,7 @@ private struct PopoverHistoryChartCard: View {
             }
 
             let strokeStyle = StrokeStyle(
-                lineWidth: dashed ? 1.65 : 1.9,
+                lineWidth: dashed ? 1.6 : 1.9,
                 lineCap: .round,
                 lineJoin: .round,
                 dash: dashed ? [4, 2.5] : []
@@ -1279,13 +1446,18 @@ private struct PopoverHistoryChartCard: View {
             context.stroke(curve, with: .color(color), style: strokeStyle)
         }
 
+        let haloColor = scheme == .dark
+            ? Color(red: 0.14, green: 0.15, blue: 0.18)
+            : Color.white
         let showAllDots = pts.count <= 14
         for (idx, p) in pts.enumerated() {
             let isHovered = (hoveredIdx == idx)
             guard showAllDots || isHovered else { continue }
-            let r: CGFloat = isHovered ? 3.4 : (dashed ? 1.9 : 2.1)
+            let r: CGFloat = isHovered ? 3.6 : (dashed ? 2.1 : 2.5)
             let dotRect = CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)
-            context.fill(Path(ellipseIn: dotRect), with: .color(color))
+            let ellipse = Path(ellipseIn: dotRect)
+            context.stroke(ellipse, with: .color(haloColor.opacity(0.95)), lineWidth: 1.5)
+            context.fill(ellipse, with: .color(color))
         }
     }
 
@@ -1314,7 +1486,7 @@ private struct PopoverHistoryChartCard: View {
             let sH = max(sFrac > 0 ? 1.5 : 0, usableH * CGFloat(sFrac))
 
             if showLocal {
-                let barW = max(2.0, min(9.0, slotW * 0.34))
+                let barW = max(2.0, min(9.5, slotW * 0.34))
                 let gap: CGFloat = max(1.0, slotW * 0.06)
 
                 let lFrac = max(0, min(1, localValues[idx] / yMax))
@@ -1333,13 +1505,13 @@ private struct PopoverHistoryChartCard: View {
                     height: lH
                 )
                 let highlightBoost = (hoveredIdx == idx) ? 1.0 : 0.88
-                context.fill(Path(roundedRect: syncedRect, cornerRadius: 1.5), with: .color(blueColor.opacity(highlightBoost)))
-                context.fill(Path(roundedRect: localRect, cornerRadius: 1.5), with: .color(orangeColor.opacity(highlightBoost)))
+                context.fill(Path(roundedRect: syncedRect, cornerRadius: 2), with: .color(accentColor.opacity(highlightBoost)))
+                context.fill(Path(roundedRect: localRect, cornerRadius: 2), with: .color(amberColor.opacity(highlightBoost)))
             } else {
                 let barW = max(2.5, min(16.0, slotW * 0.56))
                 let rect = CGRect(x: centerX - barW * 0.5, y: bottomY - sH, width: barW, height: sH)
                 let alpha = (hoveredIdx == idx) ? 1.0 : 0.88
-                context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(blueColor.opacity(alpha)))
+                context.fill(Path(roundedRect: rect, cornerRadius: 2.5), with: .color(accentColor.opacity(alpha)))
             }
         }
     }

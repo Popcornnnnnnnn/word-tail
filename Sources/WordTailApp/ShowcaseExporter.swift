@@ -333,16 +333,30 @@ enum ShowcaseExporter {
             historyThisMac: popoverThisMac,
             activeAppName: "Codex (ChatGPT)",
             activeAppBundleID: "com.openai.codex",
-            activeAppIcon: srgbIcon(forBundleID: "com.openai.codex")
+            activeAppIcon: srgbIcon(forBundleID: "com.openai.codex"),
+            brandIcon: srgbIcon(forBundleID: "app.wordtail.macos")
         )
-        let popoverShotSize = NSSize(width: 440, height: 740)
+        let popoverShotSize = NSSize(width: 448, height: 700)
         try renderSwiftUIViewToPNG(
-            PopoverShowcaseBackdrop(size: popoverShotSize) {
+            PopoverShowcaseBackdrop(size: popoverShotSize, isDark: false) {
                 MenuBarPopoverView(vm: popoverVM)
             },
             size: popoverShotSize,
+            colorScheme: .light,
             to: outDir.appendingPathComponent("menubar-popover.png")
         )
+
+        // 6. Dark Mode Menu Bar Popover showcase screenshot (448 x 700)
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        try renderSwiftUIViewToPNG(
+            PopoverShowcaseBackdrop(size: popoverShotSize, isDark: true) {
+                MenuBarPopoverView(vm: popoverVM)
+            },
+            size: popoverShotSize,
+            colorScheme: .dark,
+            to: outDir.appendingPathComponent("menubar-popover-dark.png")
+        )
+        NSApp.appearance = NSAppearance(named: .aqua)
     }
 
     private static func srgbIcon(forBundleID bundleID: String) -> NSImage {
@@ -372,9 +386,10 @@ enum ShowcaseExporter {
     private static func renderSwiftUIViewToPNG<V: View>(
         _ view: V,
         size: NSSize,
+        colorScheme: ColorScheme = .light,
         to url: URL
     ) throws {
-        let renderer = ImageRenderer(content: view.environment(\.colorScheme, .light))
+        let renderer = ImageRenderer(content: view.environment(\.colorScheme, colorScheme))
         renderer.scale = 2.0
         renderer.proposedSize = ProposedViewSize(width: size.width, height: size.height)
         renderer.isOpaque = true
@@ -443,38 +458,47 @@ private struct MacWindowFrameBackdrop<Content: View>: View {
 }
 
 private struct PopoverShowcaseBackdrop<Content: View>: View {
-    var size: NSSize = NSSize(width: 440, height: 740)
+    var size: NSSize = NSSize(width: 448, height: 700)
+    var isDark: Bool = false
     @ViewBuilder let content: Content
 
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [
-                    Color(red: 0.56, green: 0.79, blue: 0.94),
-                    Color(red: 0.72, green: 0.87, blue: 0.96),
-                    Color(red: 0.50, green: 0.73, blue: 0.89)
-                ],
+                colors: isDark
+                    ? [
+                        Color(red: 0.08, green: 0.11, blue: 0.18),
+                        Color(red: 0.12, green: 0.14, blue: 0.24),
+                        Color(red: 0.07, green: 0.09, blue: 0.16)
+                    ]
+                    : [
+                        Color(red: 0.56, green: 0.79, blue: 0.94),
+                        Color(red: 0.72, green: 0.87, blue: 0.96),
+                        Color(red: 0.50, green: 0.73, blue: 0.89)
+                    ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
 
             Circle()
-                .fill(Color.white.opacity(0.35))
+                .fill((isDark ? Color(red: 0.37, green: 0.42, blue: 0.89) : Color.white).opacity(isDark ? 0.24 : 0.35))
                 .frame(width: 280, height: 280)
-                .blur(radius: 42)
+                .blur(radius: 44)
                 .offset(x: -40, y: -120)
 
             content
                 .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.white.opacity(0.78))
+                        .fill(isDark
+                              ? Color(red: 0.11, green: 0.12, blue: 0.15).opacity(0.84)
+                              : Color.white.opacity(0.78))
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.white.opacity(0.65), lineWidth: 1)
+                        .stroke((isDark ? Color.white.opacity(0.16) : Color.white.opacity(0.65)), lineWidth: 1)
                 )
-                .shadow(color: .black.opacity(0.20), radius: 22, x: 0, y: 10)
+                .shadow(color: .black.opacity(isDark ? 0.44 : 0.20), radius: 22, x: 0, y: 10)
         }
         .frame(width: size.width, height: size.height)
     }

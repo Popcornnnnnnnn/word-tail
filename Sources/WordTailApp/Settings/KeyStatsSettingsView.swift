@@ -29,7 +29,7 @@ private enum TrendMetric: String, CaseIterable, Identifiable {
 
     var color: Color {
         switch self {
-        case .keys: return Color(red: 0.14, green: 0.49, blue: 0.92)
+        case .keys: return LinearUI.accent
         case .clicks: return Color(red: 0.16, green: 0.66, blue: 0.35)
         case .mouse: return LinearUI.accent
         case .scroll: return Color(red: 0.90, green: 0.48, blue: 0.14)
@@ -783,13 +783,19 @@ private struct ActivityTrendChartCard: View {
 
     private func drawGrid(in context: inout GraphicsContext, size: CGSize) {
         let gridColor = Color.primary.opacity(scheme == .dark ? 0.08 : 0.07)
-        for frac in [CGFloat(0.04), 0.5, 0.96] {
+        let baselineColor = Color.primary.opacity(scheme == .dark ? 0.14 : 0.12)
+        for frac in [CGFloat(0.04), 0.5] {
             let y = size.height * frac
             var path = Path()
             path.move(to: CGPoint(x: 0, y: y))
             path.addLine(to: CGPoint(x: size.width, y: y))
-            context.stroke(path, with: .color(gridColor), lineWidth: 1)
+            context.stroke(path, with: .color(gridColor), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         }
+        let baseY = size.height * 0.96
+        var base = Path()
+        base.move(to: CGPoint(x: 0, y: baseY))
+        base.addLine(to: CGPoint(x: size.width, y: baseY))
+        context.stroke(base, with: .color(baselineColor), lineWidth: 1)
     }
 
     private func drawBars(in context: inout GraphicsContext, size: CGSize, buckets: [ChartBucket], maxVal: Double, color: Color) {
@@ -824,33 +830,87 @@ private struct ActivityTrendChartCard: View {
             return
         }
 
-        var linePath = Path()
-        linePath.move(to: points[0])
-        for p in points.dropFirst() {
-            linePath.addLine(to: p)
-        }
+        let linePath = monotonicSplinePath(points: points, minY: 4, maxY: size.height - 4)
 
         var areaPath = linePath
-        areaPath.addLine(to: CGPoint(x: points.last!.x, y: size.height))
-        areaPath.addLine(to: CGPoint(x: points.first!.x, y: size.height))
+        areaPath.addLine(to: CGPoint(x: points.last!.x, y: size.height - 4))
+        areaPath.addLine(to: CGPoint(x: points.first!.x, y: size.height - 4))
         areaPath.closeSubpath()
 
         context.fill(
             areaPath,
             with: .linearGradient(
-                Gradient(colors: [color.opacity(0.24), color.opacity(0.01)]),
-                startPoint: CGPoint(x: 0, y: 0),
-                endPoint: CGPoint(x: 0, y: size.height)
+                Gradient(colors: [color.opacity(0.22), color.opacity(0.01)]),
+                startPoint: CGPoint(x: 0, y: 4),
+                endPoint: CGPoint(x: 0, y: size.height - 4)
             )
         )
         context.stroke(linePath, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
         if points.count <= 32 {
+            let halo = LinearUI.cardBg(scheme)
             for p in points {
-                let r = CGRect(x: p.x - 2.5, y: p.y - 2.5, width: 5, height: 5)
-                context.fill(Path(ellipseIn: r), with: .color(color))
+                let r = CGRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)
+                let ellipse = Path(ellipseIn: r)
+                context.stroke(ellipse, with: .color(halo), lineWidth: 1.5)
+                context.fill(ellipse, with: .color(color))
             }
         }
+    }
+
+    private func monotonicSplinePath(points pts: [CGPoint], minY: CGFloat, maxY: CGFloat) -> Path {
+        var path = Path()
+        guard let first = pts.first else { return path }
+        path.move(to: first)
+        let n = pts.count
+        guard n > 1 else { return path }
+        if n == 2 {
+            path.addLine(to: pts[1])
+            return path
+        }
+
+        var d = [Double](repeating: 0, count: n - 1)
+        for k in 0..<(n - 1) {
+            let dx = Double(pts[k + 1].x - pts[k].x)
+            d[k] = dx > 1e-9 ? Double(pts[k + 1].y - pts[k].y) / dx : 0
+        }
+
+        var m = [Double](repeating: 0, count: n)
+        m[0] = d[0]
+        m[n - 1] = d[n - 2]
+        for k in 1..<(n - 1) {
+            m[k] = (d[k - 1] * d[k] <= 0) ? 0 : (d[k - 1] + d[k]) * 0.5
+        }
+
+        for k in 0..<(n - 1) {
+            if abs(d[k]) < 1e-9 {
+                m[k] = 0
+                m[k + 1] = 0
+            } else {
+                let alpha = m[k] / d[k]
+                let beta = m[k + 1] / d[k]
+                let sq = alpha * alpha + beta * beta
+                if sq > 9.0 {
+                    let tau = 3.0 / sqrt(sq)
+                    m[k] = tau * alpha * d[k]
+                    m[k + 1] = tau * beta * d[k]
+                }
+            }
+        }
+
+        for k in 0..<(n - 1) {
+            let p0 = pts[k]
+            let p1 = pts[k + 1]
+            let dx = Double(p1.x - p0.x)
+            let y1 = max(minY, min(maxY, p0.y + CGFloat(m[k] * dx / 3.0)))
+            let y2 = max(minY, min(maxY, p1.y - CGFloat(m[k + 1] * dx / 3.0)))
+            path.addCurve(
+                to: p1,
+                control1: CGPoint(x: p0.x + CGFloat(dx / 3.0), y: y1),
+                control2: CGPoint(x: p1.x - CGFloat(dx / 3.0), y: y2)
+            )
+        }
+        return path
     }
 
     private func xPosition(index: Int, count: Int, width: CGFloat, isBar: Bool) -> CGFloat {

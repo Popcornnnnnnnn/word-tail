@@ -5,6 +5,17 @@ struct InsightsSettingsView: View {
     @Environment(\.colorScheme) private var scheme
     @ObservedObject var vm: SettingsViewModel
 
+    private static let decimalFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.groupingSeparator = ","
+        return f
+    }()
+
+    private func formattedInteger(_ value: Int) -> String {
+        Self.decimalFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center) {
@@ -31,20 +42,21 @@ struct InsightsSettingsView: View {
             HStack(spacing: 8) {
                 let savedTimeLabel: String = {
                     let secs = vm.insights.estimatedSecondsSaved
+                    let tabsStr = formattedInteger(vm.insights.tabsAccepted)
                     if secs >= 60 {
-                        return "~\(secs / 60)m · \(vm.insights.tabsAccepted) Tabs"
+                        return "~\(secs / 60)m · \(tabsStr) Tabs"
                     }
-                    return secs > 0 ? "~\(secs)s · \(vm.insights.tabsAccepted) Tabs" : "\(vm.insights.tabsAccepted) Tabs"
+                    return secs > 0 ? "~\(secs)s · \(tabsStr) Tabs" : "\(tabsStr) Tabs"
                 }()
                 LinearMetricTile(
                     label: "CHARS SAVED",
-                    value: "\(vm.insights.charactersSaved)",
+                    value: formattedInteger(vm.insights.charactersSaved),
                     subtitle: savedTimeLabel
                 )
                 LinearMetricTile(
                     label: "TAB HIT RATE",
                     value: "\(vm.insights.hitRatePercent)%",
-                    subtitle: "\(vm.insights.tabsAccepted) of \(vm.insights.suggestionsShown)"
+                    subtitle: "\(formattedInteger(vm.insights.tabsAccepted)) of \(formattedInteger(vm.insights.suggestionsShown))"
                 )
                 LinearMetricTile(
                     label: "BURST SPEED",
