@@ -54,17 +54,30 @@ public final class InputGuard {
     /// 1. Password / Secure Event Input is NOT active
     /// 2. Active keyboard input source is an ASCII/Roman keyboard layout (not Chinese Pinyin / Doubao IME)
     /// 3. Frontmost app is not excluded
-    public func shouldAllowPrediction(frontmostBundleID: String?) -> Bool {
+    public func shouldAllowPrediction(frontmostBundleID: String?, cachedRomanLayout: Bool? = nil) -> Bool {
         if IsSecureEventInputEnabled() {
             return false
         }
         if let bundleID = frontmostBundleID, isBundleDisabled(bundleID) {
             return false
         }
+        if let cachedRomanLayout {
+            return cachedRomanLayout
+        }
         return Self.isCurrentInputSourceRomanKeyboardLayout()
     }
 
     public static func isCurrentInputSourceRomanKeyboardLayout() -> Bool {
+        // Carbon TextInputSources (`TISGetInputSourceProperty`) asserts `dispatch_assert_queue(main)` on macOS.
+        if !Thread.isMainThread {
+            return DispatchQueue.main.sync {
+                queryCurrentInputSourceRomanOnMain()
+            }
+        }
+        return queryCurrentInputSourceRomanOnMain()
+    }
+
+    private static func queryCurrentInputSourceRomanOnMain() -> Bool {
         guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else {
             return false
         }

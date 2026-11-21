@@ -415,8 +415,8 @@ final class TypingEngine {
 
     @discardableResult
     func start() -> Bool {
-        let targetRunLoop = ensureDedicatedTapRunLoop()
-        startPassiveTelemetryTapIfNeeded(on: targetRunLoop)
+        let telemetryRunLoop = ensureDedicatedTapRunLoop()
+        startPassiveTelemetryTapIfNeeded(on: telemetryRunLoop)
 
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
@@ -450,7 +450,9 @@ final class TypingEngine {
         eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
-        CFRunLoopAddSource(targetRunLoop, source, .commonModes)
+        // Keep active key tap on CFRunLoopGetMain() so Carbon HIToolbox (`TIS*`), AppKit (`NSSpellChecker`, `NSPanel`),
+        // and `NSWorkspace` always execute on `com.apple.main-thread` (while `50ms` AX timeouts + background telemetryTap prevent stalls).
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         warmUpRunningFrontApps()
         return CGEvent.tapIsEnabled(tap: tap)
@@ -1052,7 +1054,7 @@ final class TypingEngine {
             let bid = activeBundleID ?? lastObservedBundleID
             if bid != Bundle.main.bundleIdentifier,
                (autoCorrectOnSpace || autoCapitalizeSentences),
-               inputGuard.shouldAllowPrediction(frontmostBundleID: bid),
+               inputGuard.shouldAllowPrediction(frontmostBundleID: bid, cachedRomanLayout: lastKnownRomanLayout),
                let target = ObviousTypoCorrector.extractPunctuationOrSpaceTarget(
                    rollingBuffer: rollingBuffer,
                    typedDelimiter: delim

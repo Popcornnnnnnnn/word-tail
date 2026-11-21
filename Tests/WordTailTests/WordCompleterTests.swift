@@ -1533,4 +1533,16 @@ final class WordCompleterTests: XCTestCase {
         )
         XCTAssertEqual(samePara, "notes.md")
     }
+
+    func testInputGuardRomanLayoutCheckSafeFromBackgroundThread() {
+        let exp = expectation(description: "Background thread InputGuard check completes without HIToolbox SIGTRAP")
+        let guardInstance = InputGuard()
+        DispatchQueue.global(qos: .userInteractive).async {
+            _ = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
+            _ = guardInstance.shouldAllowPrediction(frontmostBundleID: "com.apple.Notes")
+            XCTAssertFalse(guardInstance.shouldAllowPrediction(frontmostBundleID: "com.apple.Terminal", cachedRomanLayout: true))
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 2.0)
+    }
 }

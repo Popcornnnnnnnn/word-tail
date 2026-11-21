@@ -26,6 +26,7 @@ final class AXCaretContext {
     private var configuredPIDs = Set<pid_t>()
     private var chromiumEnhancedPIDs = Set<pid_t>()
     private var bundleChromiumCache: [String: Bool] = [:]
+    private var helperPIDCache: [pid_t: (pids: [pid_t], timestamp: CFAbsoluteTime)] = [:]
     private var _lastDebugSummary: String = "No keystroke captured yet"
 
     var lastDebugSummary: String {
@@ -339,6 +340,14 @@ final class AXCaretContext {
     }
 
     private func helperPIDsInsideBundle(bundlePath: String, mainPID: pid_t) -> [pid_t] {
+        let now = CFAbsoluteTimeGetCurrent()
+        stateLock.lock()
+        if let cached = helperPIDCache[mainPID], now - cached.timestamp <= 10.0 {
+            stateLock.unlock()
+            return cached.pids
+        }
+        stateLock.unlock()
+
         var pids = [pid_t](repeating: 0, count: 2048)
         let bytes = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.stride))
         guard bytes > 0 else { return [] }
@@ -356,6 +365,9 @@ final class AXCaretContext {
                 matches.append(pid)
             }
         }
+        stateLock.lock()
+        helperPIDCache[mainPID] = (matches, now)
+        stateLock.unlock()
         return matches
     }
 
