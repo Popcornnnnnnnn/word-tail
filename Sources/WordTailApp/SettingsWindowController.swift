@@ -129,9 +129,9 @@ struct SettingsView: View {
                     }
                     Spacer()
                     Button {
-                        vm.installAvailableUpdateClicked()
+                        vm.reviewAvailableUpdateClicked()
                     } label: {
-                        Text(vm.isInstallingUpdate ? "Updating…" : "Update & Restart")
+                        Text(vm.isInstallingUpdate ? "Updating…" : "Review Update…")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 11)
