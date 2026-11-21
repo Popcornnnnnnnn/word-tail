@@ -336,7 +336,7 @@ enum ShowcaseExporter {
             activeAppIcon: srgbIcon(forBundleID: "com.openai.codex"),
             brandIcon: srgbIcon(forBundleID: "app.wordtail.macos")
         )
-        let popoverShotSize = NSSize(width: 448, height: 700)
+        let popoverShotSize = NSSize(width: 436, height: 760)
         try renderSwiftUIViewToPNG(
             PopoverShowcaseBackdrop(size: popoverShotSize, isDark: false) {
                 MenuBarPopoverView(vm: popoverVM)
@@ -458,7 +458,7 @@ private struct MacWindowFrameBackdrop<Content: View>: View {
 }
 
 private struct PopoverShowcaseBackdrop<Content: View>: View {
-    var size: NSSize = NSSize(width: 448, height: 700)
+    var size: NSSize = NSSize(width: 436, height: 760)
     var isDark: Bool = false
     @ViewBuilder let content: Content
 
