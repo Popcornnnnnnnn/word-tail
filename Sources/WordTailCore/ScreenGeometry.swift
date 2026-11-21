@@ -2,6 +2,13 @@ import AppKit
 import CoreGraphics
 import Foundation
 
+public enum LineSpacingBias: Equatable, Sendable {
+    /// AppKit / Chromium: extra line spacing expands downward from glyph top (default).
+    case bottomAdded
+    /// WebKit (`WKWebView` / Safari / Catalyst WebView): line 2+ `selectionRect` expands upward into inter-line leading while `maxY` stays anchored to glyph bottom.
+    case topAdded
+}
+
 public struct BaselinePlacement: Equatable {
     public let anchorX: CGFloat
     public let baselineY: CGFloat
@@ -34,7 +41,8 @@ public enum ScreenGeometry {
         forAXCharRect axRect: CGRect,
         primaryScreenHeight: CGFloat,
         font: NSFont,
-        verticalAdjustment: CGFloat = defaultVerticalOffset
+        verticalAdjustment: CGFloat = defaultVerticalOffset,
+        lineSpacingBias: LineSpacingBias = .bottomAdded
     ) -> BaselinePlacement {
         let anchorX = axRect.origin.x + axRect.size.width
         let axTopY = primaryScreenHeight - axRect.origin.y
@@ -42,9 +50,16 @@ public enum ScreenGeometry {
 
         let baselineFromBottom = axBottomY - font.descender
         let baselineFromTop = axTopY - font.ascender
+        let rawBaseline: CGFloat
+        switch lineSpacingBias {
+        case .bottomAdded:
+            rawBaseline = max(baselineFromBottom, baselineFromTop)
+        case .topAdded:
+            rawBaseline = baselineFromBottom
+        }
         return BaselinePlacement(
             anchorX: anchorX,
-            baselineY: max(baselineFromBottom, baselineFromTop) + verticalAdjustment
+            baselineY: rawBaseline + verticalAdjustment
         )
     }
 

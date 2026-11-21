@@ -11,6 +11,7 @@ struct CaretSnapshot {
     let isAtDocumentStart: Bool
     let isFallbackText: Bool
     let isGlyphWidthZeroOnPrevChar: Bool
+    let lineSpacingBias: LineSpacingBias
     let placement: BaselinePlacement
     let font: NSFont
     let rawAXRect: CGRect
@@ -140,6 +141,10 @@ final class AXCaretContext {
         }
 
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 1080
+        let appBundleID = app.bundleIdentifier ?? ""
+        let isChromium = isChromiumBackedApp(app: app, bundleID: appBundleID)
+        let isWebKit = isWebKitTextElement(element, isChromium: isChromium)
+        let spacingBias: LineSpacingBias = isWebKit ? .topAdded : .bottomAdded
 
         // Path 1: Standard character-range AX API (NSTextView, NSTextField, standard inputs).
         if let selectedRange = copySelectedRange(element) {
@@ -215,17 +220,23 @@ final class AXCaretContext {
             }
 
             if !textBefore.isEmpty,
-               let (axRect, font, prevCharWasZeroWidth) = characterRectAndFont(element: element, caretLocation: selectedRange.location) {
+               let (axRect, font, prevCharWasZeroWidth) = characterRectAndFont(
+                   element: element,
+                   caretLocation: selectedRange.location,
+                   isWebKit: isWebKit
+               ) {
                 let placement = ScreenGeometry.baselinePlacement(
                     forAXCharRect: axRect,
                     primaryScreenHeight: primaryHeight,
                     font: font,
-                    verticalAdjustment: verticalAdjustment
+                    verticalAdjustment: verticalAdjustment,
+                    lineSpacingBias: spacingBias
                 )
                 let endsWithLetter = textBefore.last.map { $0.isASCII && $0.isLetter } ?? false
                 recordStatus(String(
-                    format: "app=%@ pid=%d->%d role=%@ path=range rect=(%.1fx%.1f) font=%.1f mid=%d doc0=%d",
+                    format: "app=%@ pid=%d->%d role=%@ path=range bias=%@ rect=(%.1fx%.1f) font=%.1f mid=%d doc0=%d",
                     app.bundleIdentifier ?? "?", app.processIdentifier, ownerPID, elemRole,
+                    isWebKit ? "top" : "bot",
                     axRect.width, axRect.height, font.pointSize, hasTextAfterOnLine ? 1 : 0, isAtDocumentStart ? 1 : 0
                 ))
                 return CaretSnapshot(
@@ -236,6 +247,7 @@ final class AXCaretContext {
                     isAtDocumentStart: isAtDocumentStart,
                     isFallbackText: usedFallbackText,
                     isGlyphWidthZeroOnPrevChar: prevCharWasZeroWidth && endsWithLetter,
+                    lineSpacingBias: spacingBias,
                     placement: placement,
                     font: font,
                     rawAXRect: axRect,
@@ -249,11 +261,13 @@ final class AXCaretContext {
             element: element,
             fallbackBuffer: fallbackBuffer,
             primaryHeight: primaryHeight,
-            verticalAdjustment: verticalAdjustment
+            verticalAdjustment: verticalAdjustment,
+            lineSpacingBias: spacingBias
         ) {
             recordStatus(String(
-                format: "app=%@ pid=%d->%d role=%@ path=marker rect=(%.1fx%.1f) font=%.1f after=%@",
+                format: "app=%@ pid=%d->%d role=%@ path=marker bias=%@ rect=(%.1fx%.1f) font=%.1f after=%@",
                 app.bundleIdentifier ?? "?", app.processIdentifier, ownerPID, elemRole,
+                isWebKit ? "top" : "bot",
                 markerSnapshot.rawAXRect.width, markerSnapshot.rawAXRect.height,
                 markerSnapshot.font.pointSize,
                 markerSnapshot.charAfterCursor.map { $0.isWhitespace ? "ws" : ($0.isLetter ? "letter" : "punct") } ?? "nil"
@@ -481,32 +495,64 @@ final class AXCaretContext {
         return range
     }
 
-    private func characterRectAndFont(element: AXUIElement, caretLocation: Int) -> (CGRect, NSFont, Bool)? {
-        var resolvedRect: CGRect?
-        var prevCharZeroWidth = false
-        if caretLocation > 0, var prevRect = boundsForRange(element, location: caretLocation - 1, length: 1),
-           Self.isValidCaretRect(prevRect) {
-            if let caretRect = boundsForRange(element, location: caretLocation, length: 0),
-               Self.isValidCaretRect(caretRect),
-               abs(caretRect.origin.y - prevRect.origin.y) < 6,
-               caretRect.origin.x > prevRect.maxX,
-               (caretRect.origin.x - prevRect.maxX) <= 18 {
-                prevRect.size.width = caretRect.origin.x - prevRect.origin.x
-            }
-            prevCharZeroWidth = (prevRect.width < 1.5)
-            resolvedRect = prevRect
-        } else if let caretRect = boundsForRange(element, location: caretLocation, length: 0),
-                  Self.isValidCaretRect(caretRect) {
-            resolvedRect = caretRect
+    private func isWebKitTextElement(_ element: AXUIElement, isChromium: Bool) -> Bool {
+        guard !isChromium else { return false }
+        var attrNamesRef: CFArray?
+        guard AXUIElementCopyAttributeNames(element, &attrNamesRef) == .success,
+              let names = attrNamesRef as? [String] else {
+            return false
         }
+        return names.contains("AXTextInputMarkedTextMarkerRange")
+            || names.contains("AXPerformsOwnTextStitching")
+    }
 
-        guard let rect = resolvedRect else { return nil }
+    static func resolveCaretRect(
+        prevCharRect: CGRect?,
+        caretRect: CGRect?
+    ) -> (rect: CGRect, prevCharZeroWidth: Bool)? {
+        let validPrev = prevCharRect.flatMap { isValidCaretRect($0) ? $0 : nil }
+        let validCaret = caretRect.flatMap { isValidCaretRect($0) ? $0 : nil }
+
+        if var prev = validPrev {
+            if let caret = validCaret {
+                if caret.origin.y > prev.origin.y + 6 && caret.width <= 6 {
+                    // Caret wrapped onto a new visual line while the preceding whitespace/newline stayed above.
+                    return (caret, false)
+                }
+                if abs(caret.origin.y - prev.origin.y) < 6,
+                   caret.origin.x > prev.maxX,
+                   (caret.origin.x - prev.maxX) <= 18 {
+                    prev.size.width = caret.origin.x - prev.origin.x
+                }
+            }
+            return (prev, prev.width < 1.5)
+        }
+        if let caret = validCaret {
+            return (caret, false)
+        }
+        return nil
+    }
+
+    private func characterRectAndFont(element: AXUIElement, caretLocation: Int, isWebKit: Bool) -> (CGRect, NSFont, Bool)? {
+        let prevCandidate = caretLocation > 0 ? boundsForRange(element, location: caretLocation - 1, length: 1) : nil
+        let caretCandidate = boundsForRange(element, location: caretLocation, length: 0)
+        guard let (rect, prevCharZeroWidth) = Self.resolveCaretRect(prevCharRect: prevCandidate, caretRect: caretCandidate) else {
+            return nil
+        }
 
         if caretLocation > 0, let axFont = fontForRange(element, location: caretLocation - 1, length: 1) {
             return (rect, axFont, prevCharZeroWidth)
         }
 
-        let estimatedSize = ScreenGeometry.estimatedFontSize(forLineHeight: rect.height)
+        var fontBoxHeight = rect.height
+        if isWebKit && rect.height > 20 && caretLocation > 0,
+           let line1Rect = boundsForRange(element, location: 0, length: 1),
+           Self.isValidCaretRect(line1Rect),
+           (10.0...(rect.height - 1.0)).contains(line1Rect.height) {
+            fontBoxHeight = line1Rect.height
+        }
+
+        let estimatedSize = ScreenGeometry.estimatedFontSize(forLineHeight: fontBoxHeight)
         return (rect, NSFont.systemFont(ofSize: estimatedSize), prevCharZeroWidth)
     }
 
@@ -580,7 +626,8 @@ final class AXCaretContext {
         element: AXUIElement,
         fallbackBuffer: String,
         primaryHeight: CGFloat,
-        verticalAdjustment: CGFloat
+        verticalAdjustment: CGFloat,
+        lineSpacingBias: LineSpacingBias
     ) -> CaretSnapshot? {
         var markerRangeRef: CFTypeRef?
         let mrErr = AXUIElementCopyAttributeValue(
@@ -610,9 +657,8 @@ final class AXCaretContext {
 
         // Prefer 1-character range immediately preceding the caret ([prevMarker, endMarker]),
         // because WebKit/Blink often returns (0,0,0,0) for collapsed zero-length marker ranges!
-        var resolvedRect: CGRect?
+        var prevCandidate: CGRect?
         var resolvedFont: NSFont?
-        var prevCharZeroWidth = false
 
         var prevMarkerRef: CFTypeRef?
         if AXUIElementCopyParameterizedAttributeValue(
@@ -629,35 +675,17 @@ final class AXCaretContext {
                 pair,
                 &prevRangeRef
             ) == .success, let prevRangeRef {
-                if let rect = boundsForTextMarkerRange(element: element, markerRange: prevRangeRef),
-                   Self.isValidCaretRect(rect) {
-                    resolvedRect = rect
-                    prevCharZeroWidth = (rect.width < 1.5)
-                }
+                prevCandidate = boundsForTextMarkerRange(element: element, markerRange: prevRangeRef)
                 resolvedFont = fontForTextMarkerRange(element: element, markerRange: prevRangeRef)
             }
         }
 
-        // Fallback to collapsed caret marker range if preceding-char range wasn't available,
-        // or widen trailing-space X when WebKit/Blink reports zero width for a trailing space!
-        var rawCandidateRect = CGRect.zero
-        if let collapsedRect = boundsForTextMarkerRange(element: element, markerRange: markerRangeRef) {
-            rawCandidateRect = collapsedRect
-            if var prev = resolvedRect {
-                if Self.isValidCaretRect(collapsedRect),
-                   abs(collapsedRect.origin.y - prev.origin.y) < 6,
-                   collapsedRect.origin.x > prev.maxX,
-                   (collapsedRect.origin.x - prev.maxX) <= 18 {
-                    prev.size.width = collapsedRect.origin.x - prev.origin.x
-                    prevCharZeroWidth = (prev.width < 1.5)
-                    resolvedRect = prev
-                }
-            } else if Self.isValidCaretRect(collapsedRect) {
-                resolvedRect = collapsedRect
-            }
-        }
-
-        guard let axRect = resolvedRect else {
+        let collapsedCandidate = boundsForTextMarkerRange(element: element, markerRange: markerRangeRef)
+        let rawCandidateRect = collapsedCandidate ?? .zero
+        guard let (axRect, prevCharZeroWidth) = Self.resolveCaretRect(
+            prevCharRect: prevCandidate,
+            caretRect: collapsedCandidate
+        ) else {
             lastMarkerDiag = String(format: "badBounds(%.1fx%.1f@%.0f,%.0f)", rawCandidateRect.width, rawCandidateRect.height, rawCandidateRect.origin.x, rawCandidateRect.origin.y)
             return nil
         }
@@ -754,7 +782,8 @@ final class AXCaretContext {
             forAXCharRect: axRect,
             primaryScreenHeight: primaryHeight,
             font: font,
-            verticalAdjustment: verticalAdjustment
+            verticalAdjustment: verticalAdjustment,
+            lineSpacingBias: lineSpacingBias
         )
         let endsWithLetter = textBefore.last.map { $0.isASCII && $0.isLetter } ?? false
         return CaretSnapshot(
@@ -765,6 +794,7 @@ final class AXCaretContext {
             isAtDocumentStart: isAtDocumentStart,
             isFallbackText: usedFallbackText,
             isGlyphWidthZeroOnPrevChar: prevCharZeroWidth && endsWithLetter,
+            lineSpacingBias: lineSpacingBias,
             placement: placement,
             font: font,
             rawAXRect: axRect,

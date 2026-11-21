@@ -54,6 +54,7 @@ final class TypingEngine {
         let bundleID: String
         let match: CompletionMatch
         let hasTextAfterOnLine: Bool
+        let lineSpacingBias: LineSpacingBias
         let rawAXRect: CGRect
         let primaryScreenHeight: CGFloat
         let font: NSFont
@@ -1395,6 +1396,7 @@ final class TypingEngine {
                 bundleID: frontBundle,
                 match: first,
                 hasTextAfterOnLine: snapshot.hasTextAfterOnLine,
+                lineSpacingBias: snapshot.lineSpacingBias,
                 rawAXRect: snapshot.rawAXRect,
                 primaryScreenHeight: snapshot.primaryScreenHeight,
                 font: snapshot.font
@@ -1433,7 +1435,8 @@ final class TypingEngine {
             forAXCharRect: sample.rawAXRect,
             primaryScreenHeight: sample.primaryScreenHeight,
             font: sample.font,
-            verticalAdjustment: offset
+            verticalAdjustment: offset,
+            lineSpacingBias: sample.lineSpacingBias
         )
         overlay.show(
             match: sample.match,

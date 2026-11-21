@@ -1695,4 +1695,36 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertEqual(deduped.totalKeyPresses, 2_370) // uses live 850 instead of 800 + 850!
         XCTAssertEqual(deduped.deviceCount, 2)
     }
+
+    func testScreenGeometryWebKitTopExpandedLine2BaselineAlignment() {
+        let font = NSFont.systemFont(ofSize: 16)
+        let primaryH: CGFloat = 1117
+
+        // Observed macOS WKWebView AXBounds for font-size 16px, line-height 26px:
+        // Line 1: tight glyph rect (y=633, h=18 -> bottom=651)
+        // Line 2: selectionRect expands upward into inter-line leading (y=652, h=26 -> bottom=678)
+        // Line 3: selectionRect expands upward by another 26pt step (y=678, h=26 -> bottom=704)
+        let line1 = CGRect(x: 275, y: 633, width: 10, height: 18)
+        let line2 = CGRect(x: 285, y: 652, width: 11, height: 26)
+        let line3 = CGRect(x: 274, y: 678, width: 12, height: 26)
+
+        let p1Bot = ScreenGeometry.baselinePlacement(forAXCharRect: line1, primaryScreenHeight: primaryH, font: font, verticalAdjustment: 0, lineSpacingBias: .bottomAdded)
+        let p1Top = ScreenGeometry.baselinePlacement(forAXCharRect: line1, primaryScreenHeight: primaryH, font: font, verticalAdjustment: 0, lineSpacingBias: .topAdded)
+        XCTAssertEqual(p1Top.baselineY, p1Bot.baselineY, accuracy: 0.01)
+
+        // Under old `.bottomAdded`, Line 2 baseline dropped only (678 - 651) - 8 = ~19pt instead of 26-27pt, causing ghost text to float above Line 2!
+        let p2Old = ScreenGeometry.baselinePlacement(forAXCharRect: line2, primaryScreenHeight: primaryH, font: font, verticalAdjustment: 0, lineSpacingBias: .bottomAdded)
+        let p2Fixed = ScreenGeometry.baselinePlacement(forAXCharRect: line2, primaryScreenHeight: primaryH, font: font, verticalAdjustment: 0, lineSpacingBias: .topAdded)
+        let p3Fixed = ScreenGeometry.baselinePlacement(forAXCharRect: line3, primaryScreenHeight: primaryH, font: font, verticalAdjustment: 0, lineSpacingBias: .topAdded)
+
+        XCTAssertGreaterThan(p2Old.baselineY - p2Fixed.baselineY, 5.0)
+        XCTAssertEqual(p1Top.baselineY - p2Fixed.baselineY, 27.0, accuracy: 0.01)
+        XCTAssertEqual(p2Fixed.baselineY - p3Fixed.baselineY, 26.0, accuracy: 0.01)
+
+        // Tight rect (height < font glyph height) works identically under `.topAdded` and `.bottomAdded`.
+        let tight = CGRect(x: 300, y: 200, width: 9, height: 14)
+        let tBot = ScreenGeometry.baselinePlacement(forAXCharRect: tight, primaryScreenHeight: 1080, font: font, verticalAdjustment: 0, lineSpacingBias: .bottomAdded)
+        let tTop = ScreenGeometry.baselinePlacement(forAXCharRect: tight, primaryScreenHeight: 1080, font: font, verticalAdjustment: 0, lineSpacingBias: .topAdded)
+        XCTAssertEqual(tTop.baselineY, tBot.baselineY, accuracy: 0.01)
+    }
 }
