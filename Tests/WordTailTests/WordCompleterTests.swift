@@ -1545,4 +1545,154 @@ final class WordCompleterTests: XCTestCase {
         }
         wait(for: [exp], timeout: 2.0)
     }
+
+    func testInstalledKeyStatsImportReconciliationHourlyPeerAndDeduplication() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WordTailKeyStatsMerge-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Local clock = 2026-11-21 14:30:00 +0800 (Asia/Shanghai)
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let nov21Morning = cal.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 10, minute: 30))!
+        let nov21Hour14 = cal.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 14, minute: 0))!
+
+        let store = KeyStatsStore(
+            fileURL: tempDir.appendingPathComponent("keystats_history.json"),
+            nowProvider: { nov21Morning }
+        )
+
+        // Record 10 local WordTail keys on 2026-11-21 (6 Roman, 4 non-Roman) + 1 Tab completion saved
+        for i in 0..<10 {
+            store.recordKeyDown(
+                keyCode: 0, // A
+                rawFlags: 0,
+                isAutoRepeat: false,
+                isSecureInput: false,
+                isRomanLayout: i < 6,
+                appBundleID: "com.apple.Notes",
+                appName: "Notes"
+            )
+        }
+        store.recordWordTailCompletion(charsSaved: 7, appBundleID: "com.apple.Notes", appName: "Notes")
+        store.flushNow()
+
+        // Create synthetic installed KeyStats plist
+        let historyPayload: [String: Any] = [
+            "2026-11-20": [
+                "keyPresses": 1000,
+                "keyPressCounts": ["Space": 200, "Enter": 40, "LeftCmd+C": 15, "Key160": 99],
+                "leftClicks": 120,
+                "rightClicks": 10,
+                "mouseDistance": 50_000.0,
+                "scrollDistance": 12_000.0,
+                "appStats": [
+                    "com.apple.Safari": [
+                        "bundleId": "com.apple.Safari",
+                        "displayName": "Safari",
+                        "keyPresses": 600,
+                        "keyPressCounts": ["Space": 120, "Enter": 20],
+                        "leftClicks": 80,
+                        "scrollDistance": 6_000.0
+                    ]
+                ]
+            ],
+            "2026-11-21": [
+                "keyPresses": 500,
+                "keyPressCounts": ["A": 120, "Enter": 30],
+                "leftClicks": 50,
+                "rightClicks": 5,
+                "mouseDistance": 10_000.0,
+                "scrollDistance": 2_000.0
+            ]
+        ]
+        let currentStatsPayload: [String: Any] = [
+            "date": nov21Morning.timeIntervalSinceReferenceDate,
+            "keyPresses": 520,
+            "keyPressCounts": ["A": 130, "Enter": 32],
+            "leftClicks": 55,
+            "rightClicks": 5,
+            "mouseDistance": 11_000.0,
+            "scrollDistance": 2_500.0
+        ]
+        let hourlyPayload: [String: Any] = [
+            "timeZoneIdentifier": "Asia/Shanghai",
+            "buckets": [
+                "\(Int(nov21Hour14.timeIntervalSince1970))": ["keys": 310, "clicks": 22]
+            ]
+        ]
+
+        let plistDict: [String: Any] = [
+            "sync.installationDeviceId.v1": "local-dev-1",
+            "dailyStatsHistory": try JSONSerialization.data(withJSONObject: historyPayload),
+            "dailyStats": try JSONSerialization.data(withJSONObject: currentStatsPayload),
+            "hourlyStats.v1": try JSONSerialization.data(withJSONObject: hourlyPayload)
+        ]
+        let plistURL = tempDir.appendingPathComponent("com.keystats.app.plist")
+        let plistData = try PropertyListSerialization.data(fromPropertyList: plistDict, format: .binary, options: 0)
+        try plistData.write(to: plistURL)
+
+        // Create synthetic synced peer cache with both an own-device duplicate and a distinct peer Mac
+        let syncCacheDict: [String: Any] = [
+            "schemaVersion": 1,
+            "shards": [
+                "local-dev-1|2026-11-21": [
+                    "snapshot": [
+                        "deviceId": "local-dev-1",
+                        "localDay": "2026-11-21",
+                        "keyPresses": 520,
+                        "clicks": ["left": 55]
+                    ]
+                ],
+                "peer-dev-2|2026-11-19": [
+                    "snapshot": [
+                        "deviceId": "peer-dev-2",
+                        "localDay": "2026-11-19",
+                        "keyPresses": 800,
+                        "keyPressCounts": ["Space": 150, "Backspace": 40],
+                        "clicks": ["left": 90, "right": 10]
+                    ]
+                ]
+            ]
+        ]
+        let syncCacheURL = tempDir.appendingPathComponent("sync-cache.json")
+        try JSONSerialization.data(withJSONObject: syncCacheDict).write(to: syncCacheURL)
+
+        // 1. First import merges local + peer without double-counting 2026-11-21 (`520`, not `530`)
+        let report1 = try store.importFromInstalledKeyStats(plistURL: plistURL, syncCacheURL: syncCacheURL)
+        XCTAssertEqual(report1.localDaysImported, 2)
+        XCTAssertEqual(report1.hourlyBucketsImported, 1)
+        XCTAssertEqual(report1.peerDevicesImported, 1)
+
+        // 2. Second identical import is 100% idempotent
+        let report2 = try store.importFromInstalledKeyStats(plistURL: plistURL, syncCacheURL: syncCacheURL)
+        XCTAssertEqual(report2.totalKeysAfterImport, report1.totalKeysAfterImport)
+
+        let thisMacAll = store.snapshot(for: .allTime, deviceScope: .thisMac)
+        XCTAssertEqual(thisMacAll.totalKeyPresses, 1_520) // 1000 (Nov 20) + max(10, 520) (Nov 21)
+        XCTAssertEqual(thisMacAll.deviceCount, 1)
+        XCTAssertEqual(thisMacAll.keyHeatmap["Return"], 72) // Enter(40) + Enter(32)
+        XCTAssertNil(thisMacAll.keyHeatmap["Key160"]) // synthetic token filtered out
+        XCTAssertTrue(thisMacAll.topApps.contains { $0.bundleID == "com.apple.Safari" && $0.keyHeatmap["Return"] == 20 })
+
+        let allDevicesAll = store.snapshot(for: .allTime, deviceScope: .allDevices)
+        XCTAssertEqual(allDevicesAll.totalKeyPresses, 2_320) // +800 from peer-dev-2
+        XCTAssertEqual(allDevicesAll.deviceCount, 2)
+        XCTAssertGreaterThanOrEqual(allDevicesAll.calendarDays.count, 365)
+
+        let today = store.snapshot(for: .today, deviceScope: .thisMac)
+        XCTAssertEqual(today.totalKeyPresses, 520)
+        XCTAssertEqual(today.englishKeyPercent, 60) // preserved 6/10 Roman ratio onto reconciled 520 keys!
+        XCTAssertEqual(today.hourlyKeys[14], 310)
+        XCTAssertEqual(today.topApps.first(where: { $0.bundleID == "com.apple.Notes" })?.charactersSaved, 7)
+
+        // 3. Automatic deduplication once peer-dev-2 connects directly via WordTail iCloud Sync
+        var livePeerNov19 = DailyKeyStatsRecord(dateKey: "2026-11-19")
+        livePeerNov19.keyPresses = 850
+        store.applyRemoteDeviceDays(["wordtail-peer-uuid": ["2026-11-19": livePeerNov19]], claimedLegacyDeviceIDs: ["PEER-DEV-2"])
+        let deduped = store.snapshot(for: .allTime, deviceScope: .allDevices)
+        XCTAssertEqual(deduped.totalKeyPresses, 2_370) // uses live 850 instead of 800 + 850!
+        XCTAssertEqual(deduped.deviceCount, 2)
+    }
 }

@@ -128,8 +128,20 @@ enum ShowcaseExporter {
             "com.apple.Safari": srgbIcon(forBundleID: "com.apple.Safari")
         ]
 
+        let sampleTrend: [DailyActivityPoint] = [
+            DailyActivityPoint(dateKey: "2026-11-15", keyPresses: 3_420, clicks: 510, mouseDistanceMeters: 1_180, scrollDistanceMeters: 420),
+            DailyActivityPoint(dateKey: "2026-11-16", keyPresses: 6_810, clicks: 940, mouseDistanceMeters: 2_390, scrollDistanceMeters: 980),
+            DailyActivityPoint(dateKey: "2026-11-17", keyPresses: 8_940, clicks: 1_240, mouseDistanceMeters: 3_120, scrollDistanceMeters: 1_310),
+            DailyActivityPoint(dateKey: "2026-11-18", keyPresses: 7_290, clicks: 1_010, mouseDistanceMeters: 2_480, scrollDistanceMeters: 1_120),
+            DailyActivityPoint(dateKey: "2026-11-19", keyPresses: 8_640, clicks: 1_180, mouseDistanceMeters: 2_840, scrollDistanceMeters: 1_260),
+            DailyActivityPoint(dateKey: "2026-11-20", keyPresses: 4_810, clicks: 720, mouseDistanceMeters: 1_640, scrollDistanceMeters: 780),
+            DailyActivityPoint(dateKey: "2026-11-21", keyPresses: 2_770, clicks: 540, mouseDistanceMeters: 1_170, scrollDistanceMeters: 540)
+        ]
+
         let sampleKeyStats = KeyStatsAggregateSnapshot(
             range: .days7,
+            deviceScope: .allDevices,
+            deviceCount: 2,
             totalKeyPresses: 42_680,
             totalClicks: 6_140,
             leftClicks: 5_290,
@@ -146,6 +158,11 @@ enum ShowcaseExporter {
             nonRomanKeyPresses: 13_660,
             activeDays: 7,
             maxDailyKeys: 8_940,
+            firstActiveDateKey: "2026-08-30",
+            lastActiveDateKey: "2026-11-21",
+            currentStreakDays: 14,
+            longestStreakDays: 28,
+            activeKeyCount: sampleHeatmap.count,
             keyHeatmap: sampleHeatmap,
             topShortcuts: [
                 RankedCountItem(label: "⌘C", count: 312),
@@ -153,18 +170,25 @@ enum ShowcaseExporter {
                 RankedCountItem(label: "⌘S", count: 194),
                 RankedCountItem(label: "⌘Z", count: 118)
             ],
-            topKeys: [],
+            topKeys: [
+                RankedCountItem(label: "Space", count: 4_120),
+                RankedCountItem(label: "E", count: 2_890),
+                RankedCountItem(label: "T", count: 2_210),
+                RankedCountItem(label: "A", count: 1_980),
+                RankedCountItem(label: "O", count: 1_840)
+            ],
             topApps: [
-                AppActivitySummary(bundleID: "com.openai.codex", displayName: "Codex (ChatGPT)", keyPresses: 14_820, clicks: 1_940, scrollMeters: 2_180, charactersSaved: 1_420),
-                AppActivitySummary(bundleID: "com.google.Chrome", displayName: "Google Chrome", keyPresses: 11_340, clicks: 2_310, scrollMeters: 2_690, charactersSaved: 980),
+                AppActivitySummary(bundleID: "com.openai.codex", displayName: "Codex (ChatGPT)", keyPresses: 14_820, clicks: 1_940, scrollMeters: 2_180, charactersSaved: 1_420, keyHeatmap: sampleHeatmap),
+                AppActivitySummary(bundleID: "com.google.Chrome", displayName: "Google Chrome", keyPresses: 11_340, clicks: 2_310, scrollMeters: 2_690, charactersSaved: 980, keyHeatmap: sampleHeatmap),
                 AppActivitySummary(bundleID: "com.raycast.macos", displayName: "Raycast", keyPresses: 6_490, clicks: 420, scrollMeters: 380, charactersSaved: 460),
                 AppActivitySummary(bundleID: "com.apple.Notes", displayName: "Notes", keyPresses: 5_810, clicks: 760, scrollMeters: 640, charactersSaved: 560),
                 AppActivitySummary(bundleID: "com.apple.Safari", displayName: "Safari", keyPresses: 4_220, clicks: 710, scrollMeters: 520, charactersSaved: 210)
             ],
+            dailyTrend: sampleTrend,
             calendarDays: sampleCalDays
         )
 
-        let windowShotSize = NSSize(width: 816, height: 622)
+        let windowShotSize = NSSize(width: 1016, height: 726)
 
         // 1. Hero inline-ghost banner
         try renderSwiftUIViewToPNG(

@@ -211,6 +211,13 @@ final class SettingsViewModel: ObservableObject {
             refreshKeyStats()
         }
     }
+    @Published var keyStatsDeviceScope: StatsDeviceScope = .allDevices {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            refreshKeyStats()
+        }
+    }
+    @Published var keyStatsImportMessage: String? = nil
     @Published var keyStats: KeyStatsAggregateSnapshot = KeyStatsAggregateSnapshot()
     @Published var showcaseAppIcons: [String: NSImage] = [:]
 
@@ -345,6 +352,7 @@ final class SettingsViewModel: ObservableObject {
         self.learnedBigrams = bigrams
         self.vocabularyEntries = vocabulary
         self.keyStatsRange = keyStats.range
+        self.keyStatsDeviceScope = keyStats.deviceScope
         self.keyStats = keyStats
         self.showcaseAppIcons = showcaseAppIcons
     }
@@ -381,7 +389,7 @@ final class SettingsViewModel: ObservableObject {
         correctionRules = engine.adaptiveStore.allEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
         let curSync = engine.syncEngine.statusSnapshot()
         syncStatus = curSync
         syncEnabled = curSync.isEnabled
@@ -448,7 +456,7 @@ final class SettingsViewModel: ObservableObject {
         guard let engine, !isStaticShowcase else { return }
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
     }
 
     func clearInsights() {
@@ -459,15 +467,28 @@ final class SettingsViewModel: ObservableObject {
         phraseEntries = engine.phrasePredictor.allEntries()
     }
 
+    var canImportFromInstalledKeyStats: Bool {
+        !isStaticShowcase && KeyStatsStore.hasInstalledKeyStatsData()
+    }
+
     func refreshKeyStats() {
         guard let engine, !isStaticShowcase else { return }
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
     }
 
     func clearKeyStats() {
         guard let engine, !isStaticShowcase else { return }
+        let alert = NSAlert()
+        alert.messageText = "Reset All KeyStats History?"
+        alert.informativeText = "This clears local and imported KeyStats records from this Mac. Export a JSON backup first if you want to keep your history."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Reset History")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
         engine.keyStatsStore.clearAll()
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        keyStatsImportMessage = nil
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
         onStateChange()
     }
 
@@ -495,9 +516,32 @@ final class SettingsViewModel: ObservableObject {
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
-            _ = try? engine.keyStatsStore.importJSONData(data, merge: true)
+            do {
+                let count = try engine.keyStatsStore.importJSONData(data, merge: true)
+                refreshKeyStats()
+                keyStatsImportMessage = "Merged \(count) day\(count == 1 ? "" : "s") from JSON"
+                pushSyncInBackgroundIfEnabled()
+                onStateChange()
+            } catch {
+                keyStatsImportMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func importFromInstalledKeyStatsApp() {
+        guard let engine, !isStaticShowcase else { return }
+        do {
+            let report = try engine.keyStatsStore.importFromInstalledKeyStats(includeSyncedPeers: true)
             refreshKeyStats()
+            if report.peerDaysImported > 0 {
+                keyStatsImportMessage = "Merged \(report.localDaysImported) local days + \(report.peerDaysImported) synced peer days"
+            } else {
+                keyStatsImportMessage = "Merged \(report.localDaysImported) days from KeyStats.app"
+            }
+            pushSyncInBackgroundIfEnabled()
             onStateChange()
+        } catch {
+            keyStatsImportMessage = error.localizedDescription
         }
     }
 
@@ -712,7 +756,7 @@ final class SettingsViewModel: ObservableObject {
         correctionRules = engine.adaptiveStore.allEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
         if let autoUpdater {
             autoCheckUpdates = autoUpdater.autoCheckEnabled
             availableRelease = autoUpdater.availableRelease
@@ -746,7 +790,7 @@ final class SettingsViewModel: ObservableObject {
         correctionRules = engine.adaptiveStore.allEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange)
+        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
         isRefreshing = false
         onStateChange()
     }

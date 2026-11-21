@@ -13,7 +13,14 @@ struct SettingsView: View {
                 .frame(width: 1)
             detailPane
         }
-        .frame(width: 740, height: 548)
+        .frame(
+            minWidth: vm.isStaticShowcase ? 940 : 780,
+            idealWidth: 940,
+            maxWidth: vm.isStaticShowcase ? 940 : .infinity,
+            minHeight: vm.isStaticShowcase ? 650 : 560,
+            idealHeight: 650,
+            maxHeight: vm.isStaticShowcase ? 650 : .infinity
+        )
         .background(LinearUI.windowBg(scheme))
     }
 
@@ -157,7 +164,11 @@ struct SettingsView: View {
         .padding(.bottom, 24)
 
         if vm.isStaticShowcase {
-            content
+            Color.clear
+                .overlay(alignment: .topLeading) {
+                    content
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipped()
         } else {
@@ -191,7 +202,9 @@ final class SettingsWindowController: NSWindowController {
         window.title = "WordTail"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.setContentSize(NSSize(width: 940, height: 650))
+        window.minSize = NSSize(width: 780, height: 560)
         window.level = .normal
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false

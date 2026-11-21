@@ -5,6 +5,7 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var deviceID: String
     public var deviceModel: String
+    public var legacyKeyStatsDeviceID: String?
     public var updatedAt: Date
     public var history: UserHistoryStore.SyncShard
     public var corrections: AdaptiveCorrectionStore.SyncShard
@@ -16,6 +17,7 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
         schemaVersion: Int = 1,
         deviceID: String,
         deviceModel: String,
+        legacyKeyStatsDeviceID: String? = nil,
         updatedAt: Date = Date(),
         history: UserHistoryStore.SyncShard,
         corrections: AdaptiveCorrectionStore.SyncShard,
@@ -26,6 +28,7 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
         self.schemaVersion = schemaVersion
         self.deviceID = deviceID
         self.deviceModel = deviceModel
+        self.legacyKeyStatsDeviceID = legacyKeyStatsDeviceID
         self.updatedAt = updatedAt
         self.history = history
         self.corrections = corrections
@@ -305,6 +308,7 @@ public final class SyncEngine {
             schemaVersion: 1,
             deviceID: deviceID,
             deviceModel: deviceModel,
+            legacyKeyStatsDeviceID: keyStatsStore.localLegacyKeyStatsDeviceID(),
             updatedAt: now,
             history: historyStore.exportLocalShard(),
             corrections: adaptiveStore.exportLocalShard(),
@@ -339,6 +343,7 @@ public final class SyncEngine {
         var phraseShards: [String: PhrasePredictor.SyncShard] = [:]
         var insightShards: [String: TypingHabitTracker.SyncShard] = [:]
         var keyStatsShards: [String: [String: DailyKeyStatsRecord]] = [:]
+        var claimedLegacyIDs = Set<String>()
 
         for (peerID, env) in envelopes where peerID != deviceID {
             historyShards[peerID] = env.history
@@ -346,13 +351,16 @@ public final class SyncEngine {
             phraseShards[peerID] = env.phrases
             insightShards[peerID] = env.insights
             keyStatsShards[peerID] = env.keyStatsDays
+            if let legacyID = env.legacyKeyStatsDeviceID, !legacyID.isEmpty {
+                claimedLegacyIDs.insert(legacyID)
+            }
         }
 
         historyStore.applyRemoteShards(historyShards)
         adaptiveStore.applyRemoteShards(correctionShards)
         phrasePredictor.applyRemoteShards(phraseShards)
         habitTracker.applyRemoteShards(insightShards)
-        keyStatsStore.applyRemoteDeviceDays(keyStatsShards)
+        keyStatsStore.applyRemoteDeviceDays(keyStatsShards, claimedLegacyDeviceIDs: claimedLegacyIDs)
     }
 
     // MARK: - File Coordination & Local Cache

@@ -351,17 +351,29 @@ struct LinearMetricTile: View {
     let label: String
     let value: String
     let subtitle: String
+    var icon: String? = nil
+    var accentColor: Color = LinearUI.accent
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.system(size: 9.5, weight: .semibold))
-                .tracking(0.6)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(accentColor)
+                        .frame(width: 20, height: 20)
+                        .background(accentColor.opacity(scheme == .dark ? 0.16 : 0.11), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                }
+                Text(label)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
 
             Text(value)
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .font(.system(size: 19, weight: .semibold, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(.primary)
                 .lineLimit(1)
 
@@ -371,7 +383,7 @@ struct LinearMetricTile: View {
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 11)
+        .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(LinearUI.cardBg(scheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(

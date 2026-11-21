@@ -137,6 +137,31 @@ public enum KeyCodeMapper {
         return map
     }()
 
+    public static let ansiKeyIDs: Set<String> = {
+        var set = Set<String>()
+        for row in ansiRows {
+            for spec in row {
+                set.insert(spec.id)
+            }
+        }
+        return set
+    }()
+
+    public static let recognizedKeyIDs: Set<String> = ansiKeyIDs.union([
+        "Home", "End", "PageUp", "PageDown", "F13", "F14", "F15"
+    ])
+
+    private static let shiftLegends: [String: String] = [
+        "`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
+        "6": "^", "7": "&", "8": "*", "9": "(", "0": ")", "-": "_",
+        "=": "+", "[": "{", "]": "}", "\\": "|", ";": ":", "'": "\"",
+        ",": "<", ".": ">", "/": "?"
+    ]
+
+    public static func shiftLegend(forKeyID keyID: String) -> String? {
+        shiftLegends[keyID]
+    }
+
     public static func hand(forKeyID keyID: String) -> KeyHand {
         handByKeyID[keyID] ?? .neutral
     }
