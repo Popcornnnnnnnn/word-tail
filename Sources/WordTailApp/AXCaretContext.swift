@@ -18,10 +18,21 @@ struct CaretSnapshot {
 }
 
 final class AXCaretContext {
+    /// Strict per-IPC messaging cap (`50 ms` instead of macOS's `6.0 s` default) so a stalled target app
+    /// can never block accessibility queries or keystroke delivery.
+    private static let axIPCDeadlineSeconds: Float = 0.05
+
+    private let stateLock = NSLock()
     private var configuredPIDs = Set<pid_t>()
     private var chromiumEnhancedPIDs = Set<pid_t>()
     private var bundleChromiumCache: [String: Bool] = [:]
-    private(set) var lastDebugSummary: String = "No keystroke captured yet"
+    private var _lastDebugSummary: String = "No keystroke captured yet"
+
+    var lastDebugSummary: String {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _lastDebugSummary
+    }
 
     private static let chromiumBundleIDPrefixes = [
         "com.google.antigravity",
@@ -57,6 +68,7 @@ final class AXCaretContext {
     func effectiveFocusedApplication() -> NSRunningApplication? {
         if AXIsProcessTrusted() {
             let sys = AXUIElementCreateSystemWide()
+            AXUIElementSetMessagingTimeout(sys, Self.axIPCDeadlineSeconds)
             var ref: CFTypeRef?
             if AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &ref) == .success,
                let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() {
@@ -256,12 +268,16 @@ final class AXCaretContext {
         // clear the PID cache and re-trigger AXManualAccessibility + AXEnhancedUserInterface immediately.
         let bundleID = app.bundleIdentifier ?? ""
         if isChromiumBackedApp(app: app, bundleID: bundleID) {
+            stateLock.lock()
             configuredPIDs.remove(app.processIdentifier)
             chromiumEnhancedPIDs.remove(app.processIdentifier)
-            enableAccessibilityOnPID(app.processIdentifier, enableChromiumEnhanced: enableChromiumBridge)
             if ownerPID > 0 && ownerPID != app.processIdentifier {
                 configuredPIDs.remove(ownerPID)
                 chromiumEnhancedPIDs.remove(ownerPID)
+            }
+            stateLock.unlock()
+            enableAccessibilityOnPID(app.processIdentifier, enableChromiumEnhanced: enableChromiumBridge)
+            if ownerPID > 0 && ownerPID != app.processIdentifier {
                 enableAccessibilityOnPID(ownerPID, enableChromiumEnhanced: enableChromiumBridge)
             }
         }
@@ -271,15 +287,26 @@ final class AXCaretContext {
     }
 
     private func enableAccessibilityOnPID(_ pid: pid_t, enableChromiumEnhanced: Bool) {
+        stateLock.lock()
+        let needsManual = !configuredPIDs.contains(pid)
+        let needsChromium = enableChromiumEnhanced && !chromiumEnhancedPIDs.contains(pid)
+        stateLock.unlock()
+        guard needsManual || needsChromium else { return }
+
         let axApp = AXUIElementCreateApplication(pid)
-        if !configuredPIDs.contains(pid) {
+        AXUIElementSetMessagingTimeout(axApp, Self.axIPCDeadlineSeconds)
+        if needsManual {
             if AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success {
+                stateLock.lock()
                 configuredPIDs.insert(pid)
+                stateLock.unlock()
             }
         }
-        if enableChromiumEnhanced && !chromiumEnhancedPIDs.contains(pid) {
+        if needsChromium {
             if AXUIElementSetAttributeValue(axApp, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue) == .success {
+                stateLock.lock()
                 chromiumEnhancedPIDs.insert(pid)
+                stateLock.unlock()
             }
         }
     }
@@ -289,9 +316,12 @@ final class AXCaretContext {
             return true
         }
         let cacheKey = bundleID.isEmpty ? (app.bundleURL?.path ?? "\(app.processIdentifier)") : bundleID
+        stateLock.lock()
         if let cached = bundleChromiumCache[cacheKey] {
+            stateLock.unlock()
             return cached
         }
+        stateLock.unlock()
         var detected = false
         if let frameworksURL = app.bundleURL?.appendingPathComponent("Contents/Frameworks", isDirectory: true),
            let entries = try? FileManager.default.contentsOfDirectory(atPath: frameworksURL.path) {
@@ -302,7 +332,9 @@ final class AXCaretContext {
                 name.localizedCaseInsensitiveContains("Cef")
             }
         }
+        stateLock.lock()
         bundleChromiumCache[cacheKey] = detected
+        stateLock.unlock()
         return detected
     }
 
@@ -330,10 +362,13 @@ final class AXCaretContext {
     private func resolveFocusedTextElement(app: NSRunningApplication, enableChromiumBridge: Bool) -> AXUIElement? {
         // 1. System-wide query traverses AXRemoteUIElement bridges into helper processes (like Codex Aperitif).
         let sys = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(sys, Self.axIPCDeadlineSeconds)
         var sysRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &sysRef) == .success,
            let sysRef, CFGetTypeID(sysRef) == AXUIElementGetTypeID() {
-            let drilled = drillFocusedChildIfNeeded(sysRef as! AXUIElement)
+            let el = sysRef as! AXUIElement
+            AXUIElementSetMessagingTimeout(el, Self.axIPCDeadlineSeconds)
+            let drilled = drillFocusedChildIfNeeded(el)
             if isUsableFocusedElement(drilled) {
                 return drilled
             }
@@ -361,23 +396,29 @@ final class AXCaretContext {
 
         // Return best-effort element even if role is generic.
         if let sysRef, CFGetTypeID(sysRef) == AXUIElementGetTypeID() {
-            return drillFocusedChildIfNeeded(sysRef as! AXUIElement)
+            let el = sysRef as! AXUIElement
+            AXUIElementSetMessagingTimeout(el, Self.axIPCDeadlineSeconds)
+            return drillFocusedChildIfNeeded(el)
         }
         return focusedElement(forPID: app.processIdentifier)
     }
 
     private func focusedElement(forPID pid: pid_t) -> AXUIElement? {
         let axApp = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(axApp, Self.axIPCDeadlineSeconds)
         var ref: CFTypeRef?
         if AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &ref) == .success,
            let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() {
-            return (ref as! AXUIElement)
+            let el = ref as! AXUIElement
+            AXUIElementSetMessagingTimeout(el, Self.axIPCDeadlineSeconds)
+            return el
         }
         return nil
     }
 
     private func drillFocusedChildIfNeeded(_ start: AXUIElement) -> AXUIElement {
         var current = start
+        AXUIElementSetMessagingTimeout(current, Self.axIPCDeadlineSeconds)
         let containerRoles: Set<String> = ["AXApplication", "AXWindow", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXWebArea"]
         for _ in 0..<4 {
             let role = copyStringAttribute(current, attribute: kAXRoleAttribute as String) ?? ""
@@ -389,6 +430,7 @@ final class AXCaretContext {
             }
             let child = childRef as! AXUIElement
             if CFEqual(child, current) { break }
+            AXUIElementSetMessagingTimeout(child, Self.axIPCDeadlineSeconds)
             current = child
         }
         return current
@@ -802,8 +844,22 @@ final class AXCaretContext {
 
                     if !hasLen || charLen <= 240 {
                         if let raw = stringForTextMarkerRange(element: element, markerRange: fullRange) {
-                            let cleaned = raw.replacingOccurrences(of: "\u{FFFC}", with: "").replacingOccurrences(of: "\u{200B}", with: "")
+                            var cleaned = ObviousTypoCorrector.cleanAccessibilityText(raw)
                             if cleaned.count <= 300 {
+                                // When a rich `contenteditable` editor (`<p>All done.</p><p>also</p>`) omits `\n` in `fullRange`
+                                // (`"All done.also"`), verify against `AXParagraphTextMarkerRangeForTextMarker` so paragraph breaks stay intact!
+                                if let sentenceBoundaryWord,
+                                   cleaned.count > sentenceBoundaryWord.count {
+                                    let before = cleaned.dropLast(min(cleaned.count, sentenceBoundaryWord.count))
+                                    if before.last?.isWhitespace != true {
+                                        let paraPrefix = currentParagraphPrefix(element: element, endMarker: endMarker)
+                                        cleaned = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+                                            fullSlice: cleaned,
+                                            paragraphSlice: paraPrefix,
+                                            firstWord: sentenceBoundaryWord
+                                        )
+                                    }
+                                }
                                 let docStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: cleaned)
                                 return (String(cleaned.suffix(120)), docStart, cleaned.count <= 120)
                             }
@@ -839,7 +895,7 @@ final class AXCaretContext {
                     return nil
                 }
                 if let rawPara = stringForTextMarkerRange(element: element, markerRange: paraPairRange) {
-                    let cleaned = rawPara.replacingOccurrences(of: "\u{FFFC}", with: "").replacingOccurrences(of: "\u{200B}", with: "")
+                    let cleaned = ObviousTypoCorrector.cleanAccessibilityText(rawPara)
                     if let sentenceBoundaryWord,
                        let withPrevious = ObviousTypoCorrector.sentenceContext(
                            forFirstWord: sentenceBoundaryWord,
@@ -871,31 +927,131 @@ final class AXCaretContext {
         return nil
     }
 
+    private func currentParagraphPrefix(element: AXUIElement, endMarker: AXTextMarker) -> String? {
+        var paraRangeRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            "AXParagraphTextMarkerRangeForTextMarker" as CFString,
+            endMarker,
+            &paraRangeRef
+        ) == .success, let paraRangeRef else {
+            return nil
+        }
+        let paraStart = AXTextMarkerRangeCopyStartMarker(paraRangeRef as! AXTextMarkerRange)
+        guard !CFEqual(paraStart, endMarker),
+              let pair = makeMarkerRange(element: element, start: paraStart, end: endMarker),
+              let str = stringForTextMarkerRange(element: element, markerRange: pair) else {
+            return nil
+        }
+        return ObviousTypoCorrector.cleanAccessibilityText(str)
+    }
+
     private func previousParagraphTail(element: AXUIElement, before paragraphStart: AXTextMarker) -> String? {
-        // Text markers can cross accessibility nodes. Stay inside this editor's start marker.
+        if let direct = readTailBeforeParagraph(on: element, before: paragraphStart) {
+            return direct
+        }
+        // Rich block editors (ProseMirror, Lexical, Notion) may focus a per-paragraph child `AXGroup` where
+        // `AXStartTextMarker == paragraphStart`; climb to the editable container if present.
+        var editableRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, "AXEditableAncestor" as CFString, &editableRef) == .success,
+           let editableRef, CFGetTypeID(editableRef) == AXUIElementGetTypeID() {
+            let ancestor = editableRef as! AXUIElement
+            if !CFEqual(ancestor, element) {
+                AXUIElementSetMessagingTimeout(ancestor, Self.axIPCDeadlineSeconds)
+                if let fromEditable = readTailBeforeParagraph(on: ancestor, before: paragraphStart) {
+                    return fromEditable
+                }
+            }
+        }
+        var current = element
+        for _ in 0..<2 {
+            var parentRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(current, kAXParentAttribute as String as CFString, &parentRef) == .success,
+                  let parentRef, CFGetTypeID(parentRef) == AXUIElementGetTypeID() else {
+                break
+            }
+            let parent = parentRef as! AXUIElement
+            if CFEqual(parent, current) { break }
+            AXUIElementSetMessagingTimeout(parent, Self.axIPCDeadlineSeconds)
+            let pRole = copyStringAttribute(parent, attribute: kAXRoleAttribute as String) ?? ""
+            guard pRole != "AXWindow" && pRole != "AXApplication" && pRole != "AXScrollArea" else { break }
+            if let found = readTailBeforeParagraph(on: parent, before: paragraphStart) {
+                return found
+            }
+            current = parent
+        }
+        return nil
+    }
+
+    private func readTailBeforeParagraph(on container: AXUIElement, before paragraphStart: AXTextMarker) -> String? {
         var documentStart: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &documentStart) == .success,
+        guard AXUIElementCopyAttributeValue(container, "AXStartTextMarker" as CFString, &documentStart) == .success,
               let documentStart, !CFEqual(documentStart, paragraphStart) else {
             return nil
         }
+
+        // 1. Prefer reading the preceding paragraph via `AXPreviousTextMarkerForTextMarker` + `AXParagraphTextMarkerRangeForTextMarker`
+        var prevMarker: CFTypeRef?
+        if AXUIElementCopyParameterizedAttributeValue(
+            container, "AXPreviousTextMarkerForTextMarker" as CFString, paragraphStart, &prevMarker
+        ) == .success, var probeMarker = prevMarker, !CFEqual(probeMarker, paragraphStart) {
+            for _ in 0..<2 {
+                var prevParaRef: CFTypeRef?
+                if AXUIElementCopyParameterizedAttributeValue(
+                    container, "AXParagraphTextMarkerRangeForTextMarker" as CFString, probeMarker, &prevParaRef
+                ) == .success, let prevParaRef {
+                    let prevParaStart = AXTextMarkerRangeCopyStartMarker(prevParaRef as! AXTextMarkerRange)
+                    if !CFEqual(prevParaStart, paragraphStart),
+                       let spanRange = makeMarkerRange(element: container, start: prevParaStart, end: paragraphStart) {
+                        var lenRef: CFTypeRef?
+                        let lenOK = AXUIElementCopyParameterizedAttributeValue(
+                            container, "AXLengthForTextMarkerRange" as CFString, spanRange, &lenRef
+                        ) == .success
+                        let spanLen = (lenRef as? NSNumber)?.intValue ?? 0
+                        if lenOK && (1...300).contains(spanLen),
+                           let raw = stringForTextMarkerRange(element: container, markerRange: spanRange) {
+                            let cleaned = ObviousTypoCorrector.cleanAccessibilityText(raw)
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !cleaned.isEmpty {
+                                return String(cleaned.suffix(120))
+                            }
+                        }
+                    }
+                }
+                var earlierRef: CFTypeRef?
+                guard AXUIElementCopyParameterizedAttributeValue(
+                    container, "AXPreviousTextMarkerForTextMarker" as CFString, probeMarker, &earlierRef
+                ) == .success, let earlierRef, !CFEqual(earlierRef, probeMarker) else {
+                    break
+                }
+                probeMarker = earlierRef
+            }
+        }
+
+        // 2. Fallback: step back to previous word start (verifying `previousWord` stays inside `container` via length >= 0,
+        //    avoiding `CFEqual` false negatives caused by WebKit/Blink text-marker affinity metadata!)
         var previousWord: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(
-            element, "AXPreviousWordStartTextMarkerForTextMarker" as CFString, paragraphStart, &previousWord
+            container, "AXPreviousWordStartTextMarkerForTextMarker" as CFString, paragraphStart, &previousWord
         ) == .success, let previousWord, !CFEqual(previousWord, paragraphStart),
-           let startRange = makeMarkerRange(element: element, start: documentStart, end: previousWord),
-           CFEqual(AXTextMarkerRangeCopyStartMarker(startRange as! AXTextMarkerRange), documentStart),
-           let tailRange = makeMarkerRange(element: element, start: previousWord, end: paragraphStart) else {
+              let startRange = makeMarkerRange(element: container, start: documentStart, end: previousWord) else {
+            return nil
+        }
+        var prefixLenRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            container, "AXLengthForTextMarkerRange" as CFString, startRange, &prefixLenRef
+        ) == .success, let prefixLen = (prefixLenRef as? NSNumber)?.intValue, prefixLen >= 0,
+              let tailRange = makeMarkerRange(element: container, start: previousWord, end: paragraphStart) else {
             return nil
         }
         var lengthRef: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(
-            element, "AXLengthForTextMarkerRange" as CFString, tailRange, &lengthRef
-        ) == .success, let length = (lengthRef as? NSNumber)?.intValue, (1...120).contains(length) else {
+            container, "AXLengthForTextMarkerRange" as CFString, tailRange, &lengthRef
+        ) == .success, let length = (lengthRef as? NSNumber)?.intValue, (1...120).contains(length),
+              let raw = stringForTextMarkerRange(element: container, markerRange: tailRange) else {
             return nil
         }
-        return stringForTextMarkerRange(element: element, markerRange: tailRange)?
-            .replacingOccurrences(of: "\u{FFFC}", with: "")
-            .replacingOccurrences(of: "\u{200B}", with: "")
+        return ObviousTypoCorrector.cleanAccessibilityText(raw)
     }
 
     private func makeMarkerRange(element: AXUIElement, start: CFTypeRef, end: CFTypeRef) -> CFTypeRef? {
@@ -1010,11 +1166,15 @@ final class AXCaretContext {
     }
 
     func recordOverlayOutcome(_ outcome: String) {
-        recordStatus("\(lastDebugSummary) \(outcome)")
+        stateLock.lock()
+        _lastDebugSummary = "\(_lastDebugSummary) \(outcome)"
+        stateLock.unlock()
     }
 
     private func recordStatus(_ status: String) {
-        lastDebugSummary = status
+        stateLock.lock()
+        _lastDebugSummary = status
+        stateLock.unlock()
     }
 
     private static func isValidCaretRect(_ rect: CGRect) -> Bool {

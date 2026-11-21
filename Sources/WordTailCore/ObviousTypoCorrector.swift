@@ -1264,6 +1264,45 @@ public enum ObviousTypoCorrector {
         return hasSentenceEndingPunctuation(before: prefix) ? prefix : "\n"
     }
 
+    /// Normalizes raw Accessibility strings: converts `\u{FFFC}` attachment/block markers into newline boundaries
+    /// (preventing `"All done.\u{FFFC}also"` from collapsing into `"All done.also"`) and strips zero-width joiners.
+    public static func cleanAccessibilityText(_ raw: String) -> String {
+        var out = raw
+        if out.contains("\u{FFFC}") {
+            out = out.replacingOccurrences(of: "\u{FFFC}", with: "\n")
+        }
+        if out.contains("\u{200B}") {
+            out = out.replacingOccurrences(of: "\u{200B}", with: "")
+        }
+        if out.contains("\u{FEFF}") {
+            out = out.replacingOccurrences(of: "\u{FEFF}", with: "")
+        }
+        return out
+    }
+
+    /// Rich `contenteditable` editors (`<p>All done.</p><p>also</p>`) sometimes omit `\n` in `AXStringForTextMarkerRange([docStart, end])`
+    /// (`"All done.also"`), while `AXParagraphTextMarkerRangeForTextMarker` confirms the current `<p>` contains only `"also"`.
+    /// Injects the missing paragraph newline when `paragraphSlice` proves `firstWord` starts a new paragraph.
+    public static func reconcileParagraphBoundaryInFullSlice(
+        fullSlice: String,
+        paragraphSlice: String?,
+        firstWord: String?
+    ) -> String {
+        guard let firstWord, !firstWord.isEmpty,
+              let paragraphSlice,
+              containsOnlyWord(firstWord, in: paragraphSlice),
+              normalizeApostrophes(fullSlice).lowercased().hasSuffix(normalizeApostrophes(firstWord).lowercased()),
+              fullSlice.count > firstWord.count else {
+            return fullSlice
+        }
+        let before = String(fullSlice.dropLast(firstWord.count))
+        guard let lastBefore = before.last, !lastBefore.isWhitespace else {
+            return fullSlice
+        }
+        let trailingWord = String(fullSlice.suffix(firstWord.count))
+        return before + "\n" + trailingWord
+    }
+
     /// A paragraph-scoped editor response needs earlier text only for its first word.
     public static func sentenceContext(
         forFirstWord word: String,

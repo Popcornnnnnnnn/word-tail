@@ -16,11 +16,18 @@ final class TypingEngine {
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
     private let overlay = GhostOverlayWindow()
+    private let stateLock = NSRecursiveLock()
+
+    private var tapThread: Thread?
+    private var tapRunLoop: CFRunLoop?
+    private let tapRunLoopReady = DispatchSemaphore(value: 0)
+    private var tapKeepAlivePort: Port?
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var telemetryTap: CFMachPort?
     private var telemetryRunLoopSource: CFRunLoopSource?
+    private(set) var tapTimeoutRecoveryCount: Int = 0
     private var debounceWorkItem: DispatchWorkItem?
     private var rollingBuffer: String = ""
     private var lastCapturedLineText: String?
@@ -148,7 +155,9 @@ final class TypingEngine {
             UserDefaults.standard.set(newValue, forKey: "WordTailAutoCorrectOnSpace")
             completer.enableInlineTypoFix = newValue
             if !newValue {
+                stateLock.lock()
                 pendingSpaceUndo = nil
+                stateLock.unlock()
             }
         }
     }
@@ -163,7 +172,9 @@ final class TypingEngine {
         set {
             UserDefaults.standard.set(newValue, forKey: "WordTailAutoCapitalizeSentences")
             if !newValue {
+                stateLock.lock()
                 pendingSpaceUndo = nil
+                stateLock.unlock()
             }
         }
     }
@@ -369,9 +380,43 @@ final class TypingEngine {
         return false
     }
 
+    private func ensureDedicatedTapRunLoop() -> CFRunLoop {
+        stateLock.lock()
+        if let existing = tapRunLoop {
+            stateLock.unlock()
+            return existing
+        }
+        let thread = Thread { [weak self] in
+            let rl = RunLoop.current
+            let port = Port()
+            rl.add(port, forMode: .common)
+            if let self {
+                self.stateLock.lock()
+                self.tapKeepAlivePort = port
+                self.tapRunLoop = CFRunLoopGetCurrent()
+                self.stateLock.unlock()
+                self.tapRunLoopReady.signal()
+            }
+            CFRunLoopRun()
+        }
+        thread.name = "app.wordtail.macos.eventtap"
+        thread.qualityOfService = .userInteractive
+        tapThread = thread
+        stateLock.unlock()
+
+        thread.start()
+        _ = tapRunLoopReady.wait(timeout: .now() + 2.0)
+
+        stateLock.lock()
+        let resolved: CFRunLoop = tapRunLoop ?? CFRunLoopGetMain()
+        stateLock.unlock()
+        return resolved
+    }
+
     @discardableResult
     func start() -> Bool {
-        startPassiveTelemetryTapIfNeeded()
+        let targetRunLoop = ensureDedicatedTapRunLoop()
+        startPassiveTelemetryTapIfNeeded(on: targetRunLoop)
 
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
@@ -405,15 +450,20 @@ final class TypingEngine {
         eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CFRunLoopAddSource(targetRunLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         warmUpRunningFrontApps()
         return CGEvent.tapIsEnabled(tap: tap)
     }
 
     private func warmUpRunningFrontApps() {
-        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-            axContext.warmUpApplication(app, enableChromiumBridge: enableChromiumBridge)
+        let bridge = enableChromiumBridge
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            for app in apps {
+                self.axContext.warmUpApplication(app, enableChromiumBridge: bridge)
+            }
         }
     }
 
@@ -430,7 +480,7 @@ final class TypingEngine {
 
     /// Separate `.listenOnly` passive tap for KeyStats telemetry (mouse distance, scroll, clicks, modifiers, key heatmap)
     /// so high-frequency 120Hz–1000Hz mouse movements never wait on the active key-interception tap.
-    private func startPassiveTelemetryTapIfNeeded() {
+    private func startPassiveTelemetryTapIfNeeded(on targetRunLoop: CFRunLoop) {
         if let tTap = telemetryTap {
             CGEvent.tapEnable(tap: tTap, enable: true)
             return
@@ -465,7 +515,7 @@ final class TypingEngine {
         telemetryTap = tTap
         let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tTap, 0)
         telemetryRunLoopSource = src
-        CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
+        CFRunLoopAddSource(targetRunLoop, src, .commonModes)
         CGEvent.tapEnable(tap: tTap, enable: true)
     }
 
@@ -481,8 +531,11 @@ final class TypingEngine {
             return
         }
 
+        stateLock.lock()
         let bid = activeBundleID ?? lastObservedBundleID
         let appName = activeAppName ?? lastObservedAppName
+        let romanLayout = lastKnownRomanLayout
+        stateLock.unlock()
 
         switch type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged:
@@ -519,7 +572,7 @@ final class TypingEngine {
                 rawFlags: event.flags.rawValue,
                 isAutoRepeat: autoRepeat,
                 isSecureInput: IsSecureEventInputEnabled(),
-                isRomanLayout: lastKnownRomanLayout,
+                isRomanLayout: romanLayout,
                 appBundleID: bid,
                 appName: appName
             )
@@ -530,7 +583,7 @@ final class TypingEngine {
                 keyCode: keyCode,
                 rawFlags: event.flags.rawValue,
                 isSecureInput: IsSecureEventInputEnabled(),
-                isRomanLayout: lastKnownRomanLayout,
+                isRomanLayout: romanLayout,
                 appBundleID: bid,
                 appName: appName
             )
@@ -551,16 +604,21 @@ final class TypingEngine {
             if app?.bundleIdentifier == Bundle.main.bundleIdentifier {
                 return
             }
+            self.stateLock.lock()
             self.lastLiveSample = nil
             self.lastObservedBundleID = app?.bundleIdentifier
             self.lastObservedAppName = app?.localizedName
             self.activeBundleID = app?.bundleIdentifier
             self.activeAppName = app?.localizedName
+            self.stateLock.unlock()
             self.habitTracker.resetSessionContext()
             self.phrasePredictor.resetSentenceWindow()
             self.dismissOverlay(clearBuffer: true)
             if let app {
-                self.axContext.warmUpApplication(app, enableChromiumBridge: self.enableChromiumBridge)
+                let bridge = self.enableChromiumBridge
+                DispatchQueue.global(qos: .utility).async { [weak self] in
+                    self?.axContext.warmUpApplication(app, enableChromiumBridge: bridge)
+                }
             }
         }
 
@@ -571,11 +629,14 @@ final class TypingEngine {
         ) { [weak self] _ in
             guard let self else { return }
             let nowRoman = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
-            if nowRoman != self.lastKnownRomanLayout {
+            self.stateLock.lock()
+            let changed = (nowRoman != self.lastKnownRomanLayout)
+            if changed {
                 self.lastKnownRomanLayout = nowRoman
-                if self.enableHabitLearning {
-                    self.habitTracker.recordIMESwitch()
-                }
+            }
+            self.stateLock.unlock()
+            if changed && self.enableHabitLearning {
+                self.habitTracker.recordIMESwitch()
             }
             self.phrasePredictor.resetSentenceWindow()
             self.dismissOverlay(clearBuffer: true)
@@ -588,15 +649,23 @@ final class TypingEngine {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            stateLock.lock()
+            tapTimeoutRecoveryCount += 1
+            let count = tapTimeoutRecoveryCount
+            stateLock.unlock()
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
+            axContext.recordOverlayOutcome("tapRecovered=\(count)")
             return Unmanaged.passUnretained(event)
         }
 
         if event.getIntegerValueField(.eventSourceUserData) == Self.injectedEventTag {
             return Unmanaged.passUnretained(event)
         }
+
+        stateLock.lock()
+        defer { stateLock.unlock() }
 
         // Global toggle hotkey: Control + Option + W
         if type == .keyDown {
@@ -631,7 +700,9 @@ final class TypingEngine {
                     self.habitTracker.resetSessionContext()
                     self.phrasePredictor.resetSentenceWindow()
                 }
+                self.stateLock.lock()
                 self.lastLiveSample = nil
+                self.stateLock.unlock()
                 self.dismissOverlay(clearBuffer: isClick)
             }
             return Unmanaged.passUnretained(event)
@@ -918,9 +989,10 @@ final class TypingEngine {
                 rollingBuffer.removeLast()
             }
             if enableHabitLearning {
+                let capturedBid = activeBundleID ?? lastObservedBundleID
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    let bid = self.activeBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    let bid = capturedBid ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                     if bid != Bundle.main.bundleIdentifier && self.inputGuard.shouldAllowPrediction(frontmostBundleID: bid) {
                         self.habitTracker.recordBackspace()
                     }
@@ -977,7 +1049,7 @@ final class TypingEngine {
         // check high-confidence auto-correction ("im," -> "I'm,", "teh " -> "the ") and sentence-start capitalization ("wow," -> "Wow,")!
         if let delim = boundaryTriggerDelimiter {
             pendingSpaceUndo = nil
-            let bid = activeBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            let bid = activeBundleID ?? lastObservedBundleID
             if bid != Bundle.main.bundleIdentifier,
                (autoCorrectOnSpace || autoCapitalizeSentences),
                inputGuard.shouldAllowPrediction(frontmostBundleID: bid),
@@ -1115,9 +1187,10 @@ final class TypingEngine {
             }
 
             if enableHabitLearning {
+                let capturedBid = activeBundleID ?? lastObservedBundleID
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    let bid = self.activeBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    let bid = capturedBid ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                     guard bid != Bundle.main.bundleIdentifier,
                           self.inputGuard.shouldAllowPrediction(frontmostBundleID: bid) else {
                         return
@@ -1200,11 +1273,13 @@ final class TypingEngine {
     }
 
     private func schedulePredictionQuery(delayMs: Int = 16, retryCount: Int = 0) {
+        stateLock.lock()
         debounceWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             self?.evaluateAndRenderPrediction(retryCount: retryCount)
         }
         debounceWorkItem = item
+        stateLock.unlock()
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delayMs), execute: item)
     }
 
@@ -1215,14 +1290,19 @@ final class TypingEngine {
               inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle) else {
             return
         }
+        stateLock.lock()
+        let fallbackBuf = rollingBuffer
+        stateLock.unlock()
         if let snap = axContext.capture(
             targetApp: targetApp,
-            fallbackBuffer: rollingBuffer,
+            fallbackBuffer: fallbackBuf,
             enableChromiumBridge: enableChromiumBridge,
             verticalAdjustment: verticalAdjustment(forBundleID: frontBundle)
         ) {
+            stateLock.lock()
             lastCapturedLineText = snap.textBeforeCursor
             lastCapturedDocumentStart = snap.isAtDocumentStart
+            stateLock.unlock()
         }
     }
 
@@ -1233,8 +1313,11 @@ final class TypingEngine {
             overlay.hide()
             return
         }
+        stateLock.lock()
         activeBundleID = frontBundle
         activeAppName = targetApp?.localizedName
+        let fallbackBuf = rollingBuffer
+        stateLock.unlock()
         guard inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle) else {
             overlay.hide()
             return
@@ -1242,7 +1325,7 @@ final class TypingEngine {
 
         guard let snapshot = axContext.capture(
             targetApp: targetApp,
-            fallbackBuffer: rollingBuffer,
+            fallbackBuffer: fallbackBuf,
             enableChromiumBridge: enableChromiumBridge,
             verticalAdjustment: verticalAdjustment(forBundleID: frontBundle)
         ) else {
@@ -1253,12 +1336,16 @@ final class TypingEngine {
             return
         }
 
+        stateLock.lock()
+        let currentBuf = rollingBuffer
+        stateLock.unlock()
+
         // Guard against Electron/Chromium async frame lag (e.g. user typed "What", but at t=16ms AX still reports "Wha"
         // or reports zero glyph width for 't' before layout commits—which would otherwise draw "tever"/"ever" over 't'!):
         let isStaleText = ObviousTypoCorrector.isSnapshotBehindRollingBuffer(
             snapshotText: snapshot.textBeforeCursor,
             isFallbackText: snapshot.isFallbackText,
-            rollingBuffer: rollingBuffer
+            rollingBuffer: currentBuf
         )
         if isStaleText || (snapshot.isGlyphWidthZeroOnPrevChar && retryCount < 3) {
             overlay.hide()
@@ -1268,16 +1355,13 @@ final class TypingEngine {
             }
             if isStaleText {
                 let snapWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: snapshot.textBeforeCursor)?.lowercased()
-                let bufWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: rollingBuffer)?.lowercased()
+                let bufWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: currentBuf)?.lowercased()
                 if snapWord != bufWord {
                     axContext.recordOverlayOutcome("shown=no(staleAX)")
                     return
                 }
             }
         }
-
-        lastCapturedLineText = snapshot.textBeforeCursor
-        lastCapturedDocumentStart = snapshot.isAtDocumentStart
 
         let matches = completer.candidates(
             textBeforeCursor: snapshot.textBeforeCursor,
@@ -1288,25 +1372,22 @@ final class TypingEngine {
         )
         guard let first = matches.first else {
             axContext.recordOverlayOutcome("shown=no")
+            stateLock.lock()
+            lastCapturedLineText = snapshot.textBeforeCursor
+            lastCapturedDocumentStart = snapshot.isAtDocumentStart
             activeCandidates.removeAll(keepingCapacity: true)
             activeSnapshot = nil
+            stateLock.unlock()
             overlay.hide()
             return
         }
 
+        stateLock.lock()
+        lastCapturedLineText = snapshot.textBeforeCursor
+        lastCapturedDocumentStart = snapshot.isAtDocumentStart
         activeCandidates = matches
         activeCandidateIndex = 0
         activeSnapshot = snapshot
-        if enableHabitLearning {
-            habitTracker.recordSuggestionShownOncePerWord()
-        }
-
-        axContext.recordOverlayOutcome(String(
-            format: "shown=yes(len=%d,n=%d,x=%.0f,y=%.0f,mid=%d)",
-            first.suffix.count, matches.count, snapshot.placement.anchorX, snapshot.placement.baselineY,
-            snapshot.hasTextAfterOnLine ? 1 : 0
-        ))
-
         if let frontBundle {
             lastLiveSample = PinnedLiveSample(
                 bundleID: frontBundle,
@@ -1317,6 +1398,17 @@ final class TypingEngine {
                 font: snapshot.font
             )
         }
+        stateLock.unlock()
+
+        if enableHabitLearning {
+            habitTracker.recordSuggestionShownOncePerWord()
+        }
+
+        axContext.recordOverlayOutcome(String(
+            format: "shown=yes(len=%d,n=%d,x=%.0f,y=%.0f,mid=%d)",
+            first.suffix.count, matches.count, snapshot.placement.anchorX, snapshot.placement.baselineY,
+            snapshot.hasTextAfterOnLine ? 1 : 0
+        ))
 
         overlay.show(
             match: first,
@@ -1330,7 +1422,10 @@ final class TypingEngine {
     }
 
     func refreshPinnedOverlayIfVisible() {
-        guard let sample = lastLiveSample else { return }
+        stateLock.lock()
+        let sample = lastLiveSample
+        stateLock.unlock()
+        guard let sample else { return }
         let offset = verticalAdjustment(forBundleID: sample.bundleID)
         let placement = ScreenGeometry.baselinePlacement(
             forAXCharRect: sample.rawAXRect,
@@ -1350,8 +1445,8 @@ final class TypingEngine {
     }
 
     private func dismissOverlay(clearBuffer: Bool) {
+        stateLock.lock()
         debounceWorkItem?.cancel()
-        overlay.hide()
         activeCandidates.removeAll(keepingCapacity: true)
         activeSnapshot = nil
         if clearBuffer {
@@ -1361,6 +1456,8 @@ final class TypingEngine {
             pendingSpaceUndo = nil
             suppressedWordOnce = nil
         }
+        stateLock.unlock()
+        overlay.hide()
     }
 
     /// Reconstructs the current line's text up to and including `typedWord`, accounting for fast keystroke rollover

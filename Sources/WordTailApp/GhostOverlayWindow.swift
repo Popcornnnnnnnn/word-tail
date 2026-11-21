@@ -171,19 +171,33 @@ final class GhostTextView: NSView {
     }
 }
 
-final class GhostOverlayWindow {
-    private let panel: NSPanel
-    private let ghostView: GhostTextView
+private final class NonKeyOverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
 
-    private(set) var currentMatch: CompletionMatch?
+final class GhostOverlayWindow {
+    private let panel: NonKeyOverlayPanel
+    private let ghostView: GhostTextView
+    private let stateLock = NSLock()
+    private var visibleFlag: Bool = false
+    private var matchStorage: CompletionMatch?
+
+    var currentMatch: CompletionMatch? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return matchStorage
+    }
 
     var isVisible: Bool {
-        panel.isVisible && currentMatch != nil
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return visibleFlag && matchStorage != nil
     }
 
     init() {
         ghostView = GhostTextView(frame: .zero)
-        panel = NSPanel(
+        panel = NonKeyOverlayPanel(
             contentRect: NSRect(x: 0, y: 0, width: 10, height: 24),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -194,6 +208,7 @@ final class GhostOverlayWindow {
         panel.hasShadow = false
         panel.ignoresMouseEvents = true
         panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
         panel.level = .popUpMenu
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.contentView = ghostView
@@ -208,7 +223,26 @@ final class GhostOverlayWindow {
         font: NSFont,
         opacity: CGFloat = 0.38
     ) {
-        currentMatch = match
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.show(
+                    match: match,
+                    placement: placement,
+                    rawAXRect: rawAXRect,
+                    primaryScreenHeight: primaryScreenHeight,
+                    hasTextAfterOnLine: hasTextAfterOnLine,
+                    font: font,
+                    opacity: opacity
+                )
+            }
+            return
+        }
+
+        stateLock.lock()
+        matchStorage = match
+        visibleFlag = true
+        stateLock.unlock()
+
         ghostView.font = font
         ghostView.ghostOpacity = opacity
 
@@ -285,9 +319,27 @@ final class GhostOverlayWindow {
     }
 
     func hide() {
-        currentMatch = nil
-        if panel.isVisible {
-            panel.orderOut(nil)
+        stateLock.lock()
+        let wasVisible = visibleFlag
+        visibleFlag = false
+        matchStorage = nil
+        stateLock.unlock()
+
+        guard wasVisible || Thread.isMainThread else { return }
+        if Thread.isMainThread {
+            if panel.isVisible {
+                panel.orderOut(nil)
+            }
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.stateLock.lock()
+                let stillHidden = !self.visibleFlag
+                self.stateLock.unlock()
+                if stillHidden && self.panel.isVisible {
+                    self.panel.orderOut(nil)
+                }
+            }
         }
     }
 }

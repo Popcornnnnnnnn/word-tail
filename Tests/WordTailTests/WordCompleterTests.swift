@@ -1467,4 +1467,70 @@ final class WordCompleterTests: XCTestCase {
             )
         }
     }
+
+    func testRichEditorAttachmentAndParagraphConcatenationCapitalization() {
+        // 1. `\u{FFFC}` block/attachment break after `"All done."` preserves paragraph separation instead of collapsing to `"All done.also"`!
+        let cleanedAttachment = ObviousTypoCorrector.cleanAccessibilityText("All done.\u{FFFC}also")
+        XCTAssertEqual(cleanedAttachment, "All done.\nalso")
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "also",
+                lineContextIncludingWord: cleanedAttachment,
+                autoCorrectTypos: false,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Also"
+        )
+
+        // 2. `<div contenteditable><p>All done.</p><p>also</p></div>` where `fullRange` returns `"All done.also"` without `\n`
+        //    while `AXParagraphTextMarkerRange` returns `"also"` injects `\n` and capitalizes `"also,"` -> `"Also,"`!
+        let reconciledEnded = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+            fullSlice: "All done.also",
+            paragraphSlice: "also",
+            firstWord: "also"
+        )
+        XCTAssertEqual(reconciledEnded, "All done.\nalso")
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "also",
+                lineContextIncludingWord: reconciledEnded,
+                autoCorrectTypos: false,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "Also"
+        )
+
+        // 3. Ordinary line break without sentence-ending punctuation (`<p>All done</p><p>also</p>`) stays lowercase!
+        let reconciledUnended = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+            fullSlice: "All donealso",
+            paragraphSlice: "also",
+            firstWord: "also"
+        )
+        XCTAssertEqual(reconciledUnended, "All done\nalso")
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "also",
+                lineContextIncludingWord: reconciledUnended,
+                autoCorrectTypos: false,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        )
+
+        // 4. Same-paragraph dot token (`notes.md` where paragraphSlice is `"notes.md"`) is NOT split!
+        let samePara = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+            fullSlice: "notes.md",
+            paragraphSlice: "notes.md",
+            firstWord: "md"
+        )
+        XCTAssertEqual(samePara, "notes.md")
+    }
 }
