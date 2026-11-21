@@ -7,6 +7,7 @@ import WordTailCore
 enum SettingsSection: String, CaseIterable, Identifiable {
     case calibration = "Calibration"
     case keyStats = "KeyStats"
+    case appStats = "App Stats"
     case insights = "Insights"
     case dictionary = "Dictionary"
     case preferences = "Preferences"
@@ -16,6 +17,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .calibration: return "slider.horizontal.3"
         case .keyStats: return "keyboard"
+        case .appStats: return "square.grid.2x2"
         case .insights: return "chart.bar.xaxis"
         case .dictionary: return "character.book.closed"
         case .preferences: return "switch.2"

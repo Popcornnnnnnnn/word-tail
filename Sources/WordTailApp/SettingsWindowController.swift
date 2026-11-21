@@ -60,7 +60,7 @@ struct SettingsView: View {
                     ) {
                         if section == .insights {
                             vm.refreshInsights()
-                        } else if section == .keyStats {
+                        } else if section == .keyStats || section == .appStats {
                             vm.refreshKeyStats()
                         }
                         vm.selectedSection = section
@@ -152,6 +152,8 @@ struct SettingsView: View {
                 CalibrationSettingsView(vm: vm)
             case .keyStats:
                 KeyStatsSettingsView(vm: vm)
+            case .appStats:
+                AppStatsSettingsView(vm: vm)
             case .insights:
                 InsightsSettingsView(vm: vm)
             case .dictionary:
@@ -162,7 +164,7 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 24)
         .padding(.top, 26)
-        .padding(.bottom, 24)
+        .padding(.bottom, vm.selectedSection == .appStats ? 12 : 24)
 
         if vm.isStaticShowcase {
             Color.clear
@@ -172,6 +174,9 @@ struct SettingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipped()
+        } else if vm.selectedSection == .appStats {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
             ScrollView(.vertical, showsIndicators: false) {
                 content

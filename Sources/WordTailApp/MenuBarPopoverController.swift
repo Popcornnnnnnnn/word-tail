@@ -684,7 +684,7 @@ struct MenuBarPopoverView: View {
                 }
                 PopoverBareIconButton(symbol: "square.grid.2x2", help: "App Statistics") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.keyStats, nil)
+                    vm.onOpenSettingsSection(.appStats, .allTime)
                 }
                 PopoverBareIconButton(symbol: "chart.bar.fill", help: "All-Time Stats") {
                     onClosePopover()

@@ -125,7 +125,14 @@ enum ShowcaseExporter {
             "com.google.Chrome": srgbIcon(forBundleID: "com.google.Chrome"),
             "com.apple.Notes": srgbIcon(forBundleID: "com.apple.Notes"),
             "com.raycast.macos": srgbIcon(forBundleID: "com.raycast.macos"),
-            "com.apple.Safari": srgbIcon(forBundleID: "com.apple.Safari")
+            "com.apple.Safari": srgbIcon(forBundleID: "com.apple.Safari"),
+            "com.apple.Terminal": srgbIcon(forBundleID: "com.apple.Terminal"),
+            "com.apple.MobileSMS": srgbIcon(forBundleID: "com.apple.MobileSMS"),
+            "com.apple.mail": srgbIcon(forBundleID: "com.apple.mail"),
+            "com.apple.finder": srgbIcon(forBundleID: "com.apple.finder"),
+            "com.apple.iCal": srgbIcon(forBundleID: "com.apple.iCal"),
+            "com.apple.Music": srgbIcon(forBundleID: "com.apple.Music"),
+            "com.apple.Preview": srgbIcon(forBundleID: "com.apple.Preview")
         ]
 
         let sampleTrend: [DailyActivityPoint] = [
@@ -178,11 +185,11 @@ enum ShowcaseExporter {
                 RankedCountItem(label: "O", count: 1_840)
             ],
             topApps: [
-                AppActivitySummary(bundleID: "com.openai.codex", displayName: "Codex (ChatGPT)", keyPresses: 14_820, clicks: 1_940, scrollMeters: 2_180, charactersSaved: 1_420, keyHeatmap: sampleHeatmap),
-                AppActivitySummary(bundleID: "com.google.Chrome", displayName: "Google Chrome", keyPresses: 11_340, clicks: 2_310, scrollMeters: 2_690, charactersSaved: 980, keyHeatmap: sampleHeatmap),
-                AppActivitySummary(bundleID: "com.raycast.macos", displayName: "Raycast", keyPresses: 6_490, clicks: 420, scrollMeters: 380, charactersSaved: 460),
-                AppActivitySummary(bundleID: "com.apple.Notes", displayName: "Notes", keyPresses: 5_810, clicks: 760, scrollMeters: 640, charactersSaved: 560),
-                AppActivitySummary(bundleID: "com.apple.Safari", displayName: "Safari", keyPresses: 4_220, clicks: 710, scrollMeters: 520, charactersSaved: 210)
+                AppActivitySummary(bundleID: "com.openai.codex", displayName: "Codex (ChatGPT)", keyPresses: 14_820, clicks: 1_940, scrollMeters: 2_180, scrollPx: 1_420_000, charactersSaved: 1_420, keyHeatmap: sampleHeatmap),
+                AppActivitySummary(bundleID: "com.google.Chrome", displayName: "Google Chrome", keyPresses: 11_340, clicks: 2_310, scrollMeters: 2_690, scrollPx: 2_690_000, charactersSaved: 980, keyHeatmap: sampleHeatmap),
+                AppActivitySummary(bundleID: "com.raycast.macos", displayName: "Raycast", keyPresses: 6_490, clicks: 420, scrollMeters: 380, scrollPx: 380_000, charactersSaved: 460),
+                AppActivitySummary(bundleID: "com.apple.Notes", displayName: "Notes", keyPresses: 5_810, clicks: 760, scrollMeters: 640, scrollPx: 640_000, charactersSaved: 560),
+                AppActivitySummary(bundleID: "com.apple.Safari", displayName: "Safari", keyPresses: 4_220, clicks: 710, scrollMeters: 520, scrollPx: 520_000, charactersSaved: 210)
             ],
             dailyTrend: sampleTrend,
             calendarDays: sampleCalDays
@@ -249,6 +256,45 @@ enum ShowcaseExporter {
             },
             size: windowShotSize,
             to: outDir.appendingPathComponent("calibration-window.png")
+        )
+
+        // 5. Full-page App Statistics window screenshot
+        let sampleAllTimeAppStats = KeyStatsAggregateSnapshot(
+            range: .allTime,
+            deviceScope: .allDevices,
+            deviceCount: 2,
+            totalKeyPresses: 801_552,
+            totalClicks: 147_518,
+            topApps: [
+                AppActivitySummary(bundleID: "com.openai.codex", displayName: "Codex (ChatGPT)", keyPresses: 213_795, clicks: 33_660, scrollMeters: 1_445, scrollPx: 5_461_300, charactersSaved: 2_840),
+                AppActivitySummary(bundleID: "com.apple.Safari", displayName: "Safari", keyPresses: 184_768, clicks: 10_951, scrollMeters: 839, scrollPx: 3_170_700, charactersSaved: 1_190),
+                AppActivitySummary(bundleID: "com.apple.Terminal", displayName: "Terminal", keyPresses: 120_970, clicks: 7_872, scrollMeters: 788, scrollPx: 2_979_000, charactersSaved: 420),
+                AppActivitySummary(bundleID: "com.google.Chrome", displayName: "Google Chrome", keyPresses: 109_378, clicks: 73_987, scrollMeters: 4_850, scrollPx: 18_331_400, charactersSaved: 1_890),
+                AppActivitySummary(bundleID: "com.raycast.macos", displayName: "Raycast", keyPresses: 56_808, clicks: 5_946, scrollMeters: 287, scrollPx: 1_086_200, charactersSaved: 680),
+                AppActivitySummary(bundleID: "com.apple.Notes", displayName: "Notes", keyPresses: 36_319, clicks: 2_660, scrollMeters: 162, scrollPx: 614_300, charactersSaved: 910),
+                AppActivitySummary(bundleID: "com.apple.MobileSMS", displayName: "Messages", keyPresses: 21_372, clicks: 2_233, scrollMeters: 237, scrollPx: 895_100, charactersSaved: 540),
+                AppActivitySummary(bundleID: "com.apple.mail", displayName: "Mail", keyPresses: 18_497, clicks: 1_206, scrollMeters: 211, scrollPx: 798_200, charactersSaved: 480),
+                AppActivitySummary(bundleID: "com.apple.finder", displayName: "Finder", keyPresses: 14_453, clicks: 7_507, scrollMeters: 603, scrollPx: 2_279_000, charactersSaved: 110),
+                AppActivitySummary(bundleID: "com.apple.iCal", displayName: "Calendar", keyPresses: 9_162, clicks: 1_357, scrollMeters: 103, scrollPx: 388_900, charactersSaved: 60),
+                AppActivitySummary(bundleID: "com.apple.Music", displayName: "Music", keyPresses: 8_292, clicks: 645, scrollMeters: 58, scrollPx: 219_400, charactersSaved: 30),
+                AppActivitySummary(bundleID: "com.apple.Preview", displayName: "Preview", keyPresses: 7_738, clicks: 495, scrollMeters: 14, scrollPx: 53_100, charactersSaved: 20)
+            ]
+        )
+        let appStatsVM = SettingsViewModel(
+            showcaseSection: .appStats,
+            appOffsets: sampleApps,
+            insights: sampleInsights,
+            bigrams: sampleBigrams,
+            vocabulary: sampleVocab,
+            keyStats: sampleAllTimeAppStats,
+            showcaseAppIcons: appIconsMap
+        )
+        try renderSwiftUIViewToPNG(
+            MacWindowFrameBackdrop(size: windowShotSize) {
+                SettingsView(vm: appStatsVM)
+            },
+            size: windowShotSize,
+            to: outDir.appendingPathComponent("appstats-window.png")
         )
 
         // 5. Menu Bar Popover showcase screenshot (440 x 740)

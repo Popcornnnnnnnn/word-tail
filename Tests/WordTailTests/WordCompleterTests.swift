@@ -1733,6 +1733,10 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollPx(425.4), "425 px")
         XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollPx(405_300), "405.3 kPx")
         XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollPx(1_250_000), "1.25 MPx")
+        XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollKPx(0), "0 px")
+        XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollKPx(425.4), "425 px")
+        XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollKPx(87_200), "87.2 kPx")
+        XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollKPx(18_331_400), "18,331.4 kPx")
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("wordtail-rates-test-\(UUID().uuidString)", isDirectory: true)
@@ -1770,5 +1774,6 @@ final class WordCompleterTests: XCTestCase {
         let snap = store.snapshot(for: .today, deviceScope: .allDevices)
         XCTAssertEqual(snap.scrollDistancePx, 125.0, accuracy: 0.01)
         XCTAssertEqual(snap.dailyTrend.last?.scrollDistancePx ?? 0, 125.0, accuracy: 0.01)
+        XCTAssertEqual(snap.topApps.first?.scrollPx ?? 0, 125.0, accuracy: 0.01)
     }
 }

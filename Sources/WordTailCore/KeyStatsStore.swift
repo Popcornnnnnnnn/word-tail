@@ -182,6 +182,7 @@ public struct AppActivitySummary: Identifiable, Equatable {
     public let keyPresses: Int
     public let clicks: Int
     public let scrollMeters: Double
+    public let scrollPx: Double
     public let charactersSaved: Int
     public let keyHeatmap: [String: Int]
 
@@ -191,6 +192,7 @@ public struct AppActivitySummary: Identifiable, Equatable {
         keyPresses: Int,
         clicks: Int,
         scrollMeters: Double,
+        scrollPx: Double = 0,
         charactersSaved: Int,
         keyHeatmap: [String: Int] = [:]
     ) {
@@ -199,6 +201,7 @@ public struct AppActivitySummary: Identifiable, Equatable {
         self.keyPresses = keyPresses
         self.clicks = clicks
         self.scrollMeters = scrollMeters
+        self.scrollPx = scrollPx
         self.charactersSaved = charactersSaved
         self.keyHeatmap = keyHeatmap
     }
@@ -414,6 +417,24 @@ public struct KeyStatsAggregateSnapshot: Equatable {
             return String(format: "%.1f kPx", px / 1_000.0)
         }
         return "\(max(0, Int(px.rounded()))) px"
+    }
+
+    private static let kPxDecimalFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.groupingSeparator = ","
+        f.minimumFractionDigits = 1
+        f.maximumFractionDigits = 1
+        return f
+    }()
+
+    public static func formatScrollKPx(_ px: Double) -> String {
+        if px < 1_000.0 {
+            return "\(max(0, Int(px.rounded()))) px"
+        }
+        let kpx = px / 1_000.0
+        let formatted = kPxDecimalFormatter.string(from: NSNumber(value: kpx)) ?? String(format: "%.1f", kpx)
+        return "\(formatted) kPx"
     }
 }
 
@@ -975,7 +996,7 @@ public final class KeyStatsStore {
                     if lScore != rScore { return lScore > rScore }
                     return $0.displayName < $1.displayName
                 }
-                .prefix(100)
+                .prefix(200)
                 .map {
                     AppActivitySummary(
                         bundleID: $0.bundleID,
@@ -983,6 +1004,7 @@ public final class KeyStatsStore {
                         keyPresses: $0.keyPresses,
                         clicks: $0.totalClicks,
                         scrollMeters: $0.scrollDistancePx * KeyStatsAggregateSnapshot.metersPerPixel,
+                        scrollPx: $0.scrollDistancePx,
                         charactersSaved: $0.charactersSaved,
                         keyHeatmap: $0.keyHeatmapCounts ?? [:]
                     )

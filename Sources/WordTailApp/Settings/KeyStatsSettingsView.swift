@@ -97,7 +97,8 @@ struct KeyStatsSettingsView: View {
             if !ks.topApps.isEmpty {
                 AppStatisticsTableCard(
                     apps: ks.topApps,
-                    resolvedIcon: { vm.resolvedAppIcon(bundleID: $0) }
+                    resolvedIcon: { vm.resolvedAppIcon(bundleID: $0) },
+                    onOpenFullAppStats: vm.isStaticShowcase ? nil : { vm.selectedSection = .appStats }
                 )
             }
 
@@ -1013,6 +1014,7 @@ private struct AppStatisticsTableCard: View {
     @Environment(\.colorScheme) private var scheme
     let apps: [AppActivitySummary]
     let resolvedIcon: (String) -> NSImage
+    var onOpenFullAppStats: (() -> Void)? = nil
 
     @State private var sortMetric: AppSortMetric = .keys
     @State private var sortAscending: Bool = false
@@ -1060,12 +1062,22 @@ private struct AppStatisticsTableCard: View {
                     subtitle: "Total: \(formattedInt(totalKeys)) keys · \(formattedInt(totalClicks)) clicks · \(KeyStatsAggregateSnapshot.formatDistance(totalScroll)) scroll"
                 )
                 Spacer()
-                if apps.count > 8 {
-                    LinearActionButton(
-                        title: showAllApps ? "Show Top 8" : "Show All (\(apps.count))",
-                        icon: showAllApps ? "chevron.up" : "chevron.down"
-                    ) {
-                        showAllApps.toggle()
+                HStack(spacing: 6) {
+                    if let onOpenFullAppStats {
+                        LinearActionButton(
+                            title: "Full Page ↗",
+                            icon: "square.grid.2x2"
+                        ) {
+                            onOpenFullAppStats()
+                        }
+                    }
+                    if apps.count > 8 {
+                        LinearActionButton(
+                            title: showAllApps ? "Show Top 8" : "Show All (\(apps.count))",
+                            icon: showAllApps ? "chevron.up" : "chevron.down"
+                        ) {
+                            showAllApps.toggle()
+                        }
                     }
                 }
             }
