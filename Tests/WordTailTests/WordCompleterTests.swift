@@ -1776,4 +1776,112 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertEqual(snap.dailyTrend.last?.scrollDistancePx ?? 0, 125.0, accuracy: 0.01)
         XCTAssertEqual(snap.topApps.first?.scrollPx ?? 0, 125.0, accuracy: 0.01)
     }
+
+    func testKeyStatsHourlyTrendSingleDayBoundsAPMCalibrationAndResetToday() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wordtail-v080-tests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone.current
+        // 2026-11-21 15:30:00 local time (Saturday)
+        var components = DateComponents(year: 2026, month: 11, day: 21, hour: 15, minute: 30, second: 0)
+        components.timeZone = cal.timeZone
+        let baseNow = cal.date(from: components)!
+        var fakeNow = baseNow
+
+        let store = KeyStatsStore(
+            fileURL: tempDir.appendingPathComponent("keystats.json"),
+            nowProvider: { fakeNow }
+        )
+
+        // Populate remote Nov 17 (Tuesday) peak
+        var peerPeakDay = DailyKeyStatsRecord(dateKey: "2026-11-17")
+        peerPeakDay.keyPresses = 4_000
+        peerPeakDay.leftClicks = 600
+        peerPeakDay.hourlyKeys[15] = 900
+
+        store.applyRemoteDeviceDays(["peer-mac": ["2026-11-17": peerPeakDay]])
+
+        // Record events on Nov 20 22:30 via nowProvider first
+        fakeNow = cal.date(byAdding: .hour, value: -17, to: baseNow)! // Nov 20 ~22:30
+        store.recordKeyDown(keyCode: 0, rawFlags: 0, isAutoRepeat: false, isSecureInput: false, isRomanLayout: true, appBundleID: "com.apple.Notes", appName: "Notes")
+        store.recordMouseClick(button: .left, appBundleID: "com.apple.Notes", appName: "Notes")
+
+        // Record burst on Nov 21 15:30 via nowProvider
+        fakeNow = baseNow
+        for _ in 0..<45 {
+            store.recordKeyDown(keyCode: 0, rawFlags: 0, isAutoRepeat: false, isSecureInput: false, isRomanLayout: true, appBundleID: "com.apple.Terminal", appName: "Terminal")
+        }
+        for _ in 0..<15 {
+            store.recordMouseClick(button: .right, appBundleID: "com.apple.Terminal", appName: "Terminal")
+        }
+        store.recordMouseClick(button: .left, appBundleID: "com.apple.Terminal", appName: "Terminal")
+
+        // 1. currentAPM over 60s window should equal 45 keys + 16 clicks = 61
+        XCTAssertEqual(store.currentAPM(windowSeconds: 60.0), 61)
+        // Advance 31s -> 30s window sees 0, 60s window still sees 61
+        fakeNow = baseNow.addingTimeInterval(31.0)
+        XCTAssertEqual(store.currentAPM(windowSeconds: 30.0), 0)
+        XCTAssertEqual(store.currentAPM(windowSeconds: 60.0), 61)
+        fakeNow = baseNow
+
+        // 2. singleDaySnapshot & bounds
+        let bounds = store.availableDateBounds(scope: .allDevices)
+        XCTAssertLessThan(bounds.earliest, bounds.latest)
+        let nov21Snap = store.singleDaySnapshot(for: baseNow, deviceScope: .thisMac)
+        XCTAssertEqual(nov21Snap.totalKeyPresses, 45)
+        XCTAssertEqual(nov21Snap.rightClicks, 15)
+        XCTAssertEqual(nov21Snap.leftClicks, 1)
+        XCTAssertEqual(nov21Snap.leftClickPercent, 6) // 1 / 16 = 6.25% -> 6
+
+        // 3. Peak metadata on allTime synced snapshot
+        let allTime = store.snapshot(for: .allTime, deviceScope: .allDevices)
+        XCTAssertEqual(allTime.peakDayDateKey, "2026-11-17")
+        XCTAssertEqual(allTime.peakWeekdayName, "Tuesday")
+
+        // 4. Hourly trend: By Date (Nov 21) vs Rolling 24h
+        let byDate = store.hourlyTrend(for: baseNow, recent24Hours: false)
+        XCTAssertEqual(byDate.buckets.count, 24)
+        XCTAssertEqual(byDate.buckets[15].localKeys, 45)
+        XCTAssertEqual(byDate.buckets[15].syncedKeys, 45)
+        XCTAssertEqual(byDate.busiestKeyHour, "15:00")
+        XCTAssertEqual(byDate.busiestClickHour, "15:00")
+
+        let rolling24 = store.hourlyTrend(for: baseNow, recent24Hours: true)
+        XCTAssertEqual(rolling24.buckets.count, 24)
+        XCTAssertEqual(rolling24.buckets.last?.localKeys, 45)
+        XCTAssertGreaterThanOrEqual(rolling24.buckets.reduce(0) { $0 + $1.localKeys }, 46) // includes Nov 20 22:30 key
+
+        // 5. Mouse calibration lifecycle
+        store.beginMouseCalibration()
+        store.recordMouseMove(to: CGPoint(x: 0, y: 0))
+        store.recordMouseMove(to: CGPoint(x: 20, y: 0))
+        XCTAssertEqual(store.currentMouseCalibrationPixels(), 20.0, accuracy: 0.01)
+        XCTAssertNil(store.finishMouseCalibration(knownMeters: 0.10)) // < 40 px rejected
+
+        store.beginMouseCalibration()
+        store.recordMouseMove(to: CGPoint(x: 220, y: 0)) // from lastMousePoint (20, 0) -> 200 px
+        XCTAssertEqual(store.currentMouseCalibrationPixels(), 200.0, accuracy: 0.01)
+        let calResult = store.finishMouseCalibration(knownMeters: 0.10)
+        XCTAssertNotNil(calResult)
+        let expectedFactor = ((0.10 / (200.0 * KeyStatsAggregateSnapshot.metersPerPixel)) * 100.0).rounded() / 100.0
+        XCTAssertEqual(calResult?.factor ?? 0, expectedFactor, accuracy: 0.001)
+        XCTAssertEqual(store.mouseCalibrationFactor, expectedFactor, accuracy: 0.001)
+
+        store.beginMouseCalibration()
+        store.recordMouseMove(to: CGPoint(x: 300, y: 0))
+        store.cancelMouseCalibration()
+        XCTAssertEqual(store.currentMouseCalibrationPixels(), 0.0, accuracy: 0.01)
+
+        // 6. resetTodayLocal clears Nov 21 local keys while preserving Nov 20 local and remote Nov 17
+        store.resetTodayLocal()
+        let todayAfterReset = store.snapshot(for: .today, deviceScope: .thisMac)
+        XCTAssertEqual(todayAfterReset.totalKeyPresses, 0)
+        XCTAssertEqual(todayAfterReset.totalClicks, 0)
+
+        let allAfterReset = store.snapshot(for: .allTime, deviceScope: .allDevices)
+        XCTAssertEqual(allAfterReset.totalKeyPresses, 4_001) // peer Nov 17 (4000) + local Nov 20 (1)
+    }
 }

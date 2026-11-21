@@ -337,28 +337,57 @@ struct MenuBarPopoverView: View {
     }
 
     private var liveRateDetailStrip: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 4) {
-                Text("Live:")
-                    .foregroundStyle(Color.secondary)
-                Text("\(vm.rates.currentKPS) KPS")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(systemBlue)
-                Text("·")
-                    .foregroundStyle(Color.secondary)
-                Text("\(vm.rates.currentCPS) CPS")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(warmOrange)
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text("Peak KPS")
+                        .foregroundStyle(Color.secondary)
+                    Spacer(minLength: 4)
+                    Text("\(vm.rates.peakKPS)")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Color.primary)
+                }
+                HStack(spacing: 4) {
+                    Text("Current KPS")
+                        .foregroundStyle(Color.secondary)
+                    Spacer(minLength: 4)
+                    Text("\(vm.rates.currentKPS)")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(systemBlue)
+                }
             }
-            Spacer(minLength: 4)
-            Text("Peak \(vm.rates.peakKPS) · \(vm.rates.peakCPS)")
-                .foregroundStyle(Color.secondary)
+            .frame(maxWidth: .infinity)
+
+            Rectangle()
+                .fill(Color.primary.opacity(scheme == .dark ? 0.14 : 0.10))
+                .frame(width: 0.5, height: 28)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text("Peak CPS")
+                        .foregroundStyle(Color.secondary)
+                    Spacer(minLength: 4)
+                    Text("\(vm.rates.peakCPS)")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Color.primary)
+                }
+                HStack(spacing: 4) {
+                    Text("Current CPS")
+                        .foregroundStyle(Color.secondary)
+                    Spacer(minLength: 4)
+                    Text("\(vm.rates.currentCPS)")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(warmOrange)
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
         .font(.system(size: 10.5, design: .monospaced))
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4.5)
+        .monospacedDigit()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primary.opacity(scheme == .dark ? 0.08 : 0.045))
         )
     }
@@ -660,6 +689,9 @@ struct MenuBarPopoverView: View {
                 orangeColor: warmOrange,
                 hoveredIndex: $hoveredTrendIndex
             )
+            .animation(.easeInOut(duration: 0.2), value: vm.historyRange)
+            .animation(.easeInOut(duration: 0.2), value: vm.historyMetric)
+            .animation(.easeInOut(duration: 0.2), value: vm.historyStyle)
             .padding(.top, 2)
 
             Text("Total: \(totalText)")

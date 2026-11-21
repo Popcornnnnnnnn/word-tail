@@ -165,6 +165,8 @@ enum ShowcaseExporter {
             nonRomanKeyPresses: 13_660,
             activeDays: 7,
             maxDailyKeys: 8_940,
+            peakDayDateKey: "2026-11-17",
+            peakWeekdayName: "Tuesday",
             firstActiveDateKey: "2026-08-30",
             lastActiveDateKey: "2026-11-21",
             currentStreakDays: 14,
@@ -204,6 +206,25 @@ enum ShowcaseExporter {
             to: outDir.appendingPathComponent("hero-inline-ghost.png")
         )
 
+        let sampleHourlyBuckets: [HourlyTrendBucket] = [
+            0, 0, 0, 0, 0, 0, 120, 410,
+            1_120, 2_840, 3_620, 3_190, 1_480, 2_390, 3_410, 4_180,
+            3_890, 2_910, 1_940, 1_620, 2_480, 2_760, 1_840, 620
+        ].enumerated().map { hour, syncedKeys in
+            let localKeys = Int((Double(syncedKeys) * 0.82).rounded())
+            let syncedClicks = max(0, Int((Double(syncedKeys) * 0.16).rounded()))
+            let localClicks = max(0, Int((Double(localKeys) * 0.17).rounded()))
+            return HourlyTrendBucket(
+                id: String(format: "%02d:00", hour),
+                axisLabel: String(format: "%02d", hour),
+                detailLabel: String(format: "%02d:00 – %02d:59", hour, hour),
+                syncedKeys: syncedKeys,
+                localKeys: localKeys,
+                syncedClicks: syncedClicks,
+                localClicks: localClicks
+            )
+        }
+
         // 2. KeyStats & Keyboard Heatmap window screenshot
         let keyStatsVM = SettingsViewModel(
             showcaseSection: .keyStats,
@@ -212,6 +233,7 @@ enum ShowcaseExporter {
             bigrams: sampleBigrams,
             vocabulary: sampleVocab,
             keyStats: sampleKeyStats,
+            hourlyTrendBuckets: sampleHourlyBuckets,
             showcaseAppIcons: appIconsMap
         )
         try renderSwiftUIViewToPNG(
@@ -295,6 +317,27 @@ enum ShowcaseExporter {
             },
             size: windowShotSize,
             to: outDir.appendingPathComponent("appstats-window.png")
+        )
+
+        // 5b. Preferences window screenshot
+        let preferencesVM = SettingsViewModel(
+            showcaseSection: .preferences,
+            appOffsets: sampleApps,
+            insights: sampleInsights,
+            bigrams: sampleBigrams,
+            vocabulary: sampleVocab,
+            keyStats: sampleKeyStats,
+            showcaseAppIcons: appIconsMap
+        )
+        preferencesVM.enableDynamicMenuBarColor = true
+        preferencesVM.mouseCalibrationFactor = 1.12
+        preferencesVM.enableMilestoneNotifications = true
+        try renderSwiftUIViewToPNG(
+            MacWindowFrameBackdrop(size: windowShotSize) {
+                SettingsView(vm: preferencesVM)
+            },
+            size: windowShotSize,
+            to: outDir.appendingPathComponent("preferences-window.png")
         )
 
         // 5. Menu Bar Popover showcase screenshot (440 x 740)

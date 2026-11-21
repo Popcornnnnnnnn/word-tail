@@ -129,6 +129,69 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var showMenuBarClickCount: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.showMenuBarClickCount = showMenuBarClickCount
+            onStateChange()
+        }
+    }
+
+    @Published var enableDynamicMenuBarColor: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enableDynamicMenuBarColor = enableDynamicMenuBarColor
+            onStateChange()
+        }
+    }
+
+    @Published var dynamicMenuBarColorStyle: String {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.dynamicMenuBarColorStyle = dynamicMenuBarColorStyle
+            onStateChange()
+        }
+    }
+
+    @Published var dynamicMenuBarWindowSeconds: Int {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.dynamicMenuBarWindowSeconds = dynamicMenuBarWindowSeconds
+            onStateChange()
+        }
+    }
+
+    @Published var mouseCalibrationFactor: Double {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.mouseCalibrationFactor = mouseCalibrationFactor
+        }
+    }
+
+    @Published var enableMilestoneNotifications: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enableMilestoneNotifications = enableMilestoneNotifications
+            onStateChange()
+        }
+    }
+
+    @Published var milestoneKeyThreshold: Int {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.milestoneKeyThreshold = milestoneKeyThreshold
+        }
+    }
+
+    @Published var milestoneClickThreshold: Int {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.milestoneClickThreshold = milestoneClickThreshold
+        }
+    }
+
+    @Published var showingMouseCalibrationSheet: Bool = false
+
     @Published var enableTechLexicon: Bool {
         didSet {
             guard !isRefreshing, !isStaticShowcase else { return }
@@ -221,6 +284,21 @@ final class SettingsViewModel: ObservableObject {
     }
     @Published var keyStatsImportMessage: String? = nil
     @Published var keyStats: KeyStatsAggregateSnapshot = KeyStatsAggregateSnapshot()
+    @Published var selectedStatsDate: Date = Calendar.current.startOfDay(for: Date()) {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            refreshKeyStats()
+        }
+    }
+    @Published var hourlyRecent24Hours: Bool = false {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            refreshHourlyTrend()
+        }
+    }
+    @Published var hourlyTrendBuckets: [HourlyTrendBucket] = []
+    @Published var busiestKeyHour: String? = nil
+    @Published var busiestClickHour: String? = nil
     @Published var showcaseAppIcons: [String: NSImage] = [:]
 
     @Published var syncStatus: SyncStatusSnapshot = SyncStatusSnapshot(
@@ -287,6 +365,14 @@ final class SettingsViewModel: ObservableObject {
         self.enableHabitLearning = engine.enableHabitLearning
         self.enableKeyStatsTracking = engine.enableKeyStatsTracking
         self.showMenuBarKeyCount = engine.showMenuBarKeyCount
+        self.showMenuBarClickCount = engine.showMenuBarClickCount
+        self.enableDynamicMenuBarColor = engine.enableDynamicMenuBarColor
+        self.dynamicMenuBarColorStyle = engine.dynamicMenuBarColorStyle
+        self.dynamicMenuBarWindowSeconds = engine.dynamicMenuBarWindowSeconds
+        self.mouseCalibrationFactor = engine.mouseCalibrationFactor
+        self.enableMilestoneNotifications = engine.enableMilestoneNotifications
+        self.milestoneKeyThreshold = engine.milestoneKeyThreshold
+        self.milestoneClickThreshold = engine.milestoneClickThreshold
         self.enableTechLexicon = engine.enableTechLexicon
         self.enableGlobalHotkey = engine.enableGlobalHotkey
         self.minPrefix = engine.minimumPrefixLength
@@ -321,6 +407,7 @@ final class SettingsViewModel: ObservableObject {
         bigrams: [BigramHabitEntry],
         vocabulary: [VocabularyEntry],
         keyStats: KeyStatsAggregateSnapshot = KeyStatsAggregateSnapshot(),
+        hourlyTrendBuckets: [HourlyTrendBucket] = [],
         showcaseAppIcons: [String: NSImage] = [:]
     ) {
         self.engine = nil
@@ -339,6 +426,14 @@ final class SettingsViewModel: ObservableObject {
         self.enableHabitLearning = true
         self.enableKeyStatsTracking = true
         self.showMenuBarKeyCount = true
+        self.showMenuBarClickCount = true
+        self.enableDynamicMenuBarColor = false
+        self.dynamicMenuBarColorStyle = "dot"
+        self.dynamicMenuBarWindowSeconds = 30
+        self.mouseCalibrationFactor = 1.0
+        self.enableMilestoneNotifications = false
+        self.milestoneKeyThreshold = 10_000
+        self.milestoneClickThreshold = 2_000
         self.enableTechLexicon = true
         self.enableGlobalHotkey = true
         self.minPrefix = 2
@@ -356,6 +451,9 @@ final class SettingsViewModel: ObservableObject {
         self.keyStatsRange = keyStats.range
         self.keyStatsDeviceScope = keyStats.deviceScope
         self.keyStats = keyStats
+        self.hourlyTrendBuckets = hourlyTrendBuckets
+        self.busiestKeyHour = hourlyTrendBuckets.max(by: { $0.syncedKeys < $1.syncedKeys })?.axisLabel
+        self.busiestClickHour = hourlyTrendBuckets.max(by: { $0.syncedClicks < $1.syncedClicks })?.axisLabel
         self.showcaseAppIcons = showcaseAppIcons
     }
 
@@ -375,6 +473,14 @@ final class SettingsViewModel: ObservableObject {
         enableHabitLearning = engine.enableHabitLearning
         enableKeyStatsTracking = engine.enableKeyStatsTracking
         showMenuBarKeyCount = engine.showMenuBarKeyCount
+        showMenuBarClickCount = engine.showMenuBarClickCount
+        enableDynamicMenuBarColor = engine.enableDynamicMenuBarColor
+        dynamicMenuBarColorStyle = engine.dynamicMenuBarColorStyle
+        dynamicMenuBarWindowSeconds = engine.dynamicMenuBarWindowSeconds
+        mouseCalibrationFactor = engine.mouseCalibrationFactor
+        enableMilestoneNotifications = engine.enableMilestoneNotifications
+        milestoneKeyThreshold = engine.milestoneKeyThreshold
+        milestoneClickThreshold = engine.milestoneClickThreshold
         enableTechLexicon = engine.enableTechLexicon
         enableGlobalHotkey = engine.enableGlobalHotkey
         minPrefix = engine.minimumPrefixLength
@@ -391,7 +497,13 @@ final class SettingsViewModel: ObservableObject {
         correctionRules = engine.adaptiveStore.allEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        keyStats = keyStatsRange == .today
+            ? engine.keyStatsStore.singleDaySnapshot(for: selectedStatsDate, deviceScope: keyStatsDeviceScope)
+            : engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        let hourly = engine.keyStatsStore.hourlyTrend(for: selectedStatsDate, recent24Hours: hourlyRecent24Hours)
+        hourlyTrendBuckets = hourly.buckets
+        busiestKeyHour = hourly.busiestKeyHour
+        busiestClickHour = hourly.busiestClickHour
         let curSync = engine.syncEngine.statusSnapshot()
         syncStatus = curSync
         syncEnabled = curSync.isEnabled
@@ -475,7 +587,94 @@ final class SettingsViewModel: ObservableObject {
 
     func refreshKeyStats() {
         guard let engine, !isStaticShowcase else { return }
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        keyStats = keyStatsRange == .today
+            ? engine.keyStatsStore.singleDaySnapshot(for: selectedStatsDate, deviceScope: keyStatsDeviceScope)
+            : engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        refreshHourlyTrend()
+    }
+
+    func refreshHourlyTrend() {
+        guard let engine, !isStaticShowcase else { return }
+        let res = engine.keyStatsStore.hourlyTrend(for: selectedStatsDate, recent24Hours: hourlyRecent24Hours)
+        hourlyTrendBuckets = res.buckets
+        busiestKeyHour = res.busiestKeyHour
+        busiestClickHour = res.busiestClickHour
+    }
+
+    var statsDateBounds: (earliest: Date, latest: Date) {
+        guard let engine else {
+            let today = Calendar.current.startOfDay(for: Date())
+            return (today, today)
+        }
+        return engine.keyStatsStore.availableDateBounds(scope: keyStatsDeviceScope)
+    }
+
+    var isSelectedDateToday: Bool {
+        Calendar.current.isDateInToday(selectedStatsDate)
+    }
+
+    var canStepStatsDateBackward: Bool {
+        let cal = Calendar.current
+        let bounds = statsDateBounds
+        return cal.startOfDay(for: selectedStatsDate) > cal.startOfDay(for: bounds.earliest)
+    }
+
+    var canStepStatsDateForward: Bool {
+        let cal = Calendar.current
+        let bounds = statsDateBounds
+        return cal.startOfDay(for: selectedStatsDate) < cal.startOfDay(for: bounds.latest)
+    }
+
+    func stepStatsDate(byDays delta: Int) {
+        let cal = Calendar.current
+        let bounds = statsDateBounds
+        let candidate = cal.date(byAdding: .day, value: delta, to: selectedStatsDate) ?? selectedStatsDate
+        let clamped = max(bounds.earliest, min(bounds.latest, cal.startOfDay(for: candidate)))
+        selectedStatsDate = clamped
+    }
+
+    func resetStatsDateToToday() {
+        selectedStatsDate = Calendar.current.startOfDay(for: Date())
+    }
+
+    func beginMouseCalibration() {
+        engine?.keyStatsStore.beginMouseCalibration()
+    }
+
+    func currentMouseCalibrationPixels() -> Double {
+        engine?.keyStatsStore.currentMouseCalibrationPixels() ?? 0
+    }
+
+    func finishMouseCalibration() -> (pixels: Double, factor: Double)? {
+        guard let result = engine?.keyStatsStore.finishMouseCalibration(knownMeters: 0.10) else {
+            return nil
+        }
+        mouseCalibrationFactor = result.factor
+        return result
+    }
+
+    func cancelMouseCalibration() {
+        engine?.keyStatsStore.cancelMouseCalibration()
+    }
+
+    func resetMouseCalibrationFactor() {
+        mouseCalibrationFactor = 1.0
+    }
+
+    func resetTodayKeyStats() {
+        guard let engine, !isStaticShowcase else { return }
+        let alert = NSAlert()
+        alert.messageText = "Reset Today's Stats on This Mac?"
+        alert.informativeText = "Only today's statistics recorded on this Mac will be cleared. Earlier days and synced peer devices remain intact."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Reset Today")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        engine.keyStatsStore.resetTodayLocal()
+        keyStatsImportMessage = nil
+        refreshKeyStats()
+        onStateChange()
     }
 
     func clearKeyStats() {
@@ -490,7 +689,7 @@ final class SettingsViewModel: ObservableObject {
 
         engine.keyStatsStore.clearAll()
         keyStatsImportMessage = nil
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        refreshKeyStats()
         onStateChange()
     }
 
@@ -758,7 +957,13 @@ final class SettingsViewModel: ObservableObject {
         correctionRules = engine.adaptiveStore.allEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        keyStats = keyStatsRange == .today
+            ? engine.keyStatsStore.singleDaySnapshot(for: selectedStatsDate, deviceScope: keyStatsDeviceScope)
+            : engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        let hourly = engine.keyStatsStore.hourlyTrend(for: selectedStatsDate, recent24Hours: hourlyRecent24Hours)
+        hourlyTrendBuckets = hourly.buckets
+        busiestKeyHour = hourly.busiestKeyHour
+        busiestClickHour = hourly.busiestClickHour
         if let autoUpdater {
             autoCheckUpdates = autoUpdater.autoCheckEnabled
             availableRelease = autoUpdater.availableRelease
@@ -792,7 +997,13 @@ final class SettingsViewModel: ObservableObject {
         correctionRules = engine.adaptiveStore.allEntries()
         insights = engine.insightsSnapshot()
         learnedBigrams = engine.topBigrams(limit: 8)
-        keyStats = engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        keyStats = keyStatsRange == .today
+            ? engine.keyStatsStore.singleDaySnapshot(for: selectedStatsDate, deviceScope: keyStatsDeviceScope)
+            : engine.keyStatsStore.snapshot(for: keyStatsRange, deviceScope: keyStatsDeviceScope)
+        let hourly = engine.keyStatsStore.hourlyTrend(for: selectedStatsDate, recent24Hours: hourlyRecent24Hours)
+        hourlyTrendBuckets = hourly.buckets
+        busiestKeyHour = hourly.busiestKeyHour
+        busiestClickHour = hourly.busiestClickHour
         isRefreshing = false
         onStateChange()
     }

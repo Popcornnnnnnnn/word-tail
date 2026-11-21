@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import CoreServices
 import ServiceManagement
+import UserNotifications
 import WordTailCore
 
 @MainActor
@@ -34,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var permissionPollTimer: Timer?
     private var menuBarCounterTimer: Timer?
+    private var milestoneNotifiedDateKey: String = UserDefaults.standard.string(forKey: "WordTailMilestoneNotifiedDateKey") ?? ""
+    private var milestoneKeysFiredToday: Bool = UserDefaults.standard.bool(forKey: "WordTailMilestoneKeysFired")
+    private var milestoneClicksFiredToday: Bool = UserDefaults.standard.bool(forKey: "WordTailMilestoneClicksFired")
+    private var milestoneAuthRequested: Bool = false
     private var syncTimer: Timer?
     private var lastObservedApp: (name: String, bundleID: String)?
     private var settingsWindowController: SettingsWindowController?
@@ -272,51 +277,171 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let button = statusItem.button else { return }
         let trusted = AXIsProcessTrusted() && engine.isTapActive
         if !trusted {
+            menuBarCounterTimer?.invalidate()
+            menuBarCounterTimer = nil
             if let warn = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "WordTail Needs Permission") {
                 warn.isTemplate = true
                 button.image = warn
+                button.imagePosition = .imageOnly
                 button.title = ""
                 button.appearsDisabled = false
                 return
             }
         }
-        button.image = Self.makeMenuBarIcon()
-        button.imagePosition = engine.showMenuBarKeyCount ? .imageLeft : .imageOnly
-        if engine.showMenuBarKeyCount {
-            let counts = keyStatsStore.todayMenuBarCounts()
+
+        let counts = keyStatsStore.todayMenuBarCounts()
+        checkDailyMilestonesIfNeeded(counts: counts)
+
+        let title = formattedMenuBarCounterTitle(counts: counts)
+        let hasCounter = !title.isEmpty
+        button.imagePosition = hasCounter ? .imageLeft : .imageOnly
+        if hasCounter {
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
-            button.title = " " + KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)
-            ensureMenuBarCounterTimerRunning()
+            button.title = title
         } else {
             button.title = ""
+        }
+
+        let apm = keyStatsStore.currentAPM(windowSeconds: Double(engine.dynamicMenuBarWindowSeconds))
+        let activeColor = (engine.enableDynamicMenuBarColor && engine.isEnabled) ? Self.dynamicAPMColor(for: apm) : nil
+        let isDark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let tintColor: NSColor? = (engine.dynamicMenuBarColorStyle == "icon") ? activeColor : nil
+        let dotColor: NSColor? = (engine.dynamicMenuBarColorStyle != "icon") ? activeColor : nil
+        button.image = Self.makeMenuBarIcon(tintColor: tintColor, dotColor: dotColor, isDarkAppearance: isDark)
+
+        let needsLiveTimer = hasCounter || engine.enableDynamicMenuBarColor || engine.enableMilestoneNotifications
+        if needsLiveTimer {
+            ensureMenuBarCounterTimerRunning()
+        } else {
             menuBarCounterTimer?.invalidate()
             menuBarCounterTimer = nil
         }
         button.appearsDisabled = !engine.isEnabled
     }
 
+    private func formattedMenuBarCounterTitle(counts: (keys: Int, clicks: Int)) -> String {
+        let showKeys = engine.showMenuBarKeyCount
+        let showClicks = engine.showMenuBarClickCount
+        if showKeys && showClicks {
+            return " \(KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)) · \(KeyStatsAggregateSnapshot.formatCompactCount(counts.clicks))"
+        }
+        if showKeys {
+            return " " + KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)
+        }
+        if showClicks {
+            return " " + KeyStatsAggregateSnapshot.formatCompactCount(counts.clicks)
+        }
+        return ""
+    }
+
+    private static func dynamicAPMColor(for apm: Int) -> NSColor? {
+        if apm >= 240 { return .systemRed }
+        if apm >= 160 { return .systemOrange }
+        if apm >= 80 { return .systemGreen }
+        return nil
+    }
+
     private func ensureMenuBarCounterTimerRunning() {
         guard menuBarCounterTimer == nil else { return }
-        menuBarCounterTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
+        menuBarCounterTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.engine.showMenuBarKeyCount, let button = self.statusItem.button else { return }
-                let counts = self.keyStatsStore.todayMenuBarCounts()
-                button.title = " " + KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)
+                self?.updateStatusIcon()
             }
         }
     }
 
-    private static func makeMenuBarIcon() -> NSImage {
-        let size = NSSize(width: 20, height: 18)
+    private func checkDailyMilestonesIfNeeded(counts: (keys: Int, clicks: Int)) {
+        guard engine.enableMilestoneNotifications,
+              Bundle.main.bundleURL.pathExtension == "app" else {
+            return
+        }
+
+        let center = UNUserNotificationCenter.current()
+        if !milestoneAuthRequested {
+            milestoneAuthRequested = true
+            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
+
+        let todayKey = Self.localDayKey(for: Date())
+        if milestoneNotifiedDateKey != todayKey {
+            milestoneNotifiedDateKey = todayKey
+            milestoneKeysFiredToday = false
+            milestoneClicksFiredToday = false
+            UserDefaults.standard.set(todayKey, forKey: "WordTailMilestoneNotifiedDateKey")
+            UserDefaults.standard.set(false, forKey: "WordTailMilestoneKeysFired")
+            UserDefaults.standard.set(false, forKey: "WordTailMilestoneClicksFired")
+        }
+
+        if !milestoneKeysFiredToday && counts.keys >= engine.milestoneKeyThreshold {
+            milestoneKeysFiredToday = true
+            UserDefaults.standard.set(true, forKey: "WordTailMilestoneKeysFired")
+            deliverMilestoneNotification(
+                id: "wordtail.milestone.keys.\(todayKey)",
+                title: "Daily Keystroke Goal Reached",
+                body: "You've reached \(KeyStatsAggregateSnapshot.formatCompactCount(counts.keys)) keystrokes today."
+            )
+        }
+
+        if !milestoneClicksFiredToday && counts.clicks >= engine.milestoneClickThreshold {
+            milestoneClicksFiredToday = true
+            UserDefaults.standard.set(true, forKey: "WordTailMilestoneClicksFired")
+            deliverMilestoneNotification(
+                id: "wordtail.milestone.clicks.\(todayKey)",
+                title: "Daily Click Goal Reached",
+                body: "You've logged \(KeyStatsAggregateSnapshot.formatCompactCount(counts.clicks)) clicks today."
+            )
+        }
+    }
+
+    private func deliverMilestoneNotification(id: String, title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { _ in }
+    }
+
+    private static let milestoneDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    private static func localDayKey(for date: Date) -> String {
+        milestoneDayFormatter.string(from: date)
+    }
+
+    private static func makeMenuBarIcon(
+        tintColor: NSColor? = nil,
+        dotColor: NSColor? = nil,
+        isDarkAppearance: Bool = false
+    ) -> NSImage {
+        let baseW: CGFloat = 20
+        let size = NSSize(width: dotColor != nil ? 26 : baseW, height: 18)
         let img = NSImage(size: size, flipped: false) { rect in
+            let inkColor: NSColor
+            let bAlpha: CGFloat
+            if let tintColor {
+                inkColor = tintColor
+                bAlpha = 0.45
+            } else if dotColor != nil {
+                inkColor = isDarkAppearance ? .white : .black
+                bAlpha = 0.42
+            } else {
+                inkColor = .black
+                bAlpha = 0.38
+            }
+
             let font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
             let leftAttr: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: NSColor.black
+                .foregroundColor: inkColor
             ]
             let rightAttr: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: 12.5, weight: .regular),
-                .foregroundColor: NSColor.black.withAlphaComponent(0.38)
+                .foregroundColor: inkColor.withAlphaComponent(bAlpha)
             ]
 
             let aStr = "a" as NSString
@@ -327,7 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let barW: CGFloat = 1.4
             let gap: CGFloat = 1.0
             let totalW = aSize.width + gap + barW + gap + bSize.width
-            let startX = (rect.width - totalW) / 2.0
+            let startX = (baseW - totalW) / 2.0
             let textY = (rect.height - aSize.height) / 2.0
 
             aStr.draw(at: NSPoint(x: startX, y: textY), withAttributes: leftAttr)
@@ -338,13 +463,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 width: barW,
                 height: 13.0
             )
-            NSColor.black.setFill()
+            inkColor.setFill()
             NSBezierPath(roundedRect: barRect, xRadius: 0.7, yRadius: 0.7).fill()
 
             bStr.draw(at: NSPoint(x: barRect.maxX + gap, y: textY), withAttributes: rightAttr)
+
+            if let dotColor {
+                let dotRect = NSRect(x: 20.0, y: 6.25, width: 5.5, height: 5.5)
+                dotColor.setFill()
+                NSBezierPath(ovalIn: dotRect).fill()
+            }
             return true
         }
-        img.isTemplate = true
+        img.isTemplate = (tintColor == nil && dotColor == nil)
         return img
     }
 

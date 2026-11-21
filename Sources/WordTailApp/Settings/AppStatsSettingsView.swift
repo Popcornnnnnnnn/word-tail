@@ -186,13 +186,28 @@ struct AppStatsSettingsView: View {
                         rowsList(apps: apps, maxKeys: maxKeys, maxClicks: maxClicks, maxScroll: maxScroll)
                     }
                     .padding(.top, 4)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0.0),
+                                .init(color: .black, location: 0.88),
+                                .init(color: .clear, location: 1.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
                 } else {
-                    ScrollView(.vertical, showsIndicators: true) {
+                    ScrollEdgeFadeContainer(showsIndicators: true, topFadeHeight: 14, bottomFadeHeight: 28) {
                         LazyVStack(spacing: 2) {
                             rowsList(apps: apps, maxKeys: maxKeys, maxClicks: maxClicks, maxScroll: maxScroll)
                         }
                         .padding(.top, 4)
-                        .padding(.bottom, 8)
+                        .padding(.bottom, 12)
+                        .animation(
+                            .spring(response: 0.36, dampingFraction: 0.86),
+                            value: "\(vm.keyStatsRange.rawValue)-\(vm.keyStatsDeviceScope.rawValue)-\(sortMetric)-\(sortAscending)-\(searchText)"
+                        )
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }

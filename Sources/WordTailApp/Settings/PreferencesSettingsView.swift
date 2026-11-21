@@ -324,6 +324,79 @@ struct PreferencesSettingsView: View {
                     }
                     .padding(.horizontal, 14)
                     .frame(height: 50)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Show Today’s Clicks in Menu Bar")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Shows a compact click total (e.g. 4.2k · 910) beside the icon")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.showMenuBarClickCount)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 50)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Dynamic Activity Color")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Colors the menu bar icon or status dot by live APM (80 / 160 / 240+)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.enableDynamicMenuBarColor)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 50)
+
+                    if vm.enableDynamicMenuBarColor {
+                        Rectangle()
+                            .fill(LinearUI.hairline(scheme))
+                            .frame(height: 1)
+                            .padding(.leading, 14)
+
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Indicator Style & Window")
+                                    .font(.system(size: 12.5, weight: .medium))
+                                Text("Green 80+ · Orange 160+ · Red 240+ APM")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            LinearSegmentedChoices(
+                                options: [
+                                    (label: "Status Dot", value: "dot"),
+                                    (label: "Tint Icon", value: "icon")
+                                ],
+                                selection: $vm.dynamicMenuBarColorStyle
+                            )
+                            LinearSegmentedChoices(
+                                options: [
+                                    (label: "15s", value: 15),
+                                    (label: "30s", value: 30),
+                                    (label: "60s", value: 60)
+                                ],
+                                selection: $vm.dynamicMenuBarWindowSeconds
+                            )
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 48)
+                    }
                 }
             }
 
@@ -344,6 +417,99 @@ struct PreferencesSettingsView: View {
                     }
                     .padding(.horizontal, 14)
                     .frame(height: 50)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Mouse Distance Calibration")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Adjusts physical meter scale using a measured 10 cm drag · Current: \(String(format: "%.2f×", vm.mouseCalibrationFactor))")
+                                .font(.system(size: 11))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if abs(vm.mouseCalibrationFactor - 1.0) > 0.01 {
+                            LinearActionButton(title: "Reset", icon: "arrow.counterclockwise") {
+                                vm.resetMouseCalibrationFactor()
+                            }
+                        }
+                        LinearActionButton(title: "Calibrate 10 cm…", icon: "ruler") {
+                            vm.showingMouseCalibrationSheet = true
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 50)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Daily Milestone Notifications")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Notifies once per day when you reach your keystroke or click goal")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        LinearSwitch(isOn: $vm.enableMilestoneNotifications)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 50)
+
+                    if vm.enableMilestoneNotifications {
+                        Rectangle()
+                            .fill(LinearUI.hairline(scheme))
+                            .frame(height: 1)
+                            .padding(.leading, 14)
+
+                        HStack {
+                            Text("Keystroke Goal")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            LinearSegmentedChoices(
+                                options: [
+                                    (label: "5k", value: 5_000),
+                                    (label: "10k", value: 10_000),
+                                    (label: "25k", value: 25_000),
+                                    (label: "50k", value: 50_000)
+                                ],
+                                selection: $vm.milestoneKeyThreshold
+                            )
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 44)
+
+                        Rectangle()
+                            .fill(LinearUI.hairline(scheme))
+                            .frame(height: 1)
+                            .padding(.leading, 14)
+
+                        HStack {
+                            Text("Click Goal")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            LinearSegmentedChoices(
+                                options: [
+                                    (label: "1k", value: 1_000),
+                                    (label: "2k", value: 2_000),
+                                    (label: "5k", value: 5_000)
+                                ],
+                                selection: $vm.milestoneClickThreshold
+                            )
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 44)
+                    }
 
                     Rectangle()
                         .fill(LinearUI.hairline(scheme))

@@ -23,6 +23,9 @@ struct SettingsView: View {
             maxHeight: vm.isStaticShowcase ? 650 : .infinity
         )
         .background(LinearUI.windowBg(scheme))
+        .sheet(isPresented: $vm.showingMouseCalibrationSheet) {
+            MouseCalibrationSheet(vm: vm)
+        }
     }
 
     private var sidebar: some View {
@@ -178,7 +181,7 @@ struct SettingsView: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
-            ScrollView(.vertical, showsIndicators: false) {
+            ScrollEdgeFadeContainer(showsIndicators: false, topFadeHeight: 12, bottomFadeHeight: 20) {
                 content
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

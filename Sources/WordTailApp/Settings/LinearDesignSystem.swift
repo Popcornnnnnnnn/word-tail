@@ -283,6 +283,86 @@ struct LinearActionButton: View {
     }
 }
 
+private struct ScrollFadeOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ScrollFadeContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// Softly fades the top and bottom edges of a scroll view only while clipped content extends beyond them.
+struct ScrollEdgeFadeContainer<Content: View>: View {
+    var showsIndicators: Bool = true
+    var topFadeHeight: CGFloat = 16
+    var bottomFadeHeight: CGFloat = 26
+    @ViewBuilder let content: () -> Content
+
+    @State private var topOffset: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+
+    var body: some View {
+        let topFadeOpacity = min(1.0, max(0.0, topOffset / 14.0))
+        let remaining = contentHeight - (topOffset + viewportHeight)
+        let bottomFadeOpacity = contentHeight > viewportHeight + 4
+            ? min(1.0, max(0.0, remaining / 16.0))
+            : 0.0
+        let topStop = viewportHeight > 0 ? min(0.20, topFadeHeight / viewportHeight) : 0.001
+        let bottomStop = viewportHeight > 0 ? max(topStop + 0.01, min(0.999, 1.0 - bottomFadeHeight / viewportHeight)) : 0.999
+
+        GeometryReader { outer in
+            ScrollView(.vertical, showsIndicators: showsIndicators) {
+                content()
+                    .background(
+                        GeometryReader { inner in
+                            Color.clear
+                                .preference(
+                                    key: ScrollFadeOffsetKey.self,
+                                    value: max(0, -inner.frame(in: .named("ScrollEdgeFadeSpace")).minY)
+                                )
+                                .preference(
+                                    key: ScrollFadeContentHeightKey.self,
+                                    value: inner.size.height
+                                )
+                        }
+                    )
+            }
+            .coordinateSpace(name: "ScrollEdgeFadeSpace")
+            .onPreferenceChange(ScrollFadeOffsetKey.self) { val in
+                if abs(val - topOffset) > 0.5 { topOffset = val }
+            }
+            .onPreferenceChange(ScrollFadeContentHeightKey.self) { val in
+                if abs(val - contentHeight) > 0.5 { contentHeight = val }
+            }
+            .onAppear {
+                viewportHeight = outer.size.height
+            }
+            .onChange(of: outer.size.height) { _, newVal in
+                viewportHeight = newVal
+            }
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(1.0 - topFadeOpacity), location: 0.0),
+                        .init(color: .black, location: max(0.001, topStop)),
+                        .init(color: .black, location: min(0.999, bottomStop)),
+                        .init(color: .black.opacity(1.0 - bottomFadeOpacity), location: 1.0)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+        }
+    }
+}
+
 struct LinearSegmentedChoices<T: Hashable>: View {
     @Environment(\.colorScheme) private var scheme
     let options: [(label: String, value: T)]

@@ -43,6 +43,34 @@ public struct DailyActivityPoint: Identifiable, Equatable, Sendable {
     }
 }
 
+public struct HourlyTrendBucket: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let axisLabel: String
+    public let detailLabel: String
+    public let syncedKeys: Int
+    public let localKeys: Int
+    public let syncedClicks: Int
+    public let localClicks: Int
+
+    public init(
+        id: String,
+        axisLabel: String,
+        detailLabel: String,
+        syncedKeys: Int,
+        localKeys: Int,
+        syncedClicks: Int,
+        localClicks: Int
+    ) {
+        self.id = id
+        self.axisLabel = axisLabel
+        self.detailLabel = detailLabel
+        self.syncedKeys = syncedKeys
+        self.localKeys = localKeys
+        self.syncedClicks = syncedClicks
+        self.localClicks = localClicks
+    }
+}
+
 public struct KeyStatsImportReport: Equatable, Sendable {
     public let localDaysImported: Int
     public let hourlyBucketsImported: Int
@@ -261,6 +289,8 @@ public struct KeyStatsAggregateSnapshot: Equatable {
     public let nonRomanKeyPresses: Int
     public let activeDays: Int
     public let maxDailyKeys: Int
+    public let peakDayDateKey: String?
+    public let peakWeekdayName: String?
     public let firstActiveDateKey: String?
     public let lastActiveDateKey: String?
     public let currentStreakDays: Int
@@ -299,6 +329,8 @@ public struct KeyStatsAggregateSnapshot: Equatable {
         nonRomanKeyPresses: Int = 0,
         activeDays: Int = 0,
         maxDailyKeys: Int = 0,
+        peakDayDateKey: String? = nil,
+        peakWeekdayName: String? = nil,
         firstActiveDateKey: String? = nil,
         lastActiveDateKey: String? = nil,
         currentStreakDays: Int = 0,
@@ -336,6 +368,8 @@ public struct KeyStatsAggregateSnapshot: Equatable {
         self.nonRomanKeyPresses = nonRomanKeyPresses
         self.activeDays = activeDays
         self.maxDailyKeys = maxDailyKeys
+        self.peakDayDateKey = peakDayDateKey
+        self.peakWeekdayName = peakWeekdayName
         self.firstActiveDateKey = firstActiveDateKey
         self.lastActiveDateKey = lastActiveDateKey
         self.currentStreakDays = currentStreakDays
@@ -384,6 +418,12 @@ public struct KeyStatsAggregateSnapshot: Equatable {
         let sum = leftHandPresses + rightHandPresses
         guard sum > 0 else { return 50 }
         return Int((Double(leftHandPresses) / Double(sum) * 100.0).rounded())
+    }
+
+    public var leftClickPercent: Int {
+        let sum = leftClicks + rightClicks
+        guard sum > 0 else { return 50 }
+        return Int((Double(leftClicks) / Double(sum) * 100.0).rounded())
     }
 
     public var englishKeyPercent: Int {
@@ -536,6 +576,9 @@ public final class KeyStatsStore {
     private var lastMousePoint: CGPoint?
     private var recentKeyTimestamps: [TimeInterval] = []
     private var recentClickTimestamps: [TimeInterval] = []
+    private var recentActionTimestamps: [TimeInterval] = []
+    private var isCalibratingMouse: Bool = false
+    private var calibrationRawPx: Double = 0
     private var isDirty: Bool = false
     private var lastDiskFlushTime: TimeInterval = 0
 
@@ -606,12 +649,13 @@ public final class KeyStatsStore {
                 record.nonRomanKeyPresses += 1
             }
 
-            // Sliding 1.0s peak KPS
+            // Sliding 1.0s peak KPS + 60s APM window
             self.recentKeyTimestamps.append(nowTs)
             self.recentKeyTimestamps.removeAll { nowTs - $0 > 1.0 }
             if self.recentKeyTimestamps.count > record.peakKPS {
                 record.peakKPS = self.recentKeyTimestamps.count
             }
+            self.recordActionLocked(nowTs: nowTs)
 
             var recordedKeysForApp: [String] = []
             // Never record individual key identities while SecureEventInput (password field) is active!
@@ -674,6 +718,7 @@ public final class KeyStatsStore {
             if hour >= 0 && hour < 24 {
                 record.hourlyKeys[hour] += 1
             }
+            self.recordActionLocked(nowTs: nowTs)
             if isRomanLayout {
                 record.romanKeyPresses += 1
             } else {
@@ -727,6 +772,7 @@ public final class KeyStatsStore {
             if self.recentClickTimestamps.count > record.peakCPS {
                 record.peakCPS = self.recentClickTimestamps.count
             }
+            self.recordActionLocked(nowTs: nowTs)
 
             if let bid = appBundleID, !bid.isEmpty {
                 var app = record.appStats[bid] ?? AppActivityRecord(bundleID: bid, displayName: appName ?? bid)
@@ -759,6 +805,9 @@ public final class KeyStatsStore {
             let (dayKey, _) = Self.dayKeyAndHour(for: nowDate)
             var record = self.days[dayKey] ?? DailyKeyStatsRecord(dateKey: dayKey)
             record.mouseDistancePx += dist * self.mouseCalibrationFactor
+            if self.isCalibratingMouse {
+                self.calibrationRawPx += dist
+            }
             self.days[dayKey] = record
             self.markDirtyAndMaybeFlushLocked(nowTs: nowTs)
         }
@@ -889,6 +938,175 @@ public final class KeyStatsStore {
         }
     }
 
+    public func currentAPM(windowSeconds: Double = 60.0) -> Int {
+        let nowTs = nowProvider().timeIntervalSince1970
+        let clampedWindow = max(1.0, min(60.0, windowSeconds))
+        return queue.sync {
+            recentActionTimestamps.removeAll { nowTs - $0 > 60.0 }
+            let count = recentActionTimestamps.reduce(0) { $0 + ((nowTs - $1) <= clampedWindow ? 1 : 0) }
+            return Int((Double(count) * (60.0 / clampedWindow)).rounded())
+        }
+    }
+
+    public func beginMouseCalibration() {
+        queue.sync {
+            isCalibratingMouse = true
+            calibrationRawPx = 0
+        }
+    }
+
+    public func currentMouseCalibrationPixels() -> Double {
+        queue.sync { calibrationRawPx }
+    }
+
+    public func finishMouseCalibration(knownMeters: Double = 0.10) -> (pixels: Double, factor: Double)? {
+        queue.sync {
+            defer {
+                isCalibratingMouse = false
+                calibrationRawPx = 0
+            }
+            guard isCalibratingMouse, calibrationRawPx >= 40.0, knownMeters > 0 else {
+                return nil
+            }
+            let rawPx = calibrationRawPx
+            let expectedRawPx = knownMeters / KeyStatsAggregateSnapshot.metersPerPixel
+            let rawFactor = expectedRawPx / rawPx
+            let clamped = max(0.1, min(10.0, (rawFactor * 100.0).rounded() / 100.0))
+            mouseCalibrationFactor = clamped
+            return (rawPx, clamped)
+        }
+    }
+
+    public func cancelMouseCalibration() {
+        queue.sync {
+            isCalibratingMouse = false
+            calibrationRawPx = 0
+        }
+    }
+
+    public func resetTodayLocal() {
+        let nowDate = nowProvider()
+        let nowTs = nowDate.timeIntervalSince1970
+        let (todayKey, _) = Self.dayKeyAndHour(for: nowDate)
+        queue.sync {
+            days.removeValue(forKey: todayKey)
+            recentKeyTimestamps.removeAll()
+            recentClickTimestamps.removeAll()
+            recentActionTimestamps.removeAll()
+            flushSynchronouslyLocked(nowTs: nowTs)
+        }
+    }
+
+    public func availableDateBounds(scope: StatsDeviceScope = .allDevices) -> (earliest: Date, latest: Date) {
+        let nowDate = nowProvider()
+        return queue.sync {
+            let cal = Calendar.current
+            let latest = cal.startOfDay(for: nowDate)
+            let df = Self.dayKeyFormatter()
+            let sortedKeys = allKnownDayKeysLocked(scope: scope)
+                .filter {
+                    guard let d = mergedDayLocked(forKey: $0, scope: scope) else { return false }
+                    return d.keyPresses > 0 || d.totalClicks > 0 || d.scrollDistancePx > 0
+                }
+                .sorted()
+            if let firstKey = sortedKeys.first, let parsed = df.date(from: firstKey) {
+                let earliest = cal.startOfDay(for: parsed)
+                return (min(earliest, latest), latest)
+            }
+            return (latest, latest)
+        }
+    }
+
+    public func hourlyTrend(
+        for date: Date,
+        recent24Hours: Bool
+    ) -> (buckets: [HourlyTrendBucket], busiestKeyHour: String?, busiestClickHour: String?) {
+        let nowDate = nowProvider()
+        return queue.sync {
+            let cal = Calendar.current
+            let df = Self.dayKeyFormatter()
+            let (todayKey, _) = Self.dayKeyAndHour(for: nowDate, calendar: cal)
+            var buckets: [HourlyTrendBucket] = []
+            buckets.reserveCapacity(24)
+
+            if recent24Hours {
+                let comps = cal.dateComponents([.year, .month, .day, .hour], from: nowDate)
+                let currentHourStart = cal.date(from: comps) ?? nowDate
+                for offset in -23...0 {
+                    let slotDate = cal.date(byAdding: .hour, value: offset, to: currentHourStart) ?? currentHourStart
+                    let (dKey, h) = Self.dayKeyAndHour(for: slotDate, calendar: cal)
+                    let synced = mergedDayLocked(forKey: dKey, scope: .allDevices)
+                    let local = days[dKey]
+                    let sKeys = (h >= 0 && h < (synced?.hourlyKeys.count ?? 0)) ? (synced?.hourlyKeys[h] ?? 0) : 0
+                    let lKeys = (h >= 0 && h < (local?.hourlyKeys.count ?? 0)) ? (local?.hourlyKeys[h] ?? 0) : 0
+                    let sClicks = (h >= 0 && h < (synced?.hourlyClicks.count ?? 0)) ? (synced?.hourlyClicks[h] ?? 0) : 0
+                    let lClicks = (h >= 0 && h < (local?.hourlyClicks.count ?? 0)) ? (local?.hourlyClicks[h] ?? 0) : 0
+                    let hourLabel = String(format: "%02d:00", h)
+                    let detail: String
+                    if dKey != todayKey, let parsed = df.date(from: dKey) {
+                        let md = cal.dateComponents([.month, .day], from: parsed)
+                        detail = String(format: "%d/%d %02d:00", md.month ?? 1, md.day ?? 1, h)
+                    } else {
+                        detail = hourLabel
+                    }
+                    buckets.append(HourlyTrendBucket(
+                        id: "\(dKey)-\(h)",
+                        axisLabel: hourLabel,
+                        detailLabel: detail,
+                        syncedKeys: sKeys,
+                        localKeys: lKeys,
+                        syncedClicks: sClicks,
+                        localClicks: lClicks
+                    ))
+                }
+            } else {
+                let (dKey, _) = Self.dayKeyAndHour(for: date, calendar: cal)
+                let synced = mergedDayLocked(forKey: dKey, scope: .allDevices)
+                let local = days[dKey]
+                for h in 0..<24 {
+                    let sKeys = h < (synced?.hourlyKeys.count ?? 0) ? (synced?.hourlyKeys[h] ?? 0) : 0
+                    let lKeys = h < (local?.hourlyKeys.count ?? 0) ? (local?.hourlyKeys[h] ?? 0) : 0
+                    let sClicks = h < (synced?.hourlyClicks.count ?? 0) ? (synced?.hourlyClicks[h] ?? 0) : 0
+                    let lClicks = h < (local?.hourlyClicks.count ?? 0) ? (local?.hourlyClicks[h] ?? 0) : 0
+                    let hourLabel = String(format: "%02d:00", h)
+                    buckets.append(HourlyTrendBucket(
+                        id: "\(dKey)-\(h)",
+                        axisLabel: hourLabel,
+                        detailLabel: String(format: "%02d:00–%02d:59", h, h),
+                        syncedKeys: sKeys,
+                        localKeys: lKeys,
+                        syncedClicks: sClicks,
+                        localClicks: lClicks
+                    ))
+                }
+            }
+
+            let bestKey = buckets.max(by: { $0.syncedKeys < $1.syncedKeys })
+            let bestClick = buckets.max(by: { $0.syncedClicks < $1.syncedClicks })
+            return (
+                buckets: buckets,
+                busiestKeyHour: (bestKey?.syncedKeys ?? 0) > 0 ? bestKey?.axisLabel : nil,
+                busiestClickHour: (bestClick?.syncedClicks ?? 0) > 0 ? bestClick?.axisLabel : nil
+            )
+        }
+    }
+
+    public func singleDaySnapshot(
+        for date: Date,
+        deviceScope: StatsDeviceScope = .allDevices
+    ) -> KeyStatsAggregateSnapshot {
+        let (dayKey, _) = Self.dayKeyAndHour(for: date)
+        return queue.sync {
+            buildSnapshotLocked(
+                includedKeys: [dayKey],
+                explicitTrendKeys: [dayKey],
+                range: .today,
+                deviceScope: deviceScope,
+                referenceDate: date
+            )
+        }
+    }
+
     public func snapshot(
         for range: StatsTimeRange,
         deviceScope: StatsDeviceScope = .allDevices
@@ -896,138 +1114,180 @@ public final class KeyStatsStore {
         let nowDate = nowProvider()
         return queue.sync {
             let includedKeys = filteredDayKeysLocked(for: range, scope: deviceScope, referenceDate: nowDate)
-
-            var totalKeys = 0
-            var leftClicks = 0
-            var rightClicks = 0
-            var middleClicks = 0
-            var sideBackClicks = 0
-            var sideForwardClicks = 0
-            var mousePx: Double = 0
-            var scrollPx: Double = 0
-            var peakKPS = 0
-            var peakCPS = 0
-            var backspaces = 0
-            var leftHand = 0
-            var rightHand = 0
-            var romanKeys = 0
-            var nonRomanKeys = 0
-            var activeDays = 0
-            var maxDailyKeys = 0
-            var heatmap: [String: Int] = [:]
-            var shortcuts: [String: Int] = [:]
-            var hourlyKeys = Array(repeating: 0, count: 24)
-            var hourlyClicks = Array(repeating: 0, count: 24)
-            var mergedApps: [String: AppActivityRecord] = [:]
-
-            for key in includedKeys {
-                guard let day = mergedDayLocked(forKey: key, scope: deviceScope) else { continue }
-                if day.keyPresses > 0 || day.totalClicks > 0 {
-                    activeDays += 1
-                }
-                if day.keyPresses > maxDailyKeys {
-                    maxDailyKeys = day.keyPresses
-                }
-                totalKeys += day.keyPresses
-                leftClicks += day.leftClicks
-                rightClicks += day.rightClicks
-                middleClicks += day.middleClicks
-                sideBackClicks += day.sideBackClicks
-                sideForwardClicks += day.sideForwardClicks
-                mousePx += day.mouseDistancePx
-                scrollPx += day.scrollDistancePx
-                peakKPS = max(peakKPS, day.peakKPS)
-                peakCPS = max(peakCPS, day.peakCPS)
-                backspaces += day.backspacePresses
-                leftHand += day.leftHandPresses
-                rightHand += day.rightHandPresses
-                romanKeys += day.romanKeyPresses
-                nonRomanKeys += day.nonRomanKeyPresses
-
-                for (k, v) in day.keyHeatmapCounts {
-                    heatmap[k, default: 0] += v
-                }
-                for (sc, v) in day.shortcutCounts {
-                    shortcuts[sc, default: 0] += v
-                }
-                for h in 0..<min(24, day.hourlyKeys.count) {
-                    hourlyKeys[h] += day.hourlyKeys[h]
-                }
-                for h in 0..<min(24, day.hourlyClicks.count) {
-                    hourlyClicks[h] += day.hourlyClicks[h]
-                }
-                for (bid, app) in day.appStats {
-                    var agg = mergedApps[bid] ?? AppActivityRecord(bundleID: bid, displayName: app.displayName)
-                    if !app.displayName.isEmpty { agg.displayName = app.displayName }
-                    agg.keyPresses += app.keyPresses
-                    agg.leftClicks += app.leftClicks
-                    agg.rightClicks += app.rightClicks
-                    agg.otherClicks += app.otherClicks
-                    agg.scrollDistancePx += app.scrollDistancePx
-                    agg.tabsAccepted += app.tabsAccepted
-                    agg.charactersSaved += app.charactersSaved
-                    if let appHeat = app.keyHeatmapCounts, !appHeat.isEmpty {
-                        var combined = agg.keyHeatmapCounts ?? [:]
-                        for (hk, hv) in appHeat {
-                            combined[hk, default: 0] += hv
-                        }
-                        agg.keyHeatmapCounts = combined
-                    }
-                    mergedApps[bid] = agg
-                }
-            }
-
-            let topShortcutItems = shortcuts
-                .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
-                .prefix(8)
-                .map { RankedCountItem(label: $0.key, count: $0.value) }
-
-            let topKeyItems = heatmap
-                .filter { $0.value > 0 && KeyCodeMapper.recognizedKeyIDs.contains($0.key) }
-                .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
-                .prefix(15)
-                .map { RankedCountItem(label: KeyCodeMapper.prettyKeyLabel($0.key), count: $0.value) }
-
-            let topAppItems = mergedApps.values
-                .filter { $0.keyPresses > 0 || $0.totalClicks > 0 || $0.scrollDistancePx > 0 }
-                .sorted {
-                    let lScore = $0.keyPresses + $0.totalClicks
-                    let rScore = $1.keyPresses + $1.totalClicks
-                    if lScore != rScore { return lScore > rScore }
-                    return $0.displayName < $1.displayName
-                }
-                .prefix(200)
-                .map {
-                    AppActivitySummary(
-                        bundleID: $0.bundleID,
-                        displayName: $0.displayName,
-                        keyPresses: $0.keyPresses,
-                        clicks: $0.totalClicks,
-                        scrollMeters: $0.scrollDistancePx * KeyStatsAggregateSnapshot.metersPerPixel,
-                        scrollPx: $0.scrollDistancePx,
-                        charactersSaved: $0.charactersSaved,
-                        keyHeatmap: $0.keyHeatmapCounts ?? [:]
-                    )
-                }
-
-            let allScopeKeys = allKnownDayKeysLocked(scope: deviceScope)
-                .filter {
-                    guard let d = mergedDayLocked(forKey: $0, scope: deviceScope) else { return false }
-                    return d.keyPresses > 0 || d.totalClicks > 0
-                }
-                .sorted()
-            let firstActiveKey = allScopeKeys.first
-            let lastActiveKey = allScopeKeys.last
-            let (currentStreak, longestStreak) = Self.computeStreaks(
-                sortedActiveDayKeys: allScopeKeys,
+            return buildSnapshotLocked(
+                includedKeys: includedKeys,
+                explicitTrendKeys: nil,
+                range: range,
+                deviceScope: deviceScope,
                 referenceDate: nowDate
             )
+        }
+    }
 
-            // Build chronological daily trend points for the selected range
-            let calendar = Calendar.current
-            let startOfToday = calendar.startOfDay(for: nowDate)
-            let todayKey = Self.dayKeyAndHour(for: nowDate).0
-            let trendKeys: [String]
+    private func buildSnapshotLocked(
+        includedKeys: [String],
+        explicitTrendKeys: [String]?,
+        range: StatsTimeRange,
+        deviceScope: StatsDeviceScope,
+        referenceDate nowDate: Date
+    ) -> KeyStatsAggregateSnapshot {
+        let df = Self.dayKeyFormatter()
+        let cal = Calendar.current
+
+        var totalKeys = 0
+        var leftClicks = 0
+        var rightClicks = 0
+        var middleClicks = 0
+        var sideBackClicks = 0
+        var sideForwardClicks = 0
+        var mousePx: Double = 0
+        var scrollPx: Double = 0
+        var peakKPS = 0
+        var peakCPS = 0
+        var backspaces = 0
+        var leftHand = 0
+        var rightHand = 0
+        var romanKeys = 0
+        var nonRomanKeys = 0
+        var activeDays = 0
+        var maxDailyKeys = 0
+        var peakDayDateKey: String? = nil
+        var weekdayTotals: [Int: (actions: Int, count: Int)] = [:]
+        var heatmap: [String: Int] = [:]
+        var shortcuts: [String: Int] = [:]
+        var hourlyKeys = Array(repeating: 0, count: 24)
+        var hourlyClicks = Array(repeating: 0, count: 24)
+        var mergedApps: [String: AppActivityRecord] = [:]
+
+        for key in includedKeys {
+            guard let day = mergedDayLocked(forKey: key, scope: deviceScope) else { continue }
+            if day.keyPresses > 0 || day.totalClicks > 0 {
+                activeDays += 1
+                if let parsed = df.date(from: key) {
+                    let wd = cal.component(.weekday, from: parsed)
+                    var cur = weekdayTotals[wd] ?? (0, 0)
+                    cur.actions += day.keyPresses + day.totalClicks
+                    cur.count += 1
+                    weekdayTotals[wd] = cur
+                }
+            }
+            if day.keyPresses > maxDailyKeys {
+                maxDailyKeys = day.keyPresses
+                peakDayDateKey = key
+            }
+            totalKeys += day.keyPresses
+            leftClicks += day.leftClicks
+            rightClicks += day.rightClicks
+            middleClicks += day.middleClicks
+            sideBackClicks += day.sideBackClicks
+            sideForwardClicks += day.sideForwardClicks
+            mousePx += day.mouseDistancePx
+            scrollPx += day.scrollDistancePx
+            peakKPS = max(peakKPS, day.peakKPS)
+            peakCPS = max(peakCPS, day.peakCPS)
+            backspaces += day.backspacePresses
+            leftHand += day.leftHandPresses
+            rightHand += day.rightHandPresses
+            romanKeys += day.romanKeyPresses
+            nonRomanKeys += day.nonRomanKeyPresses
+
+            for (k, v) in day.keyHeatmapCounts {
+                heatmap[k, default: 0] += v
+            }
+            for (sc, v) in day.shortcutCounts {
+                shortcuts[sc, default: 0] += v
+            }
+            for h in 0..<min(24, day.hourlyKeys.count) {
+                hourlyKeys[h] += day.hourlyKeys[h]
+            }
+            for h in 0..<min(24, day.hourlyClicks.count) {
+                hourlyClicks[h] += day.hourlyClicks[h]
+            }
+            for (bid, app) in day.appStats {
+                var agg = mergedApps[bid] ?? AppActivityRecord(bundleID: bid, displayName: app.displayName)
+                if !app.displayName.isEmpty { agg.displayName = app.displayName }
+                agg.keyPresses += app.keyPresses
+                agg.leftClicks += app.leftClicks
+                agg.rightClicks += app.rightClicks
+                agg.otherClicks += app.otherClicks
+                agg.scrollDistancePx += app.scrollDistancePx
+                agg.tabsAccepted += app.tabsAccepted
+                agg.charactersSaved += app.charactersSaved
+                if let appHeat = app.keyHeatmapCounts, !appHeat.isEmpty {
+                    var combined = agg.keyHeatmapCounts ?? [:]
+                    for (hk, hv) in appHeat {
+                        combined[hk, default: 0] += hv
+                    }
+                    agg.keyHeatmapCounts = combined
+                }
+                mergedApps[bid] = agg
+            }
+        }
+
+        let peakWeekdayName: String? = weekdayTotals
+            .max(by: {
+                let lAvg = Double($0.value.actions) / Double(max(1, $0.value.count))
+                let rAvg = Double($1.value.actions) / Double(max(1, $1.value.count))
+                return lAvg < rAvg
+            })
+            .flatMap { wd, _ in
+                let idx = wd - 1
+                let syms = cal.weekdaySymbols
+                return (idx >= 0 && idx < syms.count) ? syms[idx] : nil
+            }
+
+        let topShortcutItems = shortcuts
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .prefix(8)
+            .map { RankedCountItem(label: $0.key, count: $0.value) }
+
+        let topKeyItems = heatmap
+            .filter { $0.value > 0 && KeyCodeMapper.recognizedKeyIDs.contains($0.key) }
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .prefix(15)
+            .map { RankedCountItem(label: KeyCodeMapper.prettyKeyLabel($0.key), count: $0.value) }
+
+        let topAppItems = mergedApps.values
+            .filter { $0.keyPresses > 0 || $0.totalClicks > 0 || $0.scrollDistancePx > 0 }
+            .sorted {
+                let lScore = $0.keyPresses + $0.totalClicks
+                let rScore = $1.keyPresses + $1.totalClicks
+                if lScore != rScore { return lScore > rScore }
+                return $0.displayName < $1.displayName
+            }
+            .prefix(200)
+            .map {
+                AppActivitySummary(
+                    bundleID: $0.bundleID,
+                    displayName: $0.displayName,
+                    keyPresses: $0.keyPresses,
+                    clicks: $0.totalClicks,
+                    scrollMeters: $0.scrollDistancePx * KeyStatsAggregateSnapshot.metersPerPixel,
+                    scrollPx: $0.scrollDistancePx,
+                    charactersSaved: $0.charactersSaved,
+                    keyHeatmap: $0.keyHeatmapCounts ?? [:]
+                )
+            }
+
+        let allScopeKeys = allKnownDayKeysLocked(scope: deviceScope)
+            .filter {
+                guard let d = mergedDayLocked(forKey: $0, scope: deviceScope) else { return false }
+                return d.keyPresses > 0 || d.totalClicks > 0
+            }
+            .sorted()
+        let firstActiveKey = allScopeKeys.first
+        let lastActiveKey = allScopeKeys.last
+        let (currentStreak, longestStreak) = Self.computeStreaks(
+            sortedActiveDayKeys: allScopeKeys,
+            referenceDate: nowDate
+        )
+
+        let startOfToday = cal.startOfDay(for: nowDate)
+        let todayKey = Self.dayKeyAndHour(for: nowDate).0
+        let trendKeys: [String]
+        if let explicitTrendKeys {
+            trendKeys = explicitTrendKeys
+        } else {
             switch range {
             case .today:
                 trendKeys = [todayKey]
@@ -1042,81 +1302,82 @@ public final class KeyStatsStore {
                     trendKeys = [todayKey]
                 }
             }
-            let dailyTrendPoints = trendKeys.map { k in
-                let rec = mergedDayLocked(forKey: k, scope: deviceScope)
-                return DailyActivityPoint(
-                    dateKey: k,
-                    keyPresses: rec?.keyPresses ?? 0,
-                    clicks: rec?.totalClicks ?? 0,
-                    mouseDistanceMeters: (rec?.mouseDistancePx ?? 0) * KeyStatsAggregateSnapshot.metersPerPixel,
-                    scrollDistanceMeters: (rec?.scrollDistancePx ?? 0) * KeyStatsAggregateSnapshot.metersPerPixel,
-                    scrollDistancePx: rec?.scrollDistancePx ?? 0
-                )
-            }
-
-            // Build Sunday-aligned 53-week calendar grid ending on today
-            let todayWeekday = calendar.component(.weekday, from: startOfToday) // 1 = Sun ... 7 = Sat
-            let calendarStartOffset = -(52 * 7 + max(0, todayWeekday - 1))
-            var calDays: [CalendarActivityDay] = []
-            calDays.reserveCapacity(abs(calendarStartOffset) + 1)
-            for offset in stride(from: calendarStartOffset, through: 0, by: 1) {
-                if let d = calendar.date(byAdding: .day, value: offset, to: startOfToday) {
-                    let (k, _) = Self.dayKeyAndHour(for: d)
-                    let rec = mergedDayLocked(forKey: k, scope: deviceScope)
-                    calDays.append(CalendarActivityDay(
-                        dateKey: k,
-                        keyPresses: rec?.keyPresses ?? 0,
-                        clicks: rec?.totalClicks ?? 0
-                    ))
-                }
-            }
-
-            let activeDevices = deviceScope == .thisMac
-                ? 1
-                : 1 + remoteDaysByDevice.count + activeImportedPeerDevicesLocked().count
-            let activeAnsiKeys = KeyCodeMapper.ansiKeyIDs.reduce(0) { acc, id in
-                acc + ((heatmap[id, default: 0] > 0) ? 1 : 0)
-            }
-
-            return KeyStatsAggregateSnapshot(
-                range: range,
-                deviceScope: deviceScope,
-                deviceCount: activeDevices,
-                totalKeyPresses: totalKeys,
-                totalClicks: leftClicks + rightClicks + middleClicks + sideBackClicks + sideForwardClicks,
-                leftClicks: leftClicks,
-                rightClicks: rightClicks,
-                otherClicks: middleClicks + sideBackClicks + sideForwardClicks,
-                middleClicks: middleClicks,
-                sideBackClicks: sideBackClicks,
-                sideForwardClicks: sideForwardClicks,
-                mouseDistanceMeters: mousePx * KeyStatsAggregateSnapshot.metersPerPixel,
-                scrollDistanceMeters: scrollPx * KeyStatsAggregateSnapshot.metersPerPixel,
-                scrollDistancePx: scrollPx,
-                peakKPS: peakKPS,
-                peakCPS: peakCPS,
-                backspacePresses: backspaces,
-                leftHandPresses: leftHand,
-                rightHandPresses: rightHand,
-                romanKeyPresses: romanKeys,
-                nonRomanKeyPresses: nonRomanKeys,
-                activeDays: activeDays,
-                maxDailyKeys: maxDailyKeys,
-                firstActiveDateKey: firstActiveKey,
-                lastActiveDateKey: lastActiveKey,
-                currentStreakDays: currentStreak,
-                longestStreakDays: longestStreak,
-                activeKeyCount: activeAnsiKeys,
-                keyHeatmap: heatmap,
-                topShortcuts: Array(topShortcutItems),
-                topKeys: Array(topKeyItems),
-                topApps: Array(topAppItems),
-                hourlyKeys: hourlyKeys,
-                hourlyClicks: hourlyClicks,
-                dailyTrend: dailyTrendPoints,
-                calendarDays: calDays
+        }
+        let dailyTrendPoints = trendKeys.map { k in
+            let rec = mergedDayLocked(forKey: k, scope: deviceScope)
+            return DailyActivityPoint(
+                dateKey: k,
+                keyPresses: rec?.keyPresses ?? 0,
+                clicks: rec?.totalClicks ?? 0,
+                mouseDistanceMeters: (rec?.mouseDistancePx ?? 0) * KeyStatsAggregateSnapshot.metersPerPixel,
+                scrollDistanceMeters: (rec?.scrollDistancePx ?? 0) * KeyStatsAggregateSnapshot.metersPerPixel,
+                scrollDistancePx: rec?.scrollDistancePx ?? 0
             )
         }
+
+        let todayWeekday = cal.component(.weekday, from: startOfToday)
+        let calendarStartOffset = -(52 * 7 + max(0, todayWeekday - 1))
+        var calDays: [CalendarActivityDay] = []
+        calDays.reserveCapacity(abs(calendarStartOffset) + 1)
+        for offset in stride(from: calendarStartOffset, through: 0, by: 1) {
+            if let d = cal.date(byAdding: .day, value: offset, to: startOfToday) {
+                let (k, _) = Self.dayKeyAndHour(for: d)
+                let rec = mergedDayLocked(forKey: k, scope: deviceScope)
+                calDays.append(CalendarActivityDay(
+                    dateKey: k,
+                    keyPresses: rec?.keyPresses ?? 0,
+                    clicks: rec?.totalClicks ?? 0
+                ))
+            }
+        }
+
+        let activeDevices = deviceScope == .thisMac
+            ? 1
+            : 1 + remoteDaysByDevice.count + activeImportedPeerDevicesLocked().count
+        let activeAnsiKeys = KeyCodeMapper.ansiKeyIDs.reduce(0) { acc, id in
+            acc + ((heatmap[id, default: 0] > 0) ? 1 : 0)
+        }
+
+        return KeyStatsAggregateSnapshot(
+            range: range,
+            deviceScope: deviceScope,
+            deviceCount: activeDevices,
+            totalKeyPresses: totalKeys,
+            totalClicks: leftClicks + rightClicks + middleClicks + sideBackClicks + sideForwardClicks,
+            leftClicks: leftClicks,
+            rightClicks: rightClicks,
+            otherClicks: middleClicks + sideBackClicks + sideForwardClicks,
+            middleClicks: middleClicks,
+            sideBackClicks: sideBackClicks,
+            sideForwardClicks: sideForwardClicks,
+            mouseDistanceMeters: mousePx * KeyStatsAggregateSnapshot.metersPerPixel,
+            scrollDistanceMeters: scrollPx * KeyStatsAggregateSnapshot.metersPerPixel,
+            scrollDistancePx: scrollPx,
+            peakKPS: peakKPS,
+            peakCPS: peakCPS,
+            backspacePresses: backspaces,
+            leftHandPresses: leftHand,
+            rightHandPresses: rightHand,
+            romanKeyPresses: romanKeys,
+            nonRomanKeyPresses: nonRomanKeys,
+            activeDays: activeDays,
+            maxDailyKeys: maxDailyKeys,
+            peakDayDateKey: peakDayDateKey,
+            peakWeekdayName: peakWeekdayName,
+            firstActiveDateKey: firstActiveKey,
+            lastActiveDateKey: lastActiveKey,
+            currentStreakDays: currentStreak,
+            longestStreakDays: longestStreak,
+            activeKeyCount: activeAnsiKeys,
+            keyHeatmap: heatmap,
+            topShortcuts: Array(topShortcutItems),
+            topKeys: Array(topKeyItems),
+            topApps: Array(topAppItems),
+            hourlyKeys: hourlyKeys,
+            hourlyClicks: hourlyClicks,
+            dailyTrend: dailyTrendPoints,
+            calendarDays: calDays
+        )
     }
 
     // MARK: - Installed KeyStats.app Discovery & Import
@@ -1409,12 +1670,18 @@ public final class KeyStatsStore {
             lastMousePoint = nil
             recentKeyTimestamps.removeAll()
             recentClickTimestamps.removeAll()
+            recentActionTimestamps.removeAll()
             isDirty = false
             try? FileManager.default.removeItem(at: fileURL)
         }
     }
 
     // MARK: - Private Helpers
+
+    private func recordActionLocked(nowTs: TimeInterval) {
+        recentActionTimestamps.append(nowTs)
+        recentActionTimestamps.removeAll { nowTs - $0 > 60.0 }
+    }
 
     private func filteredDayKeysLocked(
         for range: StatsTimeRange,

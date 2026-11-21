@@ -302,6 +302,82 @@ final class TypingEngine {
         }
     }
 
+    var showMenuBarClickCount: Bool {
+        get { UserDefaults.standard.bool(forKey: "WordTailShowMenuBarClickCount") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailShowMenuBarClickCount")
+            onStateChanged?()
+        }
+    }
+
+    var enableDynamicMenuBarColor: Bool {
+        get { UserDefaults.standard.bool(forKey: "WordTailDynamicMenuBarColor") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailDynamicMenuBarColor")
+            onStateChanged?()
+        }
+    }
+
+    var dynamicMenuBarColorStyle: String {
+        get { UserDefaults.standard.string(forKey: "WordTailDynamicMenuBarColorStyle") ?? "dot" }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailDynamicMenuBarColorStyle")
+            onStateChanged?()
+        }
+    }
+
+    var dynamicMenuBarWindowSeconds: Int {
+        get {
+            let stored = UserDefaults.standard.integer(forKey: "WordTailDynamicMenuBarWindowSeconds")
+            return stored > 0 ? stored : 30
+        }
+        set {
+            UserDefaults.standard.set(max(10, min(60, newValue)), forKey: "WordTailDynamicMenuBarWindowSeconds")
+            onStateChanged?()
+        }
+    }
+
+    var mouseCalibrationFactor: Double {
+        get {
+            let stored = UserDefaults.standard.double(forKey: "WordTailMouseCalibrationFactor")
+            return stored > 0 ? stored : 1.0
+        }
+        set {
+            let clamped = max(0.1, min(10.0, newValue))
+            UserDefaults.standard.set(clamped, forKey: "WordTailMouseCalibrationFactor")
+            keyStatsStore.mouseCalibrationFactor = clamped
+            onStateChanged?()
+        }
+    }
+
+    var enableMilestoneNotifications: Bool {
+        get { UserDefaults.standard.bool(forKey: "WordTailMilestoneNotifications") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailMilestoneNotifications")
+            onStateChanged?()
+        }
+    }
+
+    var milestoneKeyThreshold: Int {
+        get {
+            let stored = UserDefaults.standard.integer(forKey: "WordTailMilestoneKeyThreshold")
+            return stored >= 1_000 ? stored : 10_000
+        }
+        set {
+            UserDefaults.standard.set(max(1_000, newValue), forKey: "WordTailMilestoneKeyThreshold")
+        }
+    }
+
+    var milestoneClickThreshold: Int {
+        get {
+            let stored = UserDefaults.standard.integer(forKey: "WordTailMilestoneClickThreshold")
+            return stored >= 200 ? stored : 2_000
+        }
+        set {
+            UserDefaults.standard.set(max(200, newValue), forKey: "WordTailMilestoneClickThreshold")
+        }
+    }
+
     func flushAllTelemetry() {
         keyStatsStore.flushNow()
         if syncEngine.statusSnapshot().isEnabled {
@@ -364,6 +440,8 @@ final class TypingEngine {
         if UserDefaults.standard.object(forKey: "WordTailMinSuffix") != nil {
             completer.minimumSuffixLength = max(1, UserDefaults.standard.integer(forKey: "WordTailMinSuffix"))
         }
+        let storedCal = UserDefaults.standard.double(forKey: "WordTailMouseCalibrationFactor")
+        keyStatsStore.mouseCalibrationFactor = storedCal > 0 ? storedCal : 1.0
         if UserDefaults.standard.object(forKey: "WordTailEnableTechLexicon") != nil {
             completer.enableTechLexicon = UserDefaults.standard.bool(forKey: "WordTailEnableTechLexicon")
         }

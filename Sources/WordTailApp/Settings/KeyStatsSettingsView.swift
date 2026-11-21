@@ -3,19 +3,74 @@ import WordTailCore
 
 enum HeatmapTheme: String, CaseIterable, Identifiable {
     case indigo = "Indigo"
-    case green = "Green"
     case blue = "Blue"
-    case orange = "Orange"
+    case warm = "Warm"
+    case spectrum = "Spectrum"
+    case green = "Green"
+    case teal = "Teal"
+    case rose = "Rose"
 
     var id: String { rawValue }
 
     var color: Color {
         switch self {
         case .indigo: return LinearUI.accent
-        case .green: return Color(red: 0.16, green: 0.66, blue: 0.35)
         case .blue: return Color(red: 0.14, green: 0.49, blue: 0.92)
-        case .orange: return Color(red: 0.90, green: 0.48, blue: 0.14)
+        case .warm: return Color(red: 0.92, green: 0.32, blue: 0.14)
+        case .spectrum: return Color(red: 0.92, green: 0.28, blue: 0.22)
+        case .green: return Color(red: 0.16, green: 0.66, blue: 0.35)
+        case .teal: return Color(red: 0.08, green: 0.62, blue: 0.66)
+        case .rose: return Color(red: 0.86, green: 0.24, blue: 0.46)
         }
+    }
+
+    private var stops: [(r: Double, g: Double, b: Double)] {
+        switch self {
+        case .indigo:
+            return [(0.74, 0.77, 0.98), (0.37, 0.42, 0.89), (0.24, 0.27, 0.72)]
+        case .blue:
+            return [(0.68, 0.85, 0.99), (0.14, 0.49, 0.92), (0.04, 0.30, 0.72)]
+        case .warm:
+            return [(0.99, 0.84, 0.42), (0.96, 0.52, 0.16), (0.85, 0.18, 0.16)]
+        case .spectrum:
+            return [(0.22, 0.56, 0.96), (0.20, 0.78, 0.68), (0.96, 0.76, 0.20), (0.90, 0.22, 0.20)]
+        case .green:
+            return [(0.68, 0.90, 0.74), (0.16, 0.66, 0.35), (0.08, 0.44, 0.22)]
+        case .teal:
+            return [(0.64, 0.90, 0.90), (0.08, 0.62, 0.66), (0.04, 0.42, 0.48)]
+        case .rose:
+            return [(0.98, 0.76, 0.84), (0.86, 0.24, 0.46), (0.64, 0.10, 0.30)]
+        }
+    }
+
+    func rgb(forIntensity t: Double, scheme: ColorScheme) -> (r: Double, g: Double, b: Double) {
+        let clamped = max(0.0, min(1.0, t))
+        let list = stops
+        let scaled = clamped * Double(list.count - 1)
+        let idx = min(list.count - 2, max(0, Int(floor(scaled))))
+        let localT = scaled - Double(idx)
+        let a = list[idx]
+        let b = list[idx + 1]
+        let rawR = a.r + (b.r - a.r) * localT
+        let rawG = a.g + (b.g - a.g) * localT
+        let rawB = a.b + (b.b - a.b) * localT
+        if scheme == .dark {
+            // Lift dark-mode luminance slightly at lower intensities so keycaps read vividly on charcoal.
+            let mix = 0.22 + 0.78 * clamped
+            return (0.18 + (rawR - 0.18) * mix, 0.19 + (rawG - 0.19) * mix, 0.22 + (rawB - 0.22) * mix)
+        }
+        return (rawR, rawG, rawB)
+    }
+
+    func heatColor(forIntensity t: Double, scheme: ColorScheme) -> Color {
+        let c = rgb(forIntensity: t, scheme: scheme)
+        return Color(red: c.r, green: c.g, blue: c.b)
+    }
+
+    func needsLightText(intensity t: Double, scheme: ColorScheme) -> Bool {
+        let c = rgb(forIntensity: t, scheme: scheme)
+        let luminance = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b
+        return luminance < 0.58
     }
 }
 
@@ -56,6 +111,7 @@ struct KeyStatsSettingsView: View {
     @ObservedObject var vm: SettingsViewModel
     @AppStorage("WordTailHeatmapTheme") private var heatmapThemeRaw: String = HeatmapTheme.indigo.rawValue
     @State private var selectedHeatmapAppID: String? = nil
+    @State private var showingDatePopover: Bool = false
 
     private var theme: HeatmapTheme {
         HeatmapTheme(rawValue: heatmapThemeRaw) ?? .indigo
@@ -70,6 +126,10 @@ struct KeyStatsSettingsView: View {
 
         return VStack(alignment: .leading, spacing: 16) {
             headerBar(ks: ks)
+
+            if vm.keyStatsRange == .today && !vm.isStaticShowcase {
+                dayNavigatorStrip
+            }
 
             kpiRow(ks: ks)
 
@@ -91,7 +151,13 @@ struct KeyStatsSettingsView: View {
                 range: ks.range,
                 hourlyKeys: ks.hourlyKeys,
                 hourlyClicks: ks.hourlyClicks,
-                dailyTrend: ks.dailyTrend
+                hourlyBuckets: vm.hourlyTrendBuckets,
+                hourlyRecent24h: $vm.hourlyRecent24Hours,
+                busiestKeyHour: vm.busiestKeyHour,
+                deviceCount: ks.deviceCount,
+                deviceScope: ks.deviceScope,
+                dailyTrend: ks.dailyTrend,
+                isStaticShowcase: vm.isStaticShowcase
             )
 
             if !ks.topApps.isEmpty {
@@ -106,8 +172,20 @@ struct KeyStatsSettingsView: View {
                 KeyBreakdownCard(topKeys: ks.topKeys)
                     .frame(maxWidth: .infinity)
 
+                TopKeysDonutCard(topKeys: ks.topKeys, totalKeyPresses: ks.totalKeyPresses)
+                    .frame(maxWidth: .infinity)
+            }
+
+            HStack(alignment: .top, spacing: 12) {
                 ShortcutsAndProfileCard(ks: ks)
                     .frame(maxWidth: .infinity)
+
+                LifetimeInsightsCard(
+                    ks: ks,
+                    mouseCalibrationFactor: vm.mouseCalibrationFactor,
+                    onCalibrateMouse: vm.isStaticShowcase ? nil : { vm.showingMouseCalibrationSheet = true }
+                )
+                .frame(maxWidth: .infinity)
             }
 
             ActivityCalendarCard(
@@ -118,8 +196,99 @@ struct KeyStatsSettingsView: View {
                 longestStreak: ks.longestStreakDays,
                 theme: theme,
                 hasData: ks.totalKeyPresses > 0 || ks.totalClicks > 0,
-                onClear: { vm.clearKeyStats() }
+                onResetToday: { vm.resetTodayKeyStats() },
+                onClearAll: { vm.clearKeyStats() }
             )
+        }
+    }
+
+    private var dayNavigatorStrip: some View {
+        let bounds = vm.statsDateBounds
+        let df: DateFormatter = {
+            let f = DateFormatter()
+            f.dateStyle = .medium
+            f.timeStyle = .none
+            return f
+        }()
+
+        return HStack(spacing: 6) {
+            Text("Viewing day:")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Button {
+                vm.stepStatsDate(byDays: -1)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .frame(width: 22, height: 22)
+                    .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(!vm.canStepStatsDateBackward)
+            .opacity(vm.canStepStatsDateBackward ? 1 : 0.4)
+            .help("Previous day")
+
+            Button {
+                showingDatePopover.toggle()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(LinearUI.accent)
+                    Text(vm.isSelectedDateToday ? "Today · \(df.string(from: vm.selectedStatsDate))" : df.string(from: vm.selectedStatsDate))
+                        .font(.system(size: 11, weight: .medium))
+                        .monospacedDigit()
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 22)
+                .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(LinearUI.controlBorder(scheme), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showingDatePopover, arrowEdge: .bottom) {
+                DatePicker(
+                    "",
+                    selection: $vm.selectedStatsDate,
+                    in: bounds.earliest...bounds.latest,
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.graphical)
+                .labelsHidden()
+                .padding(10)
+            }
+
+            Button {
+                vm.stepStatsDate(byDays: 1)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .frame(width: 22, height: 22)
+                    .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(!vm.canStepStatsDateForward)
+            .opacity(vm.canStepStatsDateForward ? 1 : 0.4)
+            .help("Next day")
+
+            if !vm.isSelectedDateToday {
+                Button {
+                    vm.resetStatsDateToToday()
+                } label: {
+                    Text("Jump to Today")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(LinearUI.accent)
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(LinearUI.accent.opacity(0.11), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer()
         }
     }
 
@@ -482,11 +651,11 @@ private struct ANSIKeyboardHeatmapView: View {
         isFunctionRow: Bool,
         isCompactHalfKey: Bool
     ) -> some View {
-        let intensity = count > 0 ? min(0.96, max(0.18, sqrt(Double(count) / Double(maxCount)))) : 0.0
-        let fill: Color = count == 0 ? LinearUI.subtleFill(scheme) : theme.color.opacity(intensity)
-        let strongFill = intensity >= 0.52
+        let intensity = count > 0 ? min(1.0, max(0.08, sqrt(Double(count) / Double(maxCount)))) : 0.0
+        let fill: Color = count == 0 ? LinearUI.subtleFill(scheme) : theme.heatColor(forIntensity: intensity, scheme: scheme)
+        let strongFill = count > 0 && theme.needsLightText(intensity: intensity, scheme: scheme)
         let primaryText: Color = strongFill ? .white : Color.primary.opacity(count > 0 ? 0.90 : 0.56)
-        let secondaryText: Color = strongFill ? .white.opacity(0.74) : Color.primary.opacity(0.36)
+        let secondaryText: Color = strongFill ? .white.opacity(0.76) : Color.primary.opacity(0.36)
         let isHovered = hoveredKey?.id == spec.id
 
         ZStack {
@@ -613,6 +782,8 @@ private struct ChartBucket: Identifiable {
     let detailLabel: String
     let value: Double
     let formattedValue: String
+    var localValue: Double? = nil
+    var formattedLocalValue: String? = nil
 }
 
 private struct ActivityTrendChartCard: View {
@@ -620,11 +791,19 @@ private struct ActivityTrendChartCard: View {
     let range: StatsTimeRange
     let hourlyKeys: [Int]
     let hourlyClicks: [Int]
+    let hourlyBuckets: [HourlyTrendBucket]
+    @Binding var hourlyRecent24h: Bool
+    let busiestKeyHour: String?
+    let deviceCount: Int
+    let deviceScope: StatsDeviceScope
     let dailyTrend: [DailyActivityPoint]
+    let isStaticShowcase: Bool
 
     @State private var metric: TrendMetric = .keys
     @State private var style: TrendStyle = .line
     @State private var hoveredIndex: Int?
+
+    private let thisMacOrange = Color(red: 0.93, green: 0.55, blue: 0.14)
 
     private var availableMetrics: [(label: String, value: TrendMetric)] {
         if range == .today {
@@ -640,29 +819,66 @@ private struct ActivityTrendChartCard: View {
         return metric
     }
 
+    private var showLocalComparison: Bool {
+        range == .today && deviceCount > 1 && deviceScope == .allDevices && !hourlyBuckets.isEmpty
+    }
+
     var body: some View {
         let activeMetric = effectiveMetric
         let buckets = buildBuckets(metric: activeMetric)
-        let maxVal = max(1.0, buckets.map(\.value).max() ?? 1.0)
+        let localMax = buckets.compactMap(\.localValue).max() ?? 0.0
+        let maxVal = max(1.0, max(buckets.map(\.value).max() ?? 1.0, showLocalComparison ? localMax : 0.0))
         let peakBucket = buckets.max(by: { $0.value < $1.value })
 
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
-                LinearSectionHeader(title: range == .today ? "24-Hour Activity" : "Activity Trend")
+                LinearSectionHeader(title: range == .today ? (hourlyRecent24h ? "Last 24 Hours" : "24-Hour Activity") : "Activity Trend")
 
                 if let idx = hoveredIndex, idx >= 0, idx < buckets.count {
                     let b = buckets[idx]
-                    Text("\(b.detailLabel): \(b.formattedValue)")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(activeMetric.color)
+                    if showLocalComparison, let localStr = b.formattedLocalValue {
+                        Text("\(b.detailLabel) · All \(b.formattedValue) · Mac \(localStr)")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(activeMetric.color)
+                    } else {
+                        Text("\(b.detailLabel): \(b.formattedValue)")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(activeMetric.color)
+                    }
                 } else if let peak = peakBucket, peak.value > 0 {
-                    let prefix = (range == .allTime && dailyTrend.count > 65) ? "Weekly peak" : "Peak"
+                    let prefix: String = {
+                        if range == .today { return "Busiest" }
+                        return (range == .allTime && dailyTrend.count > 65) ? "Weekly peak" : "Peak"
+                    }()
                     Text("\(prefix): \(peak.detailLabel) (\(peak.formattedValue))")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
+
+                if showLocalComparison {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 4) {
+                            Capsule().fill(activeMetric.color).frame(width: 9, height: 2)
+                            Text("All").font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 3.5) {
+                            HStack(spacing: 1) {
+                                Rectangle().fill(thisMacOrange).frame(width: 2.5, height: 2)
+                                Rectangle().fill(thisMacOrange).frame(width: 2.5, height: 2)
+                            }
+                            Text("This Mac").font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if range == .today && !isStaticShowcase {
+                    LinearSegmentedChoices(
+                        options: [("By Date", false), ("Last 24h", true)],
+                        selection: $hourlyRecent24h
+                    )
+                }
 
                 LinearSegmentedChoices(
                     options: availableMetrics,
@@ -702,9 +918,36 @@ private struct ActivityTrendChartCard: View {
                                 guard !buckets.isEmpty else { return }
 
                                 if style == .bar {
-                                    drawBars(in: &context, size: size, buckets: buckets, maxVal: maxVal, color: activeMetric.color)
+                                    drawBars(
+                                        in: &context,
+                                        size: size,
+                                        buckets: buckets,
+                                        maxVal: maxVal,
+                                        color: activeMetric.color,
+                                        showLocalComparison: showLocalComparison
+                                    )
                                 } else {
-                                    drawLine(in: &context, size: size, buckets: buckets, maxVal: maxVal, color: activeMetric.color)
+                                    if showLocalComparison {
+                                        let localVals = buckets.map { $0.localValue ?? 0 }
+                                        drawSeriesCurve(
+                                            in: &context,
+                                            size: size,
+                                            values: localVals,
+                                            maxVal: maxVal,
+                                            color: thisMacOrange,
+                                            dashed: true,
+                                            fillGradient: false
+                                        )
+                                    }
+                                    drawSeriesCurve(
+                                        in: &context,
+                                        size: size,
+                                        values: buckets.map(\.value),
+                                        maxVal: maxVal,
+                                        color: activeMetric.color,
+                                        dashed: false,
+                                        fillGradient: true
+                                    )
                                 }
 
                                 if let hi = hoveredIndex, hi >= 0, hi < buckets.count {
@@ -799,28 +1042,57 @@ private struct ActivityTrendChartCard: View {
         context.stroke(base, with: .color(baselineColor), lineWidth: 1)
     }
 
-    private func drawBars(in context: inout GraphicsContext, size: CGSize, buckets: [ChartBucket], maxVal: Double, color: Color) {
+    private func drawBars(
+        in context: inout GraphicsContext,
+        size: CGSize,
+        buckets: [ChartBucket],
+        maxVal: Double,
+        color: Color,
+        showLocalComparison: Bool
+    ) {
         let count = buckets.count
         let slotW = size.width / CGFloat(max(1, count))
-        let barW = max(2.5, min(28, slotW * 0.66))
         let usableH = max(4, size.height - 8)
 
         for (i, b) in buckets.enumerated() {
-            let h = b.value <= 0 ? 2.0 : max(4.0, CGFloat(b.value / maxVal) * usableH)
-            let x = CGFloat(i) * slotW + (slotW - barW) / 2.0
-            let y = size.height - h
-            let rect = CGRect(x: x, y: y, width: barW, height: h)
-            let radius = min(3.0, barW / 2.0)
-            let fill = b.value <= 0 ? color.opacity(0.14) : (hoveredIndex == i ? color : color.opacity(0.84))
-            context.fill(Path(roundedRect: rect, cornerRadius: radius), with: .color(fill))
+            if showLocalComparison {
+                let pairW = max(2.0, min(12, slotW * 0.36))
+                let centerX = CGFloat(i) * slotW + slotW / 2.0
+                let sH = b.value <= 0 ? 1.5 : max(3.0, CGFloat(b.value / maxVal) * usableH)
+                let lVal = b.localValue ?? 0
+                let lH = lVal <= 0 ? 1.5 : max(3.0, CGFloat(lVal / maxVal) * usableH)
+
+                let sRect = CGRect(x: centerX - pairW - 0.5, y: size.height - sH - 4, width: pairW, height: sH)
+                let lRect = CGRect(x: centerX + 0.5, y: size.height - lH - 4, width: pairW, height: lH)
+                let alpha = hoveredIndex == i ? 1.0 : 0.86
+                context.fill(Path(roundedRect: sRect, cornerRadius: min(2.5, pairW / 2)), with: .color(color.opacity(alpha)))
+                context.fill(Path(roundedRect: lRect, cornerRadius: min(2.5, pairW / 2)), with: .color(thisMacOrange.opacity(alpha)))
+            } else {
+                let barW = max(2.5, min(28, slotW * 0.66))
+                let h = b.value <= 0 ? 2.0 : max(4.0, CGFloat(b.value / maxVal) * usableH)
+                let x = CGFloat(i) * slotW + (slotW - barW) / 2.0
+                let y = size.height - h - 4
+                let rect = CGRect(x: x, y: y, width: barW, height: h)
+                let radius = min(3.0, barW / 2.0)
+                let fill = b.value <= 0 ? color.opacity(0.14) : (hoveredIndex == i ? color : color.opacity(0.84))
+                context.fill(Path(roundedRect: rect, cornerRadius: radius), with: .color(fill))
+            }
         }
     }
 
-    private func drawLine(in context: inout GraphicsContext, size: CGSize, buckets: [ChartBucket], maxVal: Double, color: Color) {
+    private func drawSeriesCurve(
+        in context: inout GraphicsContext,
+        size: CGSize,
+        values: [Double],
+        maxVal: Double,
+        color: Color,
+        dashed: Bool,
+        fillGradient: Bool
+    ) {
         let usableH = max(4, size.height - 8)
-        let points: [CGPoint] = buckets.enumerated().map { idx, b in
-            let x = xPosition(index: idx, count: buckets.count, width: size.width, isBar: false)
-            let y = size.height - CGFloat(b.value / maxVal) * usableH - 4
+        let points: [CGPoint] = values.enumerated().map { idx, val in
+            let x = xPosition(index: idx, count: values.count, width: size.width, isBar: false)
+            let y = size.height - CGFloat(min(1.0, max(0.0, val / maxVal))) * usableH - 4
             return CGPoint(x: x, y: y)
         }
         guard !points.isEmpty else { return }
@@ -833,27 +1105,37 @@ private struct ActivityTrendChartCard: View {
 
         let linePath = monotonicSplinePath(points: points, minY: 4, maxY: size.height - 4)
 
-        var areaPath = linePath
-        areaPath.addLine(to: CGPoint(x: points.last!.x, y: size.height - 4))
-        areaPath.addLine(to: CGPoint(x: points.first!.x, y: size.height - 4))
-        areaPath.closeSubpath()
+        if fillGradient {
+            var areaPath = linePath
+            areaPath.addLine(to: CGPoint(x: points.last!.x, y: size.height - 4))
+            areaPath.addLine(to: CGPoint(x: points.first!.x, y: size.height - 4))
+            areaPath.closeSubpath()
 
-        context.fill(
-            areaPath,
-            with: .linearGradient(
-                Gradient(colors: [color.opacity(0.22), color.opacity(0.01)]),
-                startPoint: CGPoint(x: 0, y: 4),
-                endPoint: CGPoint(x: 0, y: size.height - 4)
+            context.fill(
+                areaPath,
+                with: .linearGradient(
+                    Gradient(colors: [color.opacity(0.22), color.opacity(0.01)]),
+                    startPoint: CGPoint(x: 0, y: 4),
+                    endPoint: CGPoint(x: 0, y: size.height - 4)
+                )
             )
+        }
+
+        let style = StrokeStyle(
+            lineWidth: dashed ? 1.65 : 2.0,
+            lineCap: .round,
+            lineJoin: .round,
+            dash: dashed ? [4, 2.5] : []
         )
-        context.stroke(linePath, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+        context.stroke(linePath, with: .color(color), style: style)
 
         if points.count <= 32 {
             let halo = LinearUI.cardBg(scheme)
             for p in points {
-                let r = CGRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)
+                let rad: CGFloat = dashed ? 2.2 : 3.0
+                let r = CGRect(x: p.x - rad, y: p.y - rad, width: rad * 2, height: rad * 2)
                 let ellipse = Path(ellipseIn: r)
-                context.stroke(ellipse, with: .color(halo), lineWidth: 1.5)
+                context.stroke(ellipse, with: .color(halo), lineWidth: 1.4)
                 context.fill(ellipse, with: .color(color))
             }
         }
@@ -927,6 +1209,21 @@ private struct ActivityTrendChartCard: View {
 
     private func buildBuckets(metric: TrendMetric) -> [ChartBucket] {
         if range == .today {
+            if !hourlyBuckets.isEmpty {
+                return hourlyBuckets.map { hb in
+                    let synced = metric == .clicks ? Double(hb.syncedClicks) : Double(hb.syncedKeys)
+                    let local = metric == .clicks ? Double(hb.localClicks) : Double(hb.localKeys)
+                    return ChartBucket(
+                        id: hb.id,
+                        axisLabel: hb.axisLabel,
+                        detailLabel: hb.detailLabel,
+                        value: synced,
+                        formattedValue: formatMetricValue(synced, metric: metric),
+                        localValue: local,
+                        formattedLocalValue: formatMetricValue(local, metric: metric)
+                    )
+                }
+            }
             return (0..<24).map { h in
                 let raw = metric == .clicks
                     ? Double(h < hourlyClicks.count ? hourlyClicks[h] : 0)
@@ -1319,6 +1616,30 @@ private struct ShortcutsAndProfileCard: View {
                         .frame(height: 5)
                     }
 
+                    // Left / Right Click Ratio bar
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Left Click \(ks.leftClickPercent)% (\(KeyStatsAggregateSnapshot.formatCompactCount(ks.leftClicks)))")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("Right Click \(100 - ks.leftClickPercent)% (\(KeyStatsAggregateSnapshot.formatCompactCount(ks.rightClicks)))")
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.system(size: 10, weight: .medium))
+
+                        GeometryReader { geo in
+                            let leftClickFrac = CGFloat(min(max(ks.leftClickPercent, 5), 95)) / 100.0
+                            HStack(spacing: 2) {
+                                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                    .fill(Color(nsColor: .systemBlue).opacity(0.85))
+                                    .frame(width: max(4, (geo.size.width - 2) * leftClickFrac))
+                                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                    .fill(Color(red: 0.90, green: 0.48, blue: 0.14).opacity(0.78))
+                            }
+                        }
+                        .frame(height: 5)
+                    }
+
                     HStack(spacing: 12) {
                         Text("Backspaces: \(String(format: "%.1f%%", ks.correctionRatePercent))")
                         Spacer()
@@ -1337,6 +1658,290 @@ private struct ShortcutsAndProfileCard: View {
     }
 }
 
+// MARK: - Top Keys Share Donut & Lifetime Insights Cards
+
+private struct TopKeysDonutCard: View {
+    @Environment(\.colorScheme) private var scheme
+    let topKeys: [RankedCountItem]
+    let totalKeyPresses: Int
+
+    @State private var hoveredSliceIndex: Int? = nil
+
+    private struct Slice: Identifiable {
+        let id: String
+        let label: String
+        let count: Int
+        let share: Double
+        let startAngle: Double
+        let endAngle: Double
+        let color: Color
+    }
+
+    private let palette: [Color] = [
+        LinearUI.accent,
+        Color(red: 0.14, green: 0.49, blue: 0.92),
+        Color(red: 0.16, green: 0.66, blue: 0.35),
+        Color(red: 0.08, green: 0.62, blue: 0.66),
+        Color(red: 0.90, green: 0.48, blue: 0.14),
+        Color(red: 0.86, green: 0.24, blue: 0.46),
+        Color(red: 0.60, green: 0.42, blue: 0.86),
+        Color.secondary.opacity(0.45)
+    ]
+
+    var body: some View {
+        let slices = buildSlices()
+
+        return VStack(alignment: .leading, spacing: 6) {
+            LinearSectionHeader(
+                title: "Key Share Distribution",
+                subtitle: "Top 7 keys share of total strokes"
+            )
+
+            LinearCard {
+                if slices.isEmpty {
+                    Text("Key share distribution populates as you type.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                } else {
+                    HStack(spacing: 14) {
+                        ZStack {
+                            Canvas { context, size in
+                                let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+                                let outerR = min(size.width, size.height) * 0.46
+                                let innerR = outerR * 0.58
+
+                                for (idx, s) in slices.enumerated() {
+                                    let isHover = hoveredSliceIndex == idx
+                                    let r = isHover ? outerR + 3.0 : outerR
+                                    var path = Path()
+                                    path.addArc(
+                                        center: center,
+                                        radius: r,
+                                        startAngle: .degrees(s.startAngle),
+                                        endAngle: .degrees(s.endAngle),
+                                        clockwise: false
+                                    )
+                                    path.addArc(
+                                        center: center,
+                                        radius: innerR,
+                                        startAngle: .degrees(s.endAngle),
+                                        endAngle: .degrees(s.startAngle),
+                                        clockwise: true
+                                    )
+                                    path.closeSubpath()
+                                    context.fill(path, with: .color(s.color))
+                                }
+                            }
+                            .frame(width: 114, height: 114)
+                            .contentShape(Circle())
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let loc):
+                                    let dx = loc.x - 57
+                                    let dy = loc.y - 57
+                                    let dist = hypot(dx, dy)
+                                    guard dist >= 26 && dist <= 56 else {
+                                        hoveredSliceIndex = nil
+                                        return
+                                    }
+                                    var angle = atan2(dy, dx) * 180.0 / .pi
+                                    if angle < -90 { angle += 360 }
+                                    hoveredSliceIndex = slices.firstIndex { angle >= $0.startAngle && angle <= $0.endAngle }
+                                case .ended:
+                                    hoveredSliceIndex = nil
+                                }
+                            }
+
+                            VStack(spacing: 1) {
+                                if let hi = hoveredSliceIndex, hi >= 0, hi < slices.count {
+                                    let s = slices[hi]
+                                    Text(s.label)
+                                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                        .lineLimit(1)
+                                    Text(String(format: "%.1f%%", s.share * 100.0))
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(s.color)
+                                } else {
+                                    Text("Keys")
+                                        .font(.system(size: 9.5, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                    Text(KeyStatsAggregateSnapshot.formatCompactCount(totalKeyPresses))
+                                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                                }
+                            }
+                            .frame(width: 56)
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(slices.enumerated()), id: \.element.id) { idx, s in
+                                HStack(spacing: 5) {
+                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                        .fill(s.color)
+                                        .frame(width: 8, height: 8)
+                                    Text(s.label)
+                                        .font(.system(size: 10.5, weight: hoveredSliceIndex == idx ? .semibold : .medium, design: .rounded))
+                                        .lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    Text(String(format: "%.0f%%", s.share * 100.0))
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                                .onHover { inside in
+                                    hoveredSliceIndex = inside ? idx : (hoveredSliceIndex == idx ? nil : hoveredSliceIndex)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                }
+            }
+        }
+    }
+
+    private func buildSlices() -> [Slice] {
+        let top = Array(topKeys.prefix(7))
+        let topSum = top.reduce(0) { $0 + $1.count }
+        let total = max(totalKeyPresses, topSum)
+        guard total > 0, !top.isEmpty else { return [] }
+
+        var result: [Slice] = []
+        var cursor = -90.0
+        for (idx, item) in top.enumerated() {
+            let share = Double(item.count) / Double(total)
+            let span = share * 360.0
+            result.append(Slice(
+                id: item.id,
+                label: item.label,
+                count: item.count,
+                share: share,
+                startAngle: cursor,
+                endAngle: cursor + span,
+                color: palette[idx % palette.count]
+            ))
+            cursor += span
+        }
+        let remainder = max(0, total - topSum)
+        if remainder > 0 {
+            let share = Double(remainder) / Double(total)
+            result.append(Slice(
+                id: "other",
+                label: "Other",
+                count: remainder,
+                share: share,
+                startAngle: cursor,
+                endAngle: 270.0,
+                color: palette[7]
+            ))
+        }
+        return result
+    }
+}
+
+private struct LifetimeInsightsCard: View {
+    @Environment(\.colorScheme) private var scheme
+    let ks: KeyStatsAggregateSnapshot
+    let mouseCalibrationFactor: Double
+    var onCalibrateMouse: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                LinearSectionHeader(
+                    title: "Activity Insights",
+                    subtitle: "Peaks, style & physical distance benchmarks"
+                )
+                Spacer()
+                if let onCalibrateMouse {
+                    LinearActionButton(title: String(format: "Mouse %.2f×", mouseCalibrationFactor), icon: "ruler") {
+                        onCalibrateMouse()
+                    }
+                    .help("Calibrate 10 cm mouse travel factor")
+                }
+            }
+
+            LinearCard {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    insightCell(
+                        icon: "sparkles",
+                        accent: LinearUI.accent,
+                        title: "Productivity Peak",
+                        value: ks.peakWeekdayName ?? "—",
+                        help: "Day of the week with highest average keys + clicks"
+                    )
+                    insightCell(
+                        icon: "flame.fill",
+                        accent: Color(red: 0.90, green: 0.48, blue: 0.14),
+                        title: "Peak Day",
+                        value: ks.maxDailyKeys > 0
+                            ? "\(KeyStatsAggregateSnapshot.formatCompactCount(ks.maxDailyKeys)) (\(ks.peakDayDateKey?.suffix(5) ?? ""))"
+                            : "—",
+                        help: "Single highest keystroke day in this range"
+                    )
+                    insightCell(
+                        icon: "figure.run",
+                        accent: Color(red: 0.14, green: 0.49, blue: 0.92),
+                        title: "Mouse Marathons",
+                        value: String(format: "%.2f", ks.marathonsEquivalent),
+                        help: "Equivalent to 42.195 km marathons"
+                    )
+                    insightCell(
+                        icon: "mountain.2.fill",
+                        accent: Color(red: 0.16, green: 0.66, blue: 0.35),
+                        title: "Scroll Everests",
+                        value: String(format: "%.2f", ks.everestsEquivalent),
+                        help: "Equivalent to 8,848.86 m Everest ascents"
+                    )
+                    insightCell(
+                        icon: "hand.tap.fill",
+                        accent: Color(red: 0.08, green: 0.62, blue: 0.66),
+                        title: "Input Style",
+                        value: "\(ks.inputStyleLabel) (\(String(format: "%.1f", ks.keyToClickRatio)):1)",
+                        help: "Keys-to-clicks ratio across selected period"
+                    )
+                    insightCell(
+                        icon: "delete.left.fill",
+                        accent: Color(red: 0.86, green: 0.24, blue: 0.46),
+                        title: "Correction Rate",
+                        value: String(format: "%.1f%%", ks.correctionRatePercent),
+                        help: "Share of Delete/Backspace keys across keystrokes"
+                    )
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+        }
+    }
+
+    private func insightCell(icon: String, accent: Color, title: String, value: String, help: String) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(accent)
+                .frame(width: 22, height: 22)
+                .background(accent.opacity(scheme == .dark ? 0.18 : 0.11), in: RoundedRectangle(cornerRadius: 5.5, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(value)
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            Spacer(minLength: 0)
+        }
+        .help(help)
+    }
+}
+
 // MARK: - 53-Week Activity Calendar Heatmap (KeyStats Reference)
 
 private struct ActivityCalendarCard: View {
@@ -1348,7 +1953,8 @@ private struct ActivityCalendarCard: View {
     let longestStreak: Int
     let theme: HeatmapTheme
     let hasData: Bool
-    let onClear: () -> Void
+    let onResetToday: () -> Void
+    let onClearAll: () -> Void
 
     @State private var hoveredDay: CalendarActivityDay?
 
@@ -1371,7 +1977,28 @@ private struct ActivityCalendarCard: View {
                         .foregroundStyle(theme.color)
                 }
                 if hasData {
-                    LinearIconButton(symbol: "trash", helpText: "Reset KeyStats history", action: onClear)
+                    Menu {
+                        Button(role: .destructive) {
+                            onResetToday()
+                        } label: {
+                            Label("Reset Today (This Mac)…", systemImage: "clock.arrow.circlepath")
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            onClearAll()
+                        } label: {
+                            Label("Reset All History…", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, height: 24)
+                            .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Reset Today or All KeyStats History")
                 }
             }
 
@@ -1490,9 +2117,9 @@ private struct HeatScaleLegend: View {
             Text("Less")
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
-            ForEach([0.0, 0.22, 0.45, 0.70, 0.94], id: \.self) { level in
+            ForEach([0.0, 0.20, 0.45, 0.72, 1.0], id: \.self) { level in
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(level == 0 ? LinearUI.subtleFill(scheme) : theme.color.opacity(level))
+                    .fill(level == 0 ? LinearUI.subtleFill(scheme) : theme.heatColor(forIntensity: level, scheme: scheme))
                     .frame(width: 8, height: 8)
             }
             Text("More")
