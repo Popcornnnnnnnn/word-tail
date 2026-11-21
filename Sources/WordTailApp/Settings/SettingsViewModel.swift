@@ -585,6 +585,10 @@ final class SettingsViewModel: ObservableObject {
         !isStaticShowcase && KeyStatsStore.hasInstalledKeyStatsData()
     }
 
+    var showsStatsDevicePicker: Bool {
+        keyStats.deviceCount > 1 || keyStatsDeviceScope == .thisMac
+    }
+
     func refreshKeyStats() {
         guard let engine, !isStaticShowcase else { return }
         keyStats = keyStatsRange == .today

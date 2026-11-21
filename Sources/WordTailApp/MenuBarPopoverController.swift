@@ -37,7 +37,6 @@ final class MenuBarPopoverViewModel: ObservableObject {
     @Published var activeAppVerticalAdjustment: CGFloat = 0.70
 
     @Published var availableRelease: AvailableRelease? = nil
-    @Published var isCheckingUpdates: Bool = false
     @Published var isInstallingUpdate: Bool = false
 
     @Published var historyRange: StatsTimeRange = .days7 {
@@ -60,7 +59,6 @@ final class MenuBarPopoverViewModel: ObservableObject {
     var onToggleAppDisabled: (String) -> Void = { _ in }
     var onAdjustAppBaseline: (String, CGFloat) -> Void = { _, _ in }
     var onOpenSettingsSection: (SettingsSection?, StatsTimeRange?) -> Void = { _, _ in }
-    var onCheckForUpdates: () -> Void = {}
     var onReviewUpdate: () -> Void = {}
     var onQuit: () -> Void = {}
 
@@ -130,7 +128,6 @@ final class MenuBarPopoverViewModel: ObservableObject {
 
         if let autoUpdater {
             availableRelease = autoUpdater.availableRelease
-            isCheckingUpdates = autoUpdater.isChecking
             isInstallingUpdate = autoUpdater.isInstalling
         }
     }
@@ -161,7 +158,6 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
         onToggleAppDisabled: @escaping (String) -> Void,
         onAdjustAppBaseline: @escaping (String, CGFloat) -> Void,
         onOpenSettingsSection: @escaping (SettingsSection?, StatsTimeRange?) -> Void,
-        onCheckForUpdates: @escaping () -> Void,
         onReviewUpdate: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
@@ -190,7 +186,6 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
         vm.onToggleAppDisabled = onToggleAppDisabled
         vm.onAdjustAppBaseline = onAdjustAppBaseline
         vm.onOpenSettingsSection = onOpenSettingsSection
-        vm.onCheckForUpdates = onCheckForUpdates
         vm.onReviewUpdate = onReviewUpdate
         vm.onQuit = onQuit
     }
@@ -742,13 +737,6 @@ struct MenuBarPopoverView: View {
                     PopoverGlassPillButton(title: "Review v\(release.version)…", accentColor: systemBlue) {
                         onClosePopover()
                         vm.onReviewUpdate()
-                    }
-                } else if vm.isCheckingUpdates {
-                    PopoverGlassPillButton(title: "Checking...", disabled: true) {}
-                } else {
-                    PopoverGlassPillButton(title: "Check for Updates…") {
-                        onClosePopover()
-                        vm.onCheckForUpdates()
                     }
                 }
 

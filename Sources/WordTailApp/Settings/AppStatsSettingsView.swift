@@ -83,7 +83,7 @@ struct AppStatsSettingsView: View {
 
                 Spacer(minLength: 8)
 
-                if vm.keyStats.deviceCount > 1 {
+                if vm.showsStatsDevicePicker {
                     LinearSegmentedChoices(
                         options: [("All Macs", StatsDeviceScope.allDevices), ("This Mac", StatsDeviceScope.thisMac)],
                         selection: $vm.keyStatsDeviceScope

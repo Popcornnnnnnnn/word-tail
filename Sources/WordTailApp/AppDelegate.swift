@@ -767,9 +767,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onOpenSettingsSection: { [weak self] section, range in
                 self?.presentMainWindow(section: section, keyStatsRange: range)
             },
-            onCheckForUpdates: { [weak self] in
-                self?.autoUpdater.checkForUpdates(userInitiated: true)
-            },
             onReviewUpdate: { [weak self] in
                 self?.autoUpdater.reviewAvailableUpdate()
             },

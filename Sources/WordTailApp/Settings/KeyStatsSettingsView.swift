@@ -317,7 +317,7 @@ struct KeyStatsSettingsView: View {
 
             Spacer(minLength: 8)
 
-            if ks.deviceCount > 1 {
+            if vm.showsStatsDevicePicker {
                 LinearSegmentedChoices(
                     options: [
                         ("All Macs", StatsDeviceScope.allDevices),
