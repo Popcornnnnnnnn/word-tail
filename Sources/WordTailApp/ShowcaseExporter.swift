@@ -129,13 +129,13 @@ enum ShowcaseExporter {
         ]
 
         let sampleTrend: [DailyActivityPoint] = [
-            DailyActivityPoint(dateKey: "2026-11-15", keyPresses: 3_420, clicks: 510, mouseDistanceMeters: 1_180, scrollDistanceMeters: 420),
-            DailyActivityPoint(dateKey: "2026-11-16", keyPresses: 6_810, clicks: 940, mouseDistanceMeters: 2_390, scrollDistanceMeters: 980),
-            DailyActivityPoint(dateKey: "2026-11-17", keyPresses: 8_940, clicks: 1_240, mouseDistanceMeters: 3_120, scrollDistanceMeters: 1_310),
-            DailyActivityPoint(dateKey: "2026-11-18", keyPresses: 7_290, clicks: 1_010, mouseDistanceMeters: 2_480, scrollDistanceMeters: 1_120),
-            DailyActivityPoint(dateKey: "2026-11-19", keyPresses: 8_640, clicks: 1_180, mouseDistanceMeters: 2_840, scrollDistanceMeters: 1_260),
-            DailyActivityPoint(dateKey: "2026-11-20", keyPresses: 4_810, clicks: 720, mouseDistanceMeters: 1_640, scrollDistanceMeters: 780),
-            DailyActivityPoint(dateKey: "2026-11-21", keyPresses: 2_770, clicks: 540, mouseDistanceMeters: 1_170, scrollDistanceMeters: 540)
+            DailyActivityPoint(dateKey: "2026-11-15", keyPresses: 3_420, clicks: 510, mouseDistanceMeters: 1_180, scrollDistanceMeters: 420, scrollDistancePx: 148_200),
+            DailyActivityPoint(dateKey: "2026-11-16", keyPresses: 6_810, clicks: 940, mouseDistanceMeters: 2_390, scrollDistanceMeters: 980, scrollDistancePx: 324_600),
+            DailyActivityPoint(dateKey: "2026-11-17", keyPresses: 8_940, clicks: 1_240, mouseDistanceMeters: 3_120, scrollDistanceMeters: 1_310, scrollDistancePx: 412_800),
+            DailyActivityPoint(dateKey: "2026-11-18", keyPresses: 7_290, clicks: 1_010, mouseDistanceMeters: 2_480, scrollDistanceMeters: 1_120, scrollDistancePx: 298_400),
+            DailyActivityPoint(dateKey: "2026-11-19", keyPresses: 8_640, clicks: 1_180, mouseDistanceMeters: 2_840, scrollDistanceMeters: 1_260, scrollDistancePx: 492_000),
+            DailyActivityPoint(dateKey: "2026-11-20", keyPresses: 4_810, clicks: 720, mouseDistanceMeters: 1_640, scrollDistanceMeters: 780, scrollDistancePx: 356_900),
+            DailyActivityPoint(dateKey: "2026-11-21", keyPresses: 2_770, clicks: 540, mouseDistanceMeters: 1_170, scrollDistanceMeters: 540, scrollDistancePx: 405_300)
         ]
 
         let sampleKeyStats = KeyStatsAggregateSnapshot(
@@ -250,6 +250,99 @@ enum ShowcaseExporter {
             size: windowShotSize,
             to: outDir.appendingPathComponent("calibration-window.png")
         )
+
+        // 5. Menu Bar Popover showcase screenshot (440 x 740)
+        let popoverTodayTopKeys: [RankedCountItem] = [
+            RankedCountItem(label: "Delete", count: 2_132),
+            RankedCountItem(label: "Space", count: 1_075),
+            RankedCountItem(label: "E", count: 788),
+            RankedCountItem(label: "A", count: 782),
+            RankedCountItem(label: "T", count: 573),
+            RankedCountItem(label: "N", count: 545),
+            RankedCountItem(label: "I", count: 527),
+            RankedCountItem(label: "O", count: 521),
+            RankedCountItem(label: "S", count: 457),
+            RankedCountItem(label: "H", count: 453),
+            RankedCountItem(label: "C", count: 281),
+            RankedCountItem(label: "R", count: 262),
+            RankedCountItem(label: "U", count: 260),
+            RankedCountItem(label: "L", count: 248),
+            RankedCountItem(label: "D", count: 241)
+        ]
+        let samplePopoverToday = KeyStatsAggregateSnapshot(
+            range: .today,
+            deviceScope: .allDevices,
+            deviceCount: 2,
+            totalKeyPresses: 11_758,
+            totalClicks: 3_021,
+            leftClicks: 2_963,
+            rightClicks: 28,
+            otherClicks: 30,
+            sideBackClicks: 30,
+            sideForwardClicks: 0,
+            mouseDistanceMeters: 1_070,
+            scrollDistanceMeters: 107.2,
+            scrollDistancePx: 405_300,
+            peakKPS: 24,
+            peakCPS: 6,
+            topKeys: popoverTodayTopKeys
+        )
+        let syncedPopoverTrend: [DailyActivityPoint] = [
+            DailyActivityPoint(dateKey: "2026-11-15", keyPresses: 28_400, clicks: 4_120, mouseDistanceMeters: 1_450, scrollDistanceMeters: 120, scrollDistancePx: 452_000),
+            DailyActivityPoint(dateKey: "2026-11-16", keyPresses: 29_100, clicks: 4_380, mouseDistanceMeters: 1_510, scrollDistanceMeters: 132, scrollDistancePx: 498_000),
+            DailyActivityPoint(dateKey: "2026-11-17", keyPresses: 21_400, clicks: 3_190, mouseDistanceMeters: 1_120, scrollDistanceMeters: 94, scrollDistancePx: 355_000),
+            DailyActivityPoint(dateKey: "2026-11-18", keyPresses: 20_800, clicks: 2_980, mouseDistanceMeters: 1_060, scrollDistanceMeters: 88, scrollDistancePx: 332_000),
+            DailyActivityPoint(dateKey: "2026-11-19", keyPresses: 40_800, clicks: 5_840, mouseDistanceMeters: 2_180, scrollDistanceMeters: 185, scrollDistancePx: 699_000),
+            DailyActivityPoint(dateKey: "2026-11-20", keyPresses: 31_600, clicks: 4_410, mouseDistanceMeters: 1_620, scrollDistanceMeters: 141, scrollDistancePx: 532_000),
+            DailyActivityPoint(dateKey: "2026-11-21", keyPresses: 18_700, clicks: 3_021, mouseDistanceMeters: 1_070, scrollDistanceMeters: 107.2, scrollDistancePx: 405_300)
+        ]
+        let localPopoverTrend: [DailyActivityPoint] = [
+            DailyActivityPoint(dateKey: "2026-11-15", keyPresses: 28_400, clicks: 4_120, mouseDistanceMeters: 1_450, scrollDistanceMeters: 120, scrollDistancePx: 452_000),
+            DailyActivityPoint(dateKey: "2026-11-16", keyPresses: 29_100, clicks: 4_380, mouseDistanceMeters: 1_510, scrollDistanceMeters: 132, scrollDistancePx: 498_000),
+            DailyActivityPoint(dateKey: "2026-11-17", keyPresses: 21_400, clicks: 3_190, mouseDistanceMeters: 1_120, scrollDistanceMeters: 94, scrollDistancePx: 355_000),
+            DailyActivityPoint(dateKey: "2026-11-18", keyPresses: 20_800, clicks: 2_980, mouseDistanceMeters: 1_060, scrollDistanceMeters: 88, scrollDistancePx: 332_000),
+            DailyActivityPoint(dateKey: "2026-11-19", keyPresses: 33_200, clicks: 4_760, mouseDistanceMeters: 1_740, scrollDistanceMeters: 146, scrollDistancePx: 551_000),
+            DailyActivityPoint(dateKey: "2026-11-20", keyPresses: 23_900, clicks: 3_320, mouseDistanceMeters: 1_240, scrollDistanceMeters: 109, scrollDistancePx: 411_000),
+            DailyActivityPoint(dateKey: "2026-11-21", keyPresses: 11_758, clicks: 3_021, mouseDistanceMeters: 1_070, scrollDistanceMeters: 107.2, scrollDistancePx: 405_300)
+        ]
+        let popoverSynced = KeyStatsAggregateSnapshot(
+            range: .days7,
+            deviceScope: .allDevices,
+            deviceCount: 2,
+            totalKeyPresses: 190_800,
+            totalClicks: 27_941,
+            mouseDistanceMeters: 10_010,
+            scrollDistanceMeters: 867.2,
+            scrollDistancePx: 3_274_300,
+            dailyTrend: syncedPopoverTrend
+        )
+        let popoverThisMac = KeyStatsAggregateSnapshot(
+            range: .days7,
+            deviceScope: .thisMac,
+            deviceCount: 1,
+            totalKeyPresses: 168_558,
+            totalClicks: 25_771,
+            mouseDistanceMeters: 9_170,
+            scrollDistanceMeters: 788.2,
+            scrollDistancePx: 2_976_300,
+            dailyTrend: localPopoverTrend
+        )
+        let popoverVM = MenuBarPopoverViewModel.makeShowcase(
+            today: samplePopoverToday,
+            historySynced: popoverSynced,
+            historyThisMac: popoverThisMac,
+            activeAppName: "Codex (ChatGPT)",
+            activeAppBundleID: "com.openai.codex",
+            activeAppIcon: srgbIcon(forBundleID: "com.openai.codex")
+        )
+        let popoverShotSize = NSSize(width: 440, height: 740)
+        try renderSwiftUIViewToPNG(
+            PopoverShowcaseBackdrop(size: popoverShotSize) {
+                MenuBarPopoverView(vm: popoverVM)
+            },
+            size: popoverShotSize,
+            to: outDir.appendingPathComponent("menubar-popover.png")
+        )
     }
 
     private static func srgbIcon(forBundleID bundleID: String) -> NSImage {
@@ -344,6 +437,44 @@ private struct MacWindowFrameBackdrop<Content: View>: View {
                 .padding(.leading, 16)
                 .padding(.top, 14)
             }
+        }
+        .frame(width: size.width, height: size.height)
+    }
+}
+
+private struct PopoverShowcaseBackdrop<Content: View>: View {
+    var size: NSSize = NSSize(width: 440, height: 740)
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.56, green: 0.79, blue: 0.94),
+                    Color(red: 0.72, green: 0.87, blue: 0.96),
+                    Color(red: 0.50, green: 0.73, blue: 0.89)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Circle()
+                .fill(Color.white.opacity(0.35))
+                .frame(width: 280, height: 280)
+                .blur(radius: 42)
+                .offset(x: -40, y: -120)
+
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.white.opacity(0.78))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.white.opacity(0.65), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.20), radius: 22, x: 0, y: 10)
         }
         .frame(width: size.width, height: size.height)
     }

@@ -1727,4 +1727,48 @@ final class WordCompleterTests: XCTestCase {
         let tTop = ScreenGeometry.baselinePlacement(forAXCharRect: tight, primaryScreenHeight: 1080, font: font, verticalAdjustment: 0, lineSpacingBias: .topAdded)
         XCTAssertEqual(tTop.baselineY, tBot.baselineY, accuracy: 0.01)
     }
+
+    func testKeyStatsCurrentRatesAndScrollPxFormatting() {
+        XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollPx(0), "0 px")
+        XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollPx(425.4), "425 px")
+        XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollPx(405_300), "405.3 kPx")
+        XCTAssertEqual(KeyStatsAggregateSnapshot.formatScrollPx(1_250_000), "1.25 MPx")
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wordtail-rates-test-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var fakeNow = Date(timeIntervalSince1970: 1_760_000_100)
+        let store = KeyStatsStore(
+            fileURL: dir.appendingPathComponent("keystats_history.json"),
+            nowProvider: { fakeNow }
+        )
+
+        store.recordKeyDown(keyCode: 0, rawFlags: 0, isAutoRepeat: false, isSecureInput: false, isRomanLayout: true, appBundleID: "com.apple.Notes", appName: "Notes")
+        store.recordKeyDown(keyCode: 1, rawFlags: 0, isAutoRepeat: false, isSecureInput: false, isRomanLayout: true, appBundleID: "com.apple.Notes", appName: "Notes")
+        store.recordKeyDown(keyCode: 2, rawFlags: 0, isAutoRepeat: false, isSecureInput: false, isRomanLayout: true, appBundleID: "com.apple.Notes", appName: "Notes")
+        store.recordMouseClick(button: .left, appBundleID: "com.apple.Notes", appName: "Notes")
+        store.recordMouseClick(button: .right, appBundleID: "com.apple.Notes", appName: "Notes")
+        store.recordScroll(deltaX: 0, deltaY: 125.0, appBundleID: "com.apple.Notes", appName: "Notes")
+
+        fakeNow = Date(timeIntervalSince1970: 1_760_000_100.3)
+        let liveRates = store.currentRatesSnapshot()
+        XCTAssertEqual(liveRates.currentKPS, 3)
+        XCTAssertEqual(liveRates.currentCPS, 2)
+        XCTAssertEqual(liveRates.peakKPS, 3)
+        XCTAssertEqual(liveRates.peakCPS, 2)
+
+        // After the 1.0s sliding window expires, live rates drop to 0 while peak stays preserved.
+        fakeNow = Date(timeIntervalSince1970: 1_760_000_102.0)
+        let idleRates = store.currentRatesSnapshot()
+        XCTAssertEqual(idleRates.currentKPS, 0)
+        XCTAssertEqual(idleRates.currentCPS, 0)
+        XCTAssertEqual(idleRates.peakKPS, 3)
+        XCTAssertEqual(idleRates.peakCPS, 2)
+
+        let snap = store.snapshot(for: .today, deviceScope: .allDevices)
+        XCTAssertEqual(snap.scrollDistancePx, 125.0, accuracy: 0.01)
+        XCTAssertEqual(snap.dailyTrend.last?.scrollDistancePx ?? 0, 125.0, accuracy: 0.01)
+    }
 }

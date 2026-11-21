@@ -24,19 +24,22 @@ public struct DailyActivityPoint: Identifiable, Equatable, Sendable {
     public let clicks: Int
     public let mouseDistanceMeters: Double
     public let scrollDistanceMeters: Double
+    public let scrollDistancePx: Double
 
     public init(
         dateKey: String,
         keyPresses: Int,
         clicks: Int,
         mouseDistanceMeters: Double,
-        scrollDistanceMeters: Double
+        scrollDistanceMeters: Double,
+        scrollDistancePx: Double = 0
     ) {
         self.dateKey = dateKey
         self.keyPresses = keyPresses
         self.clicks = clicks
         self.mouseDistanceMeters = mouseDistanceMeters
         self.scrollDistanceMeters = scrollDistanceMeters
+        self.scrollDistancePx = scrollDistancePx
     }
 }
 
@@ -245,6 +248,7 @@ public struct KeyStatsAggregateSnapshot: Equatable {
     public let sideForwardClicks: Int
     public let mouseDistanceMeters: Double
     public let scrollDistanceMeters: Double
+    public let scrollDistancePx: Double
     public let peakKPS: Int
     public let peakCPS: Int
     public let backspacePresses: Int
@@ -282,6 +286,7 @@ public struct KeyStatsAggregateSnapshot: Equatable {
         sideForwardClicks: Int = 0,
         mouseDistanceMeters: Double = 0,
         scrollDistanceMeters: Double = 0,
+        scrollDistancePx: Double = 0,
         peakKPS: Int = 0,
         peakCPS: Int = 0,
         backspacePresses: Int = 0,
@@ -318,6 +323,7 @@ public struct KeyStatsAggregateSnapshot: Equatable {
         self.sideForwardClicks = sideForwardClicks
         self.mouseDistanceMeters = mouseDistanceMeters
         self.scrollDistanceMeters = scrollDistanceMeters
+        self.scrollDistancePx = scrollDistancePx
         self.peakKPS = peakKPS
         self.peakCPS = peakCPS
         self.backspacePresses = backspacePresses
@@ -399,6 +405,15 @@ public struct KeyStatsAggregateSnapshot: Equatable {
             return String(format: "%.2f km", meters / 1_000.0)
         }
         return String(format: "%.1f m", meters)
+    }
+
+    public static func formatScrollPx(_ px: Double) -> String {
+        if px >= 1_000_000.0 {
+            return String(format: "%.2f MPx", px / 1_000_000.0)
+        } else if px >= 1_000.0 {
+            return String(format: "%.1f kPx", px / 1_000.0)
+        }
+        return "\(max(0, Int(px.rounded()))) px"
     }
 }
 
@@ -837,6 +852,22 @@ public final class KeyStatsStore {
         }
     }
 
+    public func currentRatesSnapshot() -> (currentKPS: Int, currentCPS: Int, peakKPS: Int, peakCPS: Int) {
+        let nowDate = nowProvider()
+        let nowTs = nowDate.timeIntervalSince1970
+        let (todayKey, _) = Self.dayKeyAndHour(for: nowDate)
+        return queue.sync {
+            recentKeyTimestamps.removeAll { nowTs - $0 > 1.0 }
+            recentClickTimestamps.removeAll { nowTs - $0 > 1.0 }
+            let liveKPS = recentKeyTimestamps.count
+            let liveCPS = recentClickTimestamps.count
+            let todayMerged = mergedDayLocked(forKey: todayKey, scope: .allDevices)
+            let peakKPS = max(liveKPS, todayMerged?.peakKPS ?? 0)
+            let peakCPS = max(liveCPS, todayMerged?.peakCPS ?? 0)
+            return (liveKPS, liveCPS, peakKPS, peakCPS)
+        }
+    }
+
     public func snapshot(
         for range: StatsTimeRange,
         deviceScope: StatsDeviceScope = .allDevices
@@ -996,7 +1027,8 @@ public final class KeyStatsStore {
                     keyPresses: rec?.keyPresses ?? 0,
                     clicks: rec?.totalClicks ?? 0,
                     mouseDistanceMeters: (rec?.mouseDistancePx ?? 0) * KeyStatsAggregateSnapshot.metersPerPixel,
-                    scrollDistanceMeters: (rec?.scrollDistancePx ?? 0) * KeyStatsAggregateSnapshot.metersPerPixel
+                    scrollDistanceMeters: (rec?.scrollDistancePx ?? 0) * KeyStatsAggregateSnapshot.metersPerPixel,
+                    scrollDistancePx: rec?.scrollDistancePx ?? 0
                 )
             }
 
@@ -1038,6 +1070,7 @@ public final class KeyStatsStore {
                 sideForwardClicks: sideForwardClicks,
                 mouseDistanceMeters: mousePx * KeyStatsAggregateSnapshot.metersPerPixel,
                 scrollDistanceMeters: scrollPx * KeyStatsAggregateSnapshot.metersPerPixel,
+                scrollDistancePx: scrollPx,
                 peakKPS: peakKPS,
                 peakCPS: peakCPS,
                 backspacePresses: backspaces,

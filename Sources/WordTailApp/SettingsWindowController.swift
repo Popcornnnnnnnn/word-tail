@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WordTailCore
 
 struct SettingsView: View {
     @Environment(\.colorScheme) private var scheme
@@ -226,10 +227,17 @@ final class SettingsWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func present(for currentApp: (name: String, bundleID: String)?, selectSection: SettingsSection? = nil) {
+    func present(
+        for currentApp: (name: String, bundleID: String)?,
+        selectSection: SettingsSection? = nil,
+        keyStatsRange: StatsTimeRange? = nil
+    ) {
         viewModel.refresh(currentApp: currentApp)
         if let selectSection {
             viewModel.selectedSection = selectSection
+        }
+        if let keyStatsRange, viewModel.keyStatsRange != keyStatsRange {
+            viewModel.keyStatsRange = keyStatsRange
         }
         showWindow(nil)
         window?.level = .normal

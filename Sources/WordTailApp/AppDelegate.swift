@@ -37,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var syncTimer: Timer?
     private var lastObservedApp: (name: String, bundleID: String)?
     private var settingsWindowController: SettingsWindowController?
+    private var statusBarContextMenu: NSMenu?
+    private var popoverController: MenuBarPopoverController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyDockVisibilityPreference()
@@ -45,12 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.onStateChanged = { [weak self] in
             self?.updateStatusIcon()
             self?.settingsWindowController?.refreshUpdateAndSyncStatus()
+            self?.popoverController?.refreshIfShown()
         }
         autoUpdater.onBeforeTerminateForUpdate = { [weak self] in
             self?.engine.flushAllTelemetry()
         }
         autoUpdater.onUpdateStateChanged = { [weak self] in
             self?.settingsWindowController?.refreshUpdateAndSyncStatus()
+            self?.popoverController?.refreshIfShown()
         }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
@@ -255,7 +259,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
-        statusItem.menu = menu
+        statusBarContextMenu = menu
+
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseDown, .rightMouseUp])
+        }
     }
 
     private func updateStatusIcon() {
@@ -580,6 +590,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.setVerticalAdjustment(cur - 0.10, forBundleID: bundleID)
     }
 
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        let isContextTrigger = (event?.type == .rightMouseUp)
+            || (event?.modifierFlags.contains(.control) == true)
+
+        if isContextTrigger, let menu = statusBarContextMenu {
+            popoverController?.close()
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+            return
+        }
+
+        ensurePopoverController().toggle(relativeTo: sender)
+    }
+
+    private func ensurePopoverController() -> MenuBarPopoverController {
+        if let existing = popoverController {
+            return existing
+        }
+        let controller = MenuBarPopoverController(
+            engine: engine,
+            inputGuard: inputGuard,
+            autoUpdater: autoUpdater,
+            activeAppProvider: { [weak self] in self?.currentTargetApp() },
+            onToggleEnabled: { [weak self] in
+                self?.toggleEnabled()
+            },
+            onGrantAccessibility: { [weak self] in
+                self?.requestPermissionsClicked()
+            },
+            onToggleAppDisabled: { [weak self] bundleID in
+                guard let self else { return }
+                self.inputGuard.toggleUserDisabled(bundleID: bundleID)
+                self.updateStatusIcon()
+                self.popoverController?.refreshIfShown()
+            },
+            onAdjustAppBaseline: { [weak self] bundleID, delta in
+                guard let self else { return }
+                let current = self.engine.verticalAdjustment(forBundleID: bundleID)
+                let next = ((current + delta) * 100.0).rounded() / 100.0
+                let clamped = max(-2.0, min(2.0, next))
+                self.engine.setVerticalAdjustment(clamped, forBundleID: bundleID)
+                self.popoverController?.refreshIfShown()
+            },
+            onOpenSettingsSection: { [weak self] section, range in
+                self?.presentMainWindow(section: section, keyStatsRange: range)
+            },
+            onCheckForUpdates: { [weak self] in
+                self?.autoUpdater.checkForUpdates(userInitiated: true)
+            },
+            onInstallRelease: { [weak self] release in
+                self?.autoUpdater.installReleaseNow(release)
+            },
+            onQuit: { [weak self] in
+                self?.quitClicked()
+            }
+        )
+        popoverController = controller
+        return controller
+    }
+
     @objc private func openSettingsClicked() {
         presentMainWindow(section: nil)
     }
@@ -596,7 +666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoUpdater.promptAndInstallCurrentRelease()
     }
 
-    private func presentMainWindow(section: SettingsSection?) {
+    private func presentMainWindow(section: SettingsSection?, keyStatsRange: StatsTimeRange? = nil) {
         let target = currentTargetApp()
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
@@ -606,7 +676,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 onStateChange: { [weak self] in self?.updateStatusIcon() }
             )
         }
-        settingsWindowController?.present(for: target, selectSection: section)
+        settingsWindowController?.present(for: target, selectSection: section, keyStatsRange: keyStatsRange)
     }
 
     @objc private func quitClicked() {
