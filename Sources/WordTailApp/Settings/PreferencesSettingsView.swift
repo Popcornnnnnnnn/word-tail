@@ -73,12 +73,12 @@ struct PreferencesSettingsView: View {
                                 .lineLimit(1)
                         }
                         Spacer()
-                        if let rel = vm.availableRelease {
+                        if vm.availableRelease != nil {
                             LinearActionButton(
-                                title: vm.isInstallingUpdate ? "Updating…" : "Update to v\(rel.version)",
+                                title: vm.isInstallingUpdate ? "Updating…" : "Review Update…",
                                 icon: "arrow.down.circle"
                             ) {
-                                vm.installAvailableUpdateClicked()
+                                vm.reviewAvailableUpdateClicked()
                             }
                         } else {
                             LinearActionButton(

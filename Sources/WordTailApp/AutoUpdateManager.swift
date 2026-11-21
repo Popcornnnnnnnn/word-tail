@@ -182,7 +182,7 @@ final class AutoUpdateManager: ObservableObject {
         }
     }
 
-    func promptAndInstallCurrentRelease() {
+    func reviewAvailableUpdate() {
         guard let release = availableRelease else {
             checkForUpdates(userInitiated: true)
             return
@@ -190,7 +190,7 @@ final class AutoUpdateManager: ObservableObject {
         promptForUpdate(release)
     }
 
-    func installReleaseNow(_ release: AvailableRelease) {
+    private func installReleaseNow(_ release: AvailableRelease) {
         guard !isInstalling else { return }
         guard let targetAppURL = Self.resolveTargetAppBundleURL() else {
             showInfoAlert(
@@ -287,8 +287,9 @@ final class AutoUpdateManager: ObservableObject {
     }
 
     private func showUpdateWindow() {
+        guard let updateWindow else { return }
         NSApp.activate(ignoringOtherApps: true)
-        updateWindow?.makeKeyAndOrderFront(nil)
+        updateWindow.makeKeyAndOrderFront(nil)
     }
 
     private func showUpToDateAlert(version: String) {

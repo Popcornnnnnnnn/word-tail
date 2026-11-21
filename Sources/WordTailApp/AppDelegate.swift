@@ -612,8 +612,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if let release = autoUpdater.availableRelease {
             let installItem = NSMenuItem(
-                title: "⬆ Update to v\(release.version) & Restart…",
-                action: #selector(installAvailableUpdateClicked),
+                title: "Review Update v\(release.version)…",
+                action: #selector(reviewAvailableUpdateClicked),
                 keyEquivalent: ""
             )
             installItem.target = self
@@ -770,8 +770,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onCheckForUpdates: { [weak self] in
                 self?.autoUpdater.checkForUpdates(userInitiated: true)
             },
-            onInstallRelease: { [weak self] release in
-                self?.autoUpdater.installReleaseNow(release)
+            onReviewUpdate: { [weak self] in
+                self?.autoUpdater.reviewAvailableUpdate()
             },
             onQuit: { [weak self] in
                 self?.quitClicked()
@@ -793,8 +793,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoUpdater.checkForUpdates(userInitiated: true)
     }
 
-    @objc private func installAvailableUpdateClicked() {
-        autoUpdater.promptAndInstallCurrentRelease()
+    @objc private func reviewAvailableUpdateClicked() {
+        autoUpdater.reviewAvailableUpdate()
     }
 
     private func presentMainWindow(section: SettingsSection?, keyStatsRange: StatsTimeRange? = nil) {

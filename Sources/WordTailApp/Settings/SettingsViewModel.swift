@@ -979,12 +979,8 @@ final class SettingsViewModel: ObservableObject {
     }
 
     @MainActor
-    func installAvailableUpdateClicked() {
-        if let rel = availableRelease {
-            autoUpdater?.installReleaseNow(rel)
-        } else {
-            autoUpdater?.promptAndInstallCurrentRelease()
-        }
+    func reviewAvailableUpdateClicked() {
+        autoUpdater?.reviewAvailableUpdate()
     }
 
     private func applySyncResult(_ snap: SyncStatusSnapshot) {

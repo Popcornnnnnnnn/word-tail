@@ -61,7 +61,7 @@ final class MenuBarPopoverViewModel: ObservableObject {
     var onAdjustAppBaseline: (String, CGFloat) -> Void = { _, _ in }
     var onOpenSettingsSection: (SettingsSection?, StatsTimeRange?) -> Void = { _, _ in }
     var onCheckForUpdates: () -> Void = {}
-    var onInstallRelease: (AvailableRelease) -> Void = { _ in }
+    var onReviewUpdate: () -> Void = {}
     var onQuit: () -> Void = {}
 
     init(
@@ -162,7 +162,7 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
         onAdjustAppBaseline: @escaping (String, CGFloat) -> Void,
         onOpenSettingsSection: @escaping (SettingsSection?, StatsTimeRange?) -> Void,
         onCheckForUpdates: @escaping () -> Void,
-        onInstallRelease: @escaping (AvailableRelease) -> Void,
+        onReviewUpdate: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.activeAppProvider = activeAppProvider
@@ -191,7 +191,7 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
         vm.onAdjustAppBaseline = onAdjustAppBaseline
         vm.onOpenSettingsSection = onOpenSettingsSection
         vm.onCheckForUpdates = onCheckForUpdates
-        vm.onInstallRelease = onInstallRelease
+        vm.onReviewUpdate = onReviewUpdate
         vm.onQuit = onQuit
     }
 
@@ -739,14 +739,14 @@ struct MenuBarPopoverView: View {
                 if vm.isInstallingUpdate {
                     PopoverGlassPillButton(title: "Updating...", accentColor: systemBlue, disabled: true) {}
                 } else if let release = vm.availableRelease {
-                    PopoverGlassPillButton(title: "Update v\(release.version)", accentColor: systemBlue) {
+                    PopoverGlassPillButton(title: "Review v\(release.version)…", accentColor: systemBlue) {
                         onClosePopover()
-                        vm.onInstallRelease(release)
+                        vm.onReviewUpdate()
                     }
                 } else if vm.isCheckingUpdates {
                     PopoverGlassPillButton(title: "Checking...", disabled: true) {}
                 } else {
-                    PopoverGlassPillButton(title: "Update Now") {
+                    PopoverGlassPillButton(title: "Check for Updates…") {
                         onClosePopover()
                         vm.onCheckForUpdates()
                     }
