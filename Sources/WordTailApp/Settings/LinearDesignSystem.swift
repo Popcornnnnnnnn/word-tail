@@ -3,6 +3,9 @@ import SwiftUI
 
 enum LinearUI {
     static let accent = Color(red: 0.37, green: 0.42, blue: 0.89) // Linear Indigo (#5E6AD2)
+    static let blue = Color(red: 0.25, green: 0.48, blue: 0.90)
+    static let positive = Color(red: 0.17, green: 0.65, blue: 0.42)
+    static let warning = Color(red: 0.86, green: 0.50, blue: 0.17)
 
     static func windowBg(_ scheme: ColorScheme) -> Color {
         scheme == .dark
@@ -60,6 +63,7 @@ struct LinearCard<Content: View>: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(LinearUI.hairline(scheme), lineWidth: 1)
         )
+        .shadow(color: scheme == .dark ? .clear : .black.opacity(0.025), radius: 1, x: 0, y: 0.5)
     }
 }
 
@@ -277,6 +281,7 @@ struct LinearActionButton: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(LinearUI.controlBorder(scheme), lineWidth: 1)
             )
+            .shadow(color: scheme == .dark ? .clear : .black.opacity(0.025), radius: 1, x: 0, y: 0.5)
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
@@ -453,14 +458,18 @@ struct LinearMetricTile: View {
 
             Text(value)
                 .font(.system(size: 19, weight: .semibold, design: .rounded))
+                .tracking(-0.3)
                 .monospacedDigit()
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.72)
 
             Text(subtitle)
                 .font(.system(size: 10.5))
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.78)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
@@ -470,6 +479,7 @@ struct LinearMetricTile: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(LinearUI.hairline(scheme), lineWidth: 1)
         )
+        .shadow(color: scheme == .dark ? .clear : .black.opacity(0.025), radius: 1, x: 0, y: 0.5)
     }
 }
 
@@ -482,6 +492,13 @@ struct SidebarRow: View {
     @State private var hovered = false
 
     var body: some View {
+        let fillColor: Color = {
+            if isSelected {
+                return scheme == .dark ? LinearUI.hoverFill(scheme) : LinearUI.cardBg(scheme)
+            }
+            return hovered ? LinearUI.subtleFill(scheme) : Color.clear
+        }()
+
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: symbol)
@@ -495,11 +512,82 @@ struct SidebarRow: View {
             }
             .padding(.horizontal, 10)
             .frame(height: 28)
+            .background(fillColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(isSelected ? LinearUI.hairline(scheme) : Color.clear, lineWidth: 1)
+            )
+            .shadow(
+                color: (isSelected && scheme == .light) ? .black.opacity(0.035) : .clear,
+                radius: 1,
+                x: 0,
+                y: 0.5
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+    }
+}
+
+struct LinearPopoverMenuItem: View {
+    @Environment(\.colorScheme) private var scheme
+    let title: String
+    var icon: String? = nil
+    var nsImage: NSImage? = nil
+    var detail: String? = nil
+    var isSelected: Bool = false
+    var isDestructive: Bool = false
+    let action: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        let fg: Color = {
+            if isDestructive { return Color(red: 0.85, green: 0.26, blue: 0.24) }
+            if isSelected { return LinearUI.accent }
+            return .primary
+        }()
+
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let nsImage {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 16, height: 16)
+                        .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+                } else if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(isDestructive ? fg : (isSelected ? LinearUI.accent : .secondary))
+                        .frame(width: 16)
+                }
+
+                Text(title)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(fg)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 8)
+
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                } else if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(LinearUI.accent)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
             .background(
-                isSelected
-                    ? LinearUI.hoverFill(scheme)
-                    : (hovered ? LinearUI.subtleFill(scheme) : Color.clear),
-                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                (hovered || isSelected) ? LinearUI.subtleFill(scheme) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
             )
             .contentShape(Rectangle())
         }

@@ -18,10 +18,6 @@ struct AppStatsSettingsView: View {
     @State private var searchText: String = ""
     @State private var hoveredBundleID: String? = nil
 
-    private var systemBlue: Color { Color(nsColor: .systemBlue) }
-    private let clicksGreen = Color(red: 0.16, green: 0.78, blue: 0.34)
-    private let scrollOrange = Color(red: 0.98, green: 0.54, blue: 0.11)
-
     private var filteredAndSortedApps: [AppActivitySummary] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let base: [AppActivitySummary]
@@ -68,30 +64,24 @@ struct AppStatsSettingsView: View {
         let totalKeys = apps.reduce(0) { $0 + $1.keyPresses }
         let totalClicks = apps.reduce(0) { $0 + $1.clicks }
         let totalScrollPx = apps.reduce(0.0) { $0 + $1.scrollPx }
+        let isFiltering = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        return VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("App Statistics")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(Color.primary)
-                Text("Counts keys, clicks, and scroll by app. No content is recorded.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.secondary)
-            }
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("App Statistics")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
 
-            HStack(spacing: 10) {
-                AppStatsBlueSegmentedBar(
-                    options: [
-                        ("Today", StatsTimeRange.today),
-                        ("Last 7 Days", StatsTimeRange.days7),
-                        ("Last 30 Days", StatsTimeRange.days30),
-                        ("All Time", StatsTimeRange.allTime)
-                    ],
-                    selection: $vm.keyStatsRange,
-                    activeBlue: systemBlue
-                )
+                    let summaryBase = "\(formattedInteger(totalKeys)) keys · \(formattedInteger(totalClicks)) clicks · \(KeyStatsAggregateSnapshot.formatScrollKPx(totalScrollPx)) scroll"
+                    Text(isFiltering ? "\(summaryBase) · \(apps.count)/\(vm.keyStats.topApps.count)" : summaryBase)
+                        .font(.system(size: 11))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
-                Spacer(minLength: 6)
+                Spacer(minLength: 8)
 
                 if vm.keyStats.deviceCount > 1 {
                     LinearSegmentedChoices(
@@ -100,11 +90,21 @@ struct AppStatsSettingsView: View {
                     )
                 }
 
+                LinearSegmentedChoices(
+                    options: [
+                        ("Today", StatsTimeRange.today),
+                        ("7D", StatsTimeRange.days7),
+                        ("30D", StatsTimeRange.days30),
+                        ("All", StatsTimeRange.allTime)
+                    ],
+                    selection: $vm.keyStatsRange
+                )
+
                 if !vm.isStaticShowcase {
                     HStack(spacing: 5) {
                         Image(systemName: "magnifyingglass")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.secondary)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
                         TextField("Search apps…", text: $searchText)
                             .textFieldStyle(.plain)
                             .font(.system(size: 11.5))
@@ -113,103 +113,84 @@ struct AppStatsSettingsView: View {
                                 searchText = ""
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color.secondary)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.plain)
                         }
                     }
                     .padding(.horizontal, 8)
-                    .frame(width: 148, height: 26)
+                    .frame(width: 146, height: 26)
                     .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(LinearUI.hairline(scheme), lineWidth: 1)
+                            .stroke(LinearUI.controlBorder(scheme), lineWidth: 1)
                     )
                 }
             }
 
-            HStack(spacing: 6) {
-                Text("Total: \(formattedInteger(totalKeys)) keys | \(formattedInteger(totalClicks)) clicks | \(KeyStatsAggregateSnapshot.formatScrollKPx(totalScrollPx)) scroll")
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.secondary)
+            LinearCard {
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        sortHeaderButton("App", metric: .app, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
-                if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("(\(apps.count) of \(vm.keyStats.topApps.count) apps)")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Color.secondary)
-                }
-            }
+                        sortHeaderButton("Keys", metric: .keys, alignment: .trailing)
+                            .frame(width: 142, alignment: .trailing)
 
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    sortHeaderButton("App", metric: .app, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, 8)
+                        sortHeaderButton("Clicks", metric: .clicks, alignment: .trailing)
+                            .frame(width: 122, alignment: .trailing)
 
-                    columnDivider
-
-                    sortHeaderButton("Keys", metric: .keys, alignment: .center)
-                        .frame(width: 162, alignment: .center)
-
-                    columnDivider
-
-                    sortHeaderButton("Clicks", metric: .clicks, alignment: .center)
-                        .frame(width: 152, alignment: .center)
-
-                    columnDivider
-
-                    sortHeaderButton("Scroll", metric: .scroll, alignment: .center)
-                        .frame(width: 166, alignment: .center)
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-
-                Rectangle()
-                    .fill(LinearUI.hairline(scheme))
-                    .frame(height: 0.75)
-
-                if apps.isEmpty {
-                    VStack(spacing: 6) {
-                        Image(systemName: "square.grid.2x2")
-                            .font(.system(size: 22))
-                            .foregroundStyle(.tertiary)
-                        Text(vm.keyStats.topApps.isEmpty ? "No per-app activity recorded for this range yet." : "No matching applications.")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(Color.secondary)
+                        sortHeaderButton("Scroll", metric: .scroll, alignment: .trailing)
+                            .frame(width: 144, alignment: .trailing)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.vertical, 36)
-                } else if vm.isStaticShowcase {
-                    VStack(spacing: 2) {
-                        rowsList(apps: apps, maxKeys: maxKeys, maxClicks: maxClicks, maxScroll: maxScroll)
-                    }
-                    .padding(.top, 4)
-                    .mask(
-                        LinearGradient(
-                            stops: [
-                                .init(color: .black, location: 0.0),
-                                .init(color: .black, location: 0.88),
-                                .init(color: .clear, location: 1.0)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                } else {
-                    ScrollEdgeFadeContainer(showsIndicators: true, topFadeHeight: 14, bottomFadeHeight: 28) {
-                        LazyVStack(spacing: 2) {
+                    .padding(.horizontal, 12)
+                    .frame(height: 28)
+                    .background(LinearUI.subtleFill(scheme))
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+
+                    if apps.isEmpty {
+                        VStack(spacing: 6) {
+                            Image(systemName: "square.grid.2x2")
+                                .font(.system(size: 20))
+                                .foregroundStyle(.tertiary)
+                            Text(vm.keyStats.topApps.isEmpty ? "No per-app activity recorded for this range yet." : "No matching applications.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 36)
+                    } else if vm.isStaticShowcase {
+                        VStack(spacing: 0) {
                             rowsList(apps: apps, maxKeys: maxKeys, maxClicks: maxClicks, maxScroll: maxScroll)
                         }
-                        .padding(.top, 4)
-                        .padding(.bottom, 12)
-                        .animation(
-                            .spring(response: 0.36, dampingFraction: 0.86),
-                            value: "\(vm.keyStatsRange.rawValue)-\(vm.keyStatsDeviceScope.rawValue)-\(sortMetric)-\(sortAscending)-\(searchText)"
+                        .mask(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .black, location: 0.0),
+                                    .init(color: .black, location: 0.88),
+                                    .init(color: .clear, location: 1.0)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         )
+                    } else {
+                        ScrollEdgeFadeContainer(showsIndicators: false, topFadeHeight: 10, bottomFadeHeight: 22) {
+                            LazyVStack(spacing: 0) {
+                                rowsList(apps: apps, maxKeys: maxKeys, maxClicks: maxClicks, maxScroll: maxScroll)
+                            }
+                            .padding(.bottom, 8)
+                            .animation(
+                                .spring(response: 0.36, dampingFraction: 0.86),
+                                value: "\(vm.keyStatsRange.rawValue)-\(vm.keyStatsDeviceScope.rawValue)-\(sortMetric)-\(sortAscending)-\(searchText)"
+                            )
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -226,84 +207,60 @@ struct AppStatsSettingsView: View {
     ) -> some View {
         ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
             let isHovered = hoveredBundleID == app.bundleID
-            let evenRow = (index % 2 == 0)
-            let rowBg: Color = {
-                if isHovered {
-                    return Color.primary.opacity(scheme == .dark ? 0.095 : 0.065)
-                }
-                if evenRow {
-                    return Color.primary.opacity(scheme == .dark ? 0.055 : 0.038)
-                }
-                return Color.clear
-            }()
 
-            HStack(spacing: 8) {
-                HStack(spacing: 9) {
+            if index > 0 {
+                Rectangle()
+                    .fill(LinearUI.hairline(scheme))
+                    .frame(height: 1)
+            }
+
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Image(nsImage: vm.resolvedAppIcon(bundleID: app.bundleID))
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(width: 22, height: 22)
-                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .frame(width: 16, height: 16)
+                        .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
                     Text(app.displayName)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.primary)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 8)
 
-                // Invisible 0.5pt spacer to keep column geometry aligned with headers
-                Spacer().frame(width: 0.5)
-
-                AppMetricSmartBar(
-                    hasValue: app.keyPresses > 0,
+                AppCompactMetricCell(
                     fraction: Double(app.keyPresses) / Double(maxKeys),
-                    color: systemBlue,
-                    text: formattedInteger(app.keyPresses),
-                    trackWidth: 150
+                    color: LinearUI.accent,
+                    label: formattedInteger(app.keyPresses),
+                    labelWidth: 68
                 )
-                .frame(width: 162, alignment: .leading)
+                .frame(width: 142)
 
-                Spacer().frame(width: 0.5)
-
-                AppMetricSmartBar(
-                    hasValue: app.clicks > 0,
+                AppCompactMetricCell(
                     fraction: Double(app.clicks) / Double(maxClicks),
-                    color: clicksGreen,
-                    text: formattedInteger(app.clicks),
-                    trackWidth: 140
+                    color: LinearUI.positive,
+                    label: formattedInteger(app.clicks),
+                    labelWidth: 58
                 )
-                .frame(width: 152, alignment: .leading)
+                .frame(width: 122)
 
-                Spacer().frame(width: 0.5)
-
-                AppMetricSmartBar(
-                    hasValue: app.scrollPx > 0.5,
+                AppCompactMetricCell(
                     fraction: app.scrollPx / maxScroll,
-                    color: scrollOrange,
-                    text: KeyStatsAggregateSnapshot.formatScrollKPx(app.scrollPx),
-                    trackWidth: 154
+                    color: LinearUI.warning,
+                    label: KeyStatsAggregateSnapshot.formatScrollKPx(app.scrollPx),
+                    labelWidth: 76
                 )
-                .frame(width: 166, alignment: .leading)
+                .frame(width: 144)
             }
-            .padding(.horizontal, 8)
-            .frame(height: 38)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(rowBg)
-            )
+            .padding(.horizontal, 12)
+            .frame(height: 29)
+            .background(isHovered ? LinearUI.hoverFill(scheme) : Color.clear)
             .contentShape(Rectangle())
             .onHover { inside in
                 hoveredBundleID = inside ? app.bundleID : (hoveredBundleID == app.bundleID ? nil : hoveredBundleID)
             }
         }
-    }
-
-    private var columnDivider: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(scheme == .dark ? 0.14 : 0.10))
-            .frame(width: 0.5, height: 15)
     }
 
     private func sortHeaderButton(
@@ -323,8 +280,8 @@ struct AppStatsSettingsView: View {
             }
         } label: {
             Text(title + arrow)
-                .font(.system(size: 12, weight: active ? .semibold : .medium))
-                .foregroundStyle(active ? Color.primary : Color.secondary)
+                .font(.system(size: 10.5, weight: active ? .semibold : .medium))
+                .foregroundStyle(active ? .primary : .secondary)
                 .frame(maxWidth: .infinity, alignment: alignment)
                 .contentShape(Rectangle())
         }
@@ -343,104 +300,38 @@ struct AppStatsSettingsView: View {
     }()
 }
 
-// MARK: - Smart Inside/Outside Metric Bar
+// MARK: - Compact Linear Metric Cell
 
-private struct AppMetricSmartBar: View {
-    let hasValue: Bool
+private struct AppCompactMetricCell: View {
+    @Environment(\.colorScheme) private var scheme
     let fraction: Double
     let color: Color
-    let text: String
-    let trackWidth: CGFloat
-
-    private static let labelFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold)
+    let label: String
+    let labelWidth: CGFloat
 
     var body: some View {
-        let measuredW = ceil(NSAttributedString(string: text, attributes: [.font: Self.labelFont]).size().width)
-        let rawBarW: CGFloat = hasValue ? max(4.0, trackWidth * CGFloat(max(0.0, min(1.0, fraction)))) : 0
-        let fitsInside = hasValue && (rawBarW >= measuredW + 14.0 || (rawBarW + 7.0 + measuredW > trackWidth))
-
-        ZStack(alignment: .leading) {
-            if !hasValue {
-                Text(text)
-                    .font(.system(size: 11.5, weight: .regular))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.secondary)
-            } else if fitsInside {
-                let barW = min(trackWidth, max(rawBarW, measuredW + 14.0))
-                ZStack(alignment: .trailing) {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(color)
-                        .frame(width: barW, height: 22)
-                    Text(text)
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.white)
-                        .padding(.trailing, 7)
-                }
-            } else {
-                HStack(spacing: 7) {
-                    RoundedRectangle(cornerRadius: min(6, rawBarW * 0.5), style: .continuous)
-                        .fill(color)
-                        .frame(width: rawBarW, height: 22)
-                    Text(text)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.secondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(.horizontal, 6)
-        .frame(width: trackWidth + 12, height: 22, alignment: .leading)
-    }
-}
-
-// MARK: - Range Segmented Pill
-
-private struct AppStatsBlueSegmentedBar<Option: Hashable>: View {
-    @Environment(\.colorScheme) private var scheme
-    let options: [(label: String, value: Option)]
-    @Binding var selection: Option
-    let activeBlue: Color
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(options.enumerated()), id: \.offset) { index, item in
-                let active = (item.value == selection)
-                let prevActive = index > 0 && (options[index - 1].value == selection)
-                let sepOpacity: Double = (active || prevActive) ? 0.0 : (scheme == .dark ? 0.18 : 0.13)
-
-                if index > 0 {
-                    Rectangle()
-                        .fill(Color.primary.opacity(sepOpacity))
-                        .frame(width: 0.5, height: 13)
-                }
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.14)) {
-                        selection = item.value
+        let clamped = min(max(fraction, 0), 1)
+        HStack(spacing: 7) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                        .fill(LinearUI.subtleFill(scheme))
+                    if clamped > 0 {
+                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                            .fill(color.opacity(0.84))
+                            .frame(width: max(3, geo.size.width * CGFloat(clamped)))
                     }
-                } label: {
-                    Text(item.label)
-                        .font(.system(size: 12, weight: active ? .medium : .regular))
-                        .foregroundStyle(active ? Color.white : Color.primary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, 13)
-                        .frame(height: 24)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(active ? activeBlue : Color.clear)
-                        )
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
             }
+            .frame(height: 5)
+
+            Text(label)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .frame(width: labelWidth, alignment: .trailing)
         }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.11 : 0.065))
-        )
     }
 }

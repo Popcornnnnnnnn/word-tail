@@ -43,7 +43,7 @@ struct SettingsView: View {
                         .font(.system(size: 13, weight: .semibold))
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(vm.isTrusted ? (vm.isEnabled ? Color.green : Color.secondary) : Color.orange)
+                            .fill(vm.isTrusted ? (vm.isEnabled ? LinearUI.positive : Color.secondary) : LinearUI.warning)
                             .frame(width: 5.5, height: 5.5)
                         Text(!vm.isTrusted ? "Needs Access" : (vm.isEnabled ? "Active" : "Paused"))
                             .font(.system(size: 10.5, weight: .medium))
@@ -87,7 +87,7 @@ struct SettingsView: View {
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .frame(height: 27)
-                    .background(Color.orange, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .background(LinearUI.warning, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 12)

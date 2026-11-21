@@ -85,9 +85,9 @@ private enum TrendMetric: String, CaseIterable, Identifiable {
     var color: Color {
         switch self {
         case .keys: return LinearUI.accent
-        case .clicks: return Color(red: 0.16, green: 0.66, blue: 0.35)
-        case .mouse: return LinearUI.accent
-        case .scroll: return Color(red: 0.90, green: 0.48, blue: 0.14)
+        case .clicks: return LinearUI.positive
+        case .mouse: return LinearUI.blue
+        case .scroll: return LinearUI.warning
         }
     }
 }
@@ -112,6 +112,7 @@ struct KeyStatsSettingsView: View {
     @AppStorage("WordTailHeatmapTheme") private var heatmapThemeRaw: String = HeatmapTheme.indigo.rawValue
     @State private var selectedHeatmapAppID: String? = nil
     @State private var showingDatePopover: Bool = false
+    @State private var showImportPopover: Bool = false
 
     private var theme: HeatmapTheme {
         HeatmapTheme(rawValue: heatmapThemeRaw) ?? .indigo
@@ -336,43 +337,32 @@ struct KeyStatsSettingsView: View {
                 selection: $vm.keyStatsRange
             )
 
-            if vm.canImportFromInstalledKeyStats && !vm.isStaticShowcase {
-                Menu {
-                    Button {
-                        vm.importFromInstalledKeyStatsApp()
-                    } label: {
-                        Label("Import from KeyStats.app", systemImage: "arrow.down.doc")
-                    }
-                    Button {
-                        vm.importKeyStatsJSON()
-                    } label: {
-                        Label("Import JSON File…", systemImage: "doc")
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "square.and.arrow.down")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("Import")
-                            .font(.system(size: 11.5, weight: .medium))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8.5, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .foregroundStyle(.primary.opacity(0.85))
-                    .padding(.horizontal, 9)
-                    .frame(height: 25)
-                    .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(LinearUI.controlBorder(scheme), lineWidth: 1)
-                    )
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            } else {
-                LinearActionButton(title: "Import", icon: "square.and.arrow.down") {
+            LinearActionButton(title: "Import", icon: "square.and.arrow.down") {
+                if vm.canImportFromInstalledKeyStats && !vm.isStaticShowcase {
+                    showImportPopover.toggle()
+                } else {
                     vm.importKeyStatsJSON()
                 }
+            }
+            .popover(isPresented: $showImportPopover, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    LinearPopoverMenuItem(
+                        title: "Import from KeyStats.app",
+                        icon: "arrow.down.doc"
+                    ) {
+                        showImportPopover = false
+                        vm.importFromInstalledKeyStatsApp()
+                    }
+                    LinearPopoverMenuItem(
+                        title: "Import JSON File…",
+                        icon: "doc"
+                    ) {
+                        showImportPopover = false
+                        vm.importKeyStatsJSON()
+                    }
+                }
+                .padding(6)
+                .frame(width: 215)
             }
 
             LinearActionButton(title: "Export", icon: "square.and.arrow.up") {
@@ -401,31 +391,31 @@ struct KeyStatsSettingsView: View {
         HStack(spacing: 9) {
             LinearMetricTile(
                 label: "KEYSTROKES",
-                value: KeyStatsAggregateSnapshot.formatCompactCount(ks.totalKeyPresses),
+                value: formattedInt(ks.totalKeyPresses),
                 subtitle: "Peak \(ks.peakKPS) KPS · \(ks.leftHandPercent):\(100 - ks.leftHandPercent) L/R",
                 icon: "keyboard",
-                accentColor: Color(red: 0.14, green: 0.49, blue: 0.92)
+                accentColor: LinearUI.accent
             )
             LinearMetricTile(
                 label: "MOUSE CLICKS",
-                value: KeyStatsAggregateSnapshot.formatCompactCount(ks.totalClicks),
-                subtitle: "\(ks.inputStyleLabel) · L \(KeyStatsAggregateSnapshot.formatCompactCount(ks.leftClicks)) · R \(KeyStatsAggregateSnapshot.formatCompactCount(ks.rightClicks))",
+                value: formattedInt(ks.totalClicks),
+                subtitle: "\(ks.inputStyleLabel) · L \(formattedInt(ks.leftClicks)) · R \(formattedInt(ks.rightClicks))",
                 icon: "cursorarrow.click",
-                accentColor: Color(red: 0.16, green: 0.66, blue: 0.35)
+                accentColor: LinearUI.positive
             )
             LinearMetricTile(
                 label: "MOUSE TRAVEL",
                 value: KeyStatsAggregateSnapshot.formatDistance(ks.mouseDistanceMeters),
                 subtitle: String(format: "%.2f Marathons", ks.marathonsEquivalent),
                 icon: "arrow.left.and.right",
-                accentColor: LinearUI.accent
+                accentColor: LinearUI.blue
             )
             LinearMetricTile(
                 label: "SCROLL TRAVEL",
                 value: KeyStatsAggregateSnapshot.formatDistance(ks.scrollDistanceMeters),
                 subtitle: String(format: "%.2f Everests", ks.everestsEquivalent),
                 icon: "arrow.up.and.down",
-                accentColor: Color(red: 0.90, green: 0.48, blue: 0.14)
+                accentColor: LinearUI.warning
             )
         }
     }
@@ -445,6 +435,7 @@ private struct ANSIKeyboardHeatmapView: View {
     let isStaticShowcase: Bool
 
     @State private var hoveredKey: KeySpec?
+    @State private var showAppFilterPopover: Bool = false
 
     var body: some View {
         let maxCount = max(1, KeyCodeMapper.ansiKeyIDs.map { heatmap[$0, default: 0] }.max() ?? 1)
@@ -469,29 +460,65 @@ private struct ANSIKeyboardHeatmapView: View {
                 Spacer()
 
                 if !appsWithHeatmap.isEmpty {
-                    if isStaticShowcase {
-                        HStack(spacing: 4) {
-                            Image(systemName: "app.badge")
-                                .font(.system(size: 10))
-                            Text("All Apps")
-                                .font(.system(size: 10.5, weight: .medium))
-                        }
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 7)
-                        .frame(height: 20)
-                        .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    } else {
-                        Picker("", selection: $selectedAppID) {
-                            Text("All Apps").tag(String?.none)
-                            ForEach(appsWithHeatmap.prefix(20)) { app in
-                                Text("\(app.displayName) · \(KeyStatsAggregateSnapshot.formatCompactCount(app.keyPresses))")
-                                    .tag(String?.some(app.bundleID))
+                    let selectedName = selectedAppID.flatMap { bid in
+                        appsWithHeatmap.first { $0.bundleID == bid }?.displayName
+                    } ?? "All Apps"
+
+                    Button {
+                        guard !isStaticShowcase else { return }
+                        showAppFilterPopover.toggle()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "square.grid.2x2")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text(selectedName)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.primary.opacity(0.85))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            if !isStaticShowcase {
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 8.5, weight: .medium))
+                                    .foregroundStyle(.tertiary)
                             }
                         }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .controlSize(.small)
-                        .frame(maxWidth: 165)
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 5.5, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5.5, style: .continuous)
+                                .stroke(LinearUI.controlBorder(scheme), lineWidth: 1)
+                        )
+                        .fixedSize()
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showAppFilterPopover, arrowEdge: .bottom) {
+                        ScrollView(.vertical, showsIndicators: true) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                LinearPopoverMenuItem(
+                                    title: "All Apps",
+                                    icon: "square.grid.2x2",
+                                    isSelected: selectedAppID == nil
+                                ) {
+                                    selectedAppID = nil
+                                    showAppFilterPopover = false
+                                }
+                                Divider().padding(.vertical, 2)
+                                ForEach(appsWithHeatmap.prefix(20)) { app in
+                                    LinearPopoverMenuItem(
+                                        title: app.displayName,
+                                        detail: formattedInt(app.keyPresses),
+                                        isSelected: selectedAppID == app.bundleID
+                                    ) {
+                                        selectedAppID = app.bundleID
+                                        showAppFilterPopover = false
+                                    }
+                                }
+                            }
+                            .padding(6)
+                        }
+                        .frame(minWidth: 220, maxHeight: 320)
                     }
                 }
 
@@ -907,7 +934,9 @@ private struct ActivityTrendChartCard: View {
                         }
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.tertiary)
-                        .frame(width: 44, height: 102, alignment: .trailing)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(width: 56, height: 102, alignment: .trailing)
 
                         GeometryReader { geo in
                             let w = max(1, geo.size.width)
@@ -981,7 +1010,7 @@ private struct ActivityTrendChartCard: View {
 
                     // Bottom X-Axis Labels
                     HStack {
-                        Spacer().frame(width: 50)
+                        Spacer().frame(width: 62)
                         xAxisLabels(for: buckets)
                     }
                 }
@@ -1282,7 +1311,7 @@ private struct ActivityTrendChartCard: View {
     private func formatMetricAxis(_ val: Double, metric: TrendMetric) -> String {
         switch metric {
         case .keys, .clicks:
-            return KeyStatsAggregateSnapshot.formatCompactCount(Int(val.rounded()))
+            return formattedInt(Int(val.rounded()))
         case .mouse, .scroll:
             return val >= 1_000 ? String(format: "%.1fkm", val / 1_000.0) : String(format: "%.0fm", val)
         }
@@ -1317,9 +1346,9 @@ private struct AppStatisticsTableCard: View {
     @State private var sortAscending: Bool = false
     @State private var showAllApps: Bool = false
 
-    private let keysBlue = Color(red: 0.14, green: 0.49, blue: 0.92)
-    private let clicksGreen = Color(red: 0.16, green: 0.66, blue: 0.35)
-    private let scrollOrange = Color(red: 0.90, green: 0.48, blue: 0.14)
+    private let keysBlue = LinearUI.accent
+    private let clicksGreen = LinearUI.positive
+    private let scrollOrange = LinearUI.warning
 
     var body: some View {
         let sorted = apps.sorted { lhs, rhs in
@@ -1384,11 +1413,11 @@ private struct AppStatisticsTableCard: View {
                     sortHeaderButton("App", metric: .name, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     sortHeaderButton("Keys", metric: .keys, alignment: .trailing)
-                        .frame(width: 118, alignment: .trailing)
+                        .frame(width: 134, alignment: .trailing)
                     sortHeaderButton("Clicks", metric: .clicks, alignment: .trailing)
-                        .frame(width: 106, alignment: .trailing)
+                        .frame(width: 118, alignment: .trailing)
                     sortHeaderButton("Scroll", metric: .scroll, alignment: .trailing)
-                        .frame(width: 112, alignment: .trailing)
+                        .frame(width: 116, alignment: .trailing)
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 28)
@@ -1413,23 +1442,23 @@ private struct AppStatisticsTableCard: View {
                         MetricProgressCell(
                             fraction: Double(app.keyPresses) / Double(maxKeys),
                             color: keysBlue,
-                            label: KeyStatsAggregateSnapshot.formatCompactCount(app.keyPresses)
+                            label: formattedInt(app.keyPresses)
                         )
-                        .frame(width: 118)
+                        .frame(width: 134)
 
                         MetricProgressCell(
                             fraction: Double(app.clicks) / Double(maxClicks),
                             color: clicksGreen,
-                            label: KeyStatsAggregateSnapshot.formatCompactCount(app.clicks)
+                            label: formattedInt(app.clicks)
                         )
-                        .frame(width: 106)
+                        .frame(width: 118)
 
                         MetricProgressCell(
                             fraction: app.scrollMeters / maxScroll,
                             color: scrollOrange,
                             label: app.scrollMeters > 0.05 ? KeyStatsAggregateSnapshot.formatDistance(app.scrollMeters) : "0 m"
                         )
-                        .frame(width: 112)
+                        .frame(width: 116)
                     }
                     .padding(.horizontal, 12)
                     .frame(height: 31)
@@ -1487,7 +1516,8 @@ private struct MetricProgressCell: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .frame(minWidth: 46, alignment: .trailing)
+                .minimumScaleFactor(0.82)
+                .frame(minWidth: 58, alignment: .trailing)
         }
     }
 }
@@ -1533,7 +1563,7 @@ private struct KeyBreakdownCard: View {
                                         HStack(spacing: 5) {
                                             LinearKbd(label: item.label)
                                             Spacer(minLength: 2)
-                                            Text(KeyStatsAggregateSnapshot.formatCompactCount(item.count))
+                                            Text(formattedInt(item.count))
                                                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                                 .monospacedDigit()
                                                 .foregroundStyle(.secondary)
@@ -1579,7 +1609,7 @@ private struct ShortcutsAndProfileCard: View {
                                 HStack(spacing: 5) {
                                     LinearKbd(label: item.label)
                                     Spacer(minLength: 2)
-                                    Text(KeyStatsAggregateSnapshot.formatCompactCount(item.count))
+                                    Text(formattedInt(item.count))
                                         .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                                         .monospacedDigit()
                                         .foregroundStyle(.secondary)
@@ -1619,10 +1649,10 @@ private struct ShortcutsAndProfileCard: View {
                     // Left / Right Click Ratio bar
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Left Click \(ks.leftClickPercent)% (\(KeyStatsAggregateSnapshot.formatCompactCount(ks.leftClicks)))")
+                            Text("Left Click \(ks.leftClickPercent)% (\(formattedInt(ks.leftClicks)))")
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Text("Right Click \(100 - ks.leftClickPercent)% (\(KeyStatsAggregateSnapshot.formatCompactCount(ks.rightClicks)))")
+                            Text("Right Click \(100 - ks.leftClickPercent)% (\(formattedInt(ks.rightClicks)))")
                                 .foregroundStyle(.secondary)
                         }
                         .font(.system(size: 10, weight: .medium))
@@ -1631,10 +1661,10 @@ private struct ShortcutsAndProfileCard: View {
                             let leftClickFrac = CGFloat(min(max(ks.leftClickPercent, 5), 95)) / 100.0
                             HStack(spacing: 2) {
                                 RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                    .fill(Color(nsColor: .systemBlue).opacity(0.85))
+                                    .fill(LinearUI.blue.opacity(0.85))
                                     .frame(width: max(4, (geo.size.width - 2) * leftClickFrac))
                                 RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                    .fill(Color(red: 0.90, green: 0.48, blue: 0.14).opacity(0.78))
+                                    .fill(LinearUI.warning.opacity(0.78))
                             }
                         }
                         .frame(height: 5)
@@ -1643,9 +1673,9 @@ private struct ShortcutsAndProfileCard: View {
                     HStack(spacing: 12) {
                         Text("Backspaces: \(String(format: "%.1f%%", ks.correctionRatePercent))")
                         Spacer()
-                        Text("Avg/day: \(ks.activeDays > 0 ? KeyStatsAggregateSnapshot.formatCompactCount(ks.totalKeyPresses / ks.activeDays) : "0")")
+                        Text("Avg/day: \(ks.activeDays > 0 ? formattedInt(ks.totalKeyPresses / ks.activeDays) : "0")")
                         if ks.otherClicks > 0 {
-                            Text("Side: \(KeyStatsAggregateSnapshot.formatCompactCount(ks.otherClicks))")
+                            Text("Side: \(formattedInt(ks.otherClicks))")
                         }
                     }
                     .font(.system(size: 10, design: .monospaced))
@@ -1767,11 +1797,13 @@ private struct TopKeysDonutCard: View {
                                     Text("Keys")
                                         .font(.system(size: 9.5, weight: .medium))
                                         .foregroundStyle(.secondary)
-                                    Text(KeyStatsAggregateSnapshot.formatCompactCount(totalKeyPresses))
+                                    Text(formattedInt(totalKeyPresses))
                                         .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.58)
                                 }
                             }
-                            .frame(width: 56)
+                            .frame(width: 60)
                         }
 
                         VStack(alignment: .leading, spacing: 4) {
@@ -1875,23 +1907,23 @@ private struct LifetimeInsightsCard: View {
                     )
                     insightCell(
                         icon: "flame.fill",
-                        accent: Color(red: 0.90, green: 0.48, blue: 0.14),
+                        accent: LinearUI.warning,
                         title: "Peak Day",
                         value: ks.maxDailyKeys > 0
-                            ? "\(KeyStatsAggregateSnapshot.formatCompactCount(ks.maxDailyKeys)) (\(ks.peakDayDateKey?.suffix(5) ?? ""))"
+                            ? "\(formattedInt(ks.maxDailyKeys)) (\(ks.peakDayDateKey?.suffix(5) ?? ""))"
                             : "—",
                         help: "Single highest keystroke day in this range"
                     )
                     insightCell(
                         icon: "figure.run",
-                        accent: Color(red: 0.14, green: 0.49, blue: 0.92),
+                        accent: LinearUI.blue,
                         title: "Mouse Marathons",
                         value: String(format: "%.2f", ks.marathonsEquivalent),
                         help: "Equivalent to 42.195 km marathons"
                     )
                     insightCell(
                         icon: "mountain.2.fill",
-                        accent: Color(red: 0.16, green: 0.66, blue: 0.35),
+                        accent: LinearUI.positive,
                         title: "Scroll Everests",
                         value: String(format: "%.2f", ks.everestsEquivalent),
                         help: "Equivalent to 8,848.86 m Everest ascents"
@@ -1957,6 +1989,7 @@ private struct ActivityCalendarCard: View {
     let onClearAll: () -> Void
 
     @State private var hoveredDay: CalendarActivityDay?
+    @State private var showResetPopover: Bool = false
 
     var body: some View {
         let weeks = stride(from: 0, to: days.count, by: 7).map { start in
@@ -1968,7 +2001,7 @@ private struct ActivityCalendarCard: View {
             HStack(alignment: .center, spacing: 8) {
                 LinearSectionHeader(
                     title: "Activity Heatmap",
-                    subtitle: "\(activeDays) active days · Streak \(currentStreak)d (Best \(longestStreak)d) · Peak \(KeyStatsAggregateSnapshot.formatCompactCount(maxDailyKeys))/day"
+                    subtitle: "\(activeDays) active days · Streak \(currentStreak)d (Best \(longestStreak)d) · Peak \(formattedInt(maxDailyKeys))/day"
                 )
                 Spacer()
                 if let hovered = hoveredDay {
@@ -1977,28 +2010,34 @@ private struct ActivityCalendarCard: View {
                         .foregroundStyle(theme.color)
                 }
                 if hasData {
-                    Menu {
-                        Button(role: .destructive) {
-                            onResetToday()
-                        } label: {
-                            Label("Reset Today (This Mac)…", systemImage: "clock.arrow.circlepath")
-                        }
-                        Divider()
-                        Button(role: .destructive) {
-                            onClearAll()
-                        } label: {
-                            Label("Reset All History…", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 24, height: 24)
-                            .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    LinearIconButton(
+                        symbol: "arrow.counterclockwise",
+                        helpText: "Reset Today or All KeyStats History"
+                    ) {
+                        showResetPopover.toggle()
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("Reset Today or All KeyStats History")
+                    .popover(isPresented: $showResetPopover, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            LinearPopoverMenuItem(
+                                title: "Reset Today (This Mac)…",
+                                icon: "clock.arrow.circlepath"
+                            ) {
+                                showResetPopover = false
+                                onResetToday()
+                            }
+                            Divider().padding(.vertical, 2)
+                            LinearPopoverMenuItem(
+                                title: "Reset All History…",
+                                icon: "trash",
+                                isDestructive: true
+                            ) {
+                                showResetPopover = false
+                                onClearAll()
+                            }
+                        }
+                        .padding(6)
+                        .frame(width: 215)
+                    }
                 }
             }
 
@@ -2132,6 +2171,7 @@ private struct HeatScaleLegend: View {
 private let sharedDecimalFormatter: NumberFormatter = {
     let f = NumberFormatter()
     f.numberStyle = .decimal
+    f.groupingSeparator = ","
     return f
 }()
 

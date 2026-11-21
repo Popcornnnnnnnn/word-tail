@@ -107,24 +107,13 @@ struct CalibrationSettingsView: View {
                                     ScrollView(.vertical, showsIndicators: true) {
                                         VStack(alignment: .leading, spacing: 2) {
                                             ForEach(vm.availableAppsToAdd) { app in
-                                                Button {
+                                                LinearPopoverMenuItem(
+                                                    title: app.name,
+                                                    nsImage: app.icon
+                                                ) {
                                                     vm.addAppOverride(bundleID: app.bundleID)
                                                     showAddAppPopover = false
-                                                } label: {
-                                                    HStack(spacing: 8) {
-                                                        Image(nsImage: app.icon)
-                                                            .resizable()
-                                                            .frame(width: 18, height: 18)
-                                                        Text(app.name)
-                                                            .font(.system(size: 12.5))
-                                                            .foregroundStyle(.primary)
-                                                        Spacer()
-                                                    }
-                                                    .padding(.horizontal, 8)
-                                                    .padding(.vertical, 5)
-                                                    .contentShape(Rectangle())
                                                 }
-                                                .buttonStyle(.plain)
                                             }
                                         }
                                         .padding(6)

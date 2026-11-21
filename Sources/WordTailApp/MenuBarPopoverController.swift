@@ -264,11 +264,11 @@ struct MenuBarPopoverView: View {
     @State private var hoveredAppRow: Bool = false
 
     private var systemBlue: Color {
-        Color(nsColor: .systemBlue)
+        LinearUI.accent
     }
 
     private var warmOrange: Color {
-        Color(red: 0.93, green: 0.55, blue: 0.14)
+        LinearUI.warning
     }
 
     var body: some View {
@@ -467,6 +467,10 @@ struct MenuBarPopoverView: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.primary.opacity(scheme == .dark ? 0.075 : 0.045))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.primary.opacity(scheme == .dark ? 0.12 : 0.085), lineWidth: 1)
+        )
     }
 
     // MARK: - Today Stats (Floating Directly on Liquid Glass)
@@ -475,19 +479,16 @@ struct MenuBarPopoverView: View {
         VStack(alignment: .leading, spacing: 9.5) {
             HStack(spacing: 8) {
                 HStack(spacing: 8) {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundStyle(Color.secondary)
-                        .frame(width: 20, height: 18)
+                    slateDistanceBadge(symbol: "keyboard")
                     Text("Key Presses")
-                        .font(.system(size: 13.5, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.primary)
                 }
                 Spacer()
                 Text(formattedInteger(vm.today.totalKeyPresses))
-                    .font(.system(size: 14.5, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(systemBlue)
+                    .foregroundStyle(Color.primary)
             }
 
             HStack(spacing: 14) {
@@ -506,28 +507,28 @@ struct MenuBarPopoverView: View {
                 HStack(spacing: 8) {
                     slateDistanceBadge(symbol: "arrow.left.and.right")
                     Text("Mouse Distance")
-                        .font(.system(size: 13.5, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.primary)
                 }
                 Spacer()
                 Text(KeyStatsAggregateSnapshot.formatDistance(vm.today.mouseDistanceMeters))
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(systemBlue)
+                    .foregroundStyle(Color.primary)
             }
 
             HStack(spacing: 8) {
                 HStack(spacing: 8) {
                     slateDistanceBadge(symbol: "arrow.up.and.down")
                     Text("Scroll Distance")
-                        .font(.system(size: 13.5, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.primary)
                 }
                 Spacer()
                 Text(KeyStatsAggregateSnapshot.formatScrollPx(vm.today.scrollDistancePx))
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(systemBlue)
+                    .foregroundStyle(Color.primary)
             }
         }
     }
@@ -536,26 +537,30 @@ struct MenuBarPopoverView: View {
         HStack(spacing: 7) {
             GlassMouseIcon(highlight: highlight, accent: systemBlue)
             Text(label)
-                .font(.system(size: 13))
-                .foregroundStyle(Color.primary)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Color.secondary)
                 .lineLimit(1)
             Spacer(minLength: 4)
             Text(formattedInteger(value))
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .monospacedDigit()
-                .foregroundStyle(systemBlue)
+                .foregroundStyle(Color.primary)
         }
         .frame(maxWidth: .infinity)
     }
 
     private func slateDistanceBadge(symbol: String) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 5.5, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.28 : 0.46))
-                .frame(width: 20, height: 20)
+            RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                .fill(Color.primary.opacity(scheme == .dark ? 0.10 : 0.055))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                        .stroke(Color.primary.opacity(scheme == .dark ? 0.13 : 0.09), lineWidth: 1)
+                )
+                .frame(width: 18, height: 18)
             Image(systemName: symbol)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(Color.secondary)
         }
     }
 
@@ -628,19 +633,23 @@ struct MenuBarPopoverView: View {
 
     private func neutralKeycapLabel(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .font(.system(size: 10.5, weight: .medium, design: .rounded))
             .foregroundStyle(Color.primary)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 5.5)
             .padding(.vertical, 2)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.primary.opacity(scheme == .dark ? 0.13 : 0.065))
+                RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                    .fill(Color.primary.opacity(scheme == .dark ? 0.11 : 0.055))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                    .stroke(Color.primary.opacity(scheme == .dark ? 0.14 : 0.10), lineWidth: 1)
             )
     }
 
-    // MARK: - History (Native Blue Segmented Controls + Open Glass Chart)
+    // MARK: - History (Linear Segmented Controls + Open Glass Chart)
 
     private var historySection: some View {
         let totalText = formattedHistoryTotal(snapshot: vm.historySynced, metric: vm.historyMetric)
@@ -657,13 +666,21 @@ struct MenuBarPopoverView: View {
                 }
             }
 
-            PopoverBlueSegmentBar(
-                options: [("Last 7 Days", StatsTimeRange.days7), ("Last 30 Days", StatsTimeRange.days30)],
-                selection: $vm.historyRange,
-                activeBlue: systemBlue
-            )
+            HStack(spacing: 8) {
+                PopoverLinearSegmentBar(
+                    options: [("7D", StatsTimeRange.days7), ("30D", StatsTimeRange.days30)],
+                    selection: $vm.historyRange
+                )
 
-            PopoverBlueSegmentBar(
+                Spacer(minLength: 4)
+
+                PopoverLinearSegmentBar(
+                    options: [("Line", PopoverHistoryStyle.line), ("Bar", PopoverHistoryStyle.bar)],
+                    selection: $vm.historyStyle
+                )
+            }
+
+            PopoverLinearSegmentBar(
                 options: [
                     ("Keys", PopoverHistoryMetric.keys),
                     ("Clicks", PopoverHistoryMetric.clicks),
@@ -671,13 +688,7 @@ struct MenuBarPopoverView: View {
                     ("Scroll", PopoverHistoryMetric.scroll)
                 ],
                 selection: $vm.historyMetric,
-                activeBlue: systemBlue
-            )
-
-            PopoverBlueSegmentBar(
-                options: [("Line", PopoverHistoryStyle.line), ("Bar", PopoverHistoryStyle.bar)],
-                selection: $vm.historyStyle,
-                activeBlue: systemBlue
+                expandsEvenly: true
             )
 
             PopoverOpenChartView(
@@ -757,9 +768,9 @@ struct MenuBarPopoverView: View {
     private func formattedHistoryTotal(snapshot: KeyStatsAggregateSnapshot, metric: PopoverHistoryMetric) -> String {
         switch metric {
         case .keys:
-            return KeyStatsAggregateSnapshot.formatCompactCount(snapshot.totalKeyPresses)
+            return formattedInteger(snapshot.totalKeyPresses)
         case .clicks:
-            return KeyStatsAggregateSnapshot.formatCompactCount(snapshot.totalClicks)
+            return formattedInteger(snapshot.totalClicks)
         case .movement:
             return KeyStatsAggregateSnapshot.formatDistance(snapshot.mouseDistanceMeters)
         case .scroll:
@@ -881,7 +892,11 @@ private struct PopoverPeakSpeedPill: View {
             .padding(.vertical, 3)
             .background(
                 Capsule()
-                    .fill(Color.primary.opacity(isExpanded || hovered ? (scheme == .dark ? 0.16 : 0.10) : (scheme == .dark ? 0.10 : 0.055)))
+                    .fill(Color.primary.opacity(isExpanded || hovered ? (scheme == .dark ? 0.16 : 0.095) : (scheme == .dark ? 0.10 : 0.05)))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(Color.primary.opacity(scheme == .dark ? 0.14 : 0.09), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -937,13 +952,17 @@ private struct PopoverGlassPillButton: View {
 
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(fg)
-                .padding(.horizontal, 11)
+                .padding(.horizontal, 10)
                 .frame(height: 25)
                 .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(bg)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(accentColor == nil ? Color.primary.opacity(scheme == .dark ? 0.13 : 0.09) : Color.clear, lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
@@ -1033,38 +1052,41 @@ private struct GlassMouseIcon: View {
 
 // MARK: - Segmented Pill Bar
 
-private struct PopoverBlueSegmentBar<Option: Hashable>: View {
+private struct PopoverLinearSegmentBar<Option: Hashable>: View {
     @Environment(\.colorScheme) private var scheme
     let options: [(label: String, value: Option)]
     @Binding var selection: Option
-    let activeBlue: Color
+    var expandsEvenly: Bool = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(options.enumerated()), id: \.offset) { index, item in
+        HStack(spacing: 2) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, item in
                 let isSelected = (item.value == selection)
-                let prevSelected = index > 0 && (options[index - 1].value == selection)
-                let sepOpacity: Double = (isSelected || prevSelected) ? 0.0 : (scheme == .dark ? 0.18 : 0.13)
-
-                if index > 0 {
-                    Rectangle()
-                        .fill(Color.primary.opacity(sepOpacity))
-                        .frame(width: 0.5, height: 12)
-                }
-
                 Button {
-                    withAnimation(.easeInOut(duration: 0.14)) {
+                    withAnimation(.easeOut(duration: 0.14)) {
                         selection = item.value
                     }
                 } label: {
                     Text(item.label)
-                        .font(.system(size: 12, weight: isSelected ? .medium : .regular))
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
-                        .frame(maxWidth: .infinity)
+                        .font(.system(size: 11.5, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, expandsEvenly ? 6 : 11)
+                        .frame(maxWidth: expandsEvenly ? .infinity : nil)
                         .frame(height: 22)
                         .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isSelected ? activeBlue : Color.clear)
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(
+                                    isSelected
+                                        ? (scheme == .dark ? Color.white.opacity(0.15) : Color.white.opacity(0.92))
+                                        : Color.clear
+                                )
+                        )
+                        .shadow(
+                            color: isSelected ? .black.opacity(scheme == .dark ? 0 : 0.06) : .clear,
+                            radius: 1,
+                            x: 0,
+                            y: 0.5
                         )
                         .contentShape(Rectangle())
                 }
@@ -1073,8 +1095,12 @@ private struct PopoverBlueSegmentBar<Option: Hashable>: View {
         }
         .padding(2)
         .background(
-            RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                .fill(Color.primary.opacity(scheme == .dark ? 0.11 : 0.065))
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(scheme == .dark ? 0.09 : 0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.primary.opacity(scheme == .dark ? 0.13 : 0.085), lineWidth: 1)
         )
     }
 }
@@ -1091,9 +1117,9 @@ private struct PopoverOpenChartView: View {
     let orangeColor: Color
     @Binding var hoveredIndex: Int?
 
-    // 356 outer - 32 outer pad - 38 yAxis - 6 gap = 280
-    private let yAxisWidth: CGFloat = 38
-    private let plotWidth: CGFloat = 280
+    // 356 outer - 32 outer pad - 46 yAxis - 6 gap = 272
+    private let yAxisWidth: CGFloat = 46
+    private let plotWidth: CGFloat = 272
     private let plotHeight: CGFloat = 94
 
     private var showThisMac: Bool {
@@ -1133,6 +1159,8 @@ private struct PopoverOpenChartView: View {
                 .font(.system(size: 10, weight: .regular))
                 .monospacedDigit()
                 .foregroundStyle(Color.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
                 .frame(width: yAxisWidth, height: plotHeight, alignment: .trailing)
 
                 Canvas { context, size in
@@ -1486,15 +1514,21 @@ private struct PopoverOpenChartView: View {
         return ceil(raw * 1.05)
     }
 
+    private static let chartDecimalFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.groupingSeparator = ","
+        return f
+    }()
+
+    private func formattedChartInt(_ value: Int) -> String {
+        Self.chartDecimalFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
     private func formatAxisValue(_ value: Double) -> String {
         switch metric {
         case .keys, .clicks:
-            if value >= 1_000_000 {
-                return String(format: "%.2fM", value / 1_000_000.0)
-            } else if value >= 1_000 {
-                return String(format: "%.1fk", value / 1_000.0)
-            }
-            return "\(Int(value.rounded()))"
+            return formattedChartInt(Int(value.rounded()))
         case .movement:
             return KeyStatsAggregateSnapshot.formatDistance(value)
         case .scroll:
@@ -1505,7 +1539,7 @@ private struct PopoverOpenChartView: View {
     private func formatMetricTooltip(_ value: Double) -> String {
         switch metric {
         case .keys, .clicks:
-            return KeyStatsAggregateSnapshot.formatCompactCount(Int(value.rounded()))
+            return formattedChartInt(Int(value.rounded()))
         case .movement:
             return KeyStatsAggregateSnapshot.formatDistance(value)
         case .scroll:

@@ -149,11 +149,11 @@ enum ShowcaseExporter {
             range: .days7,
             deviceScope: .allDevices,
             deviceCount: 2,
-            totalKeyPresses: 42_680,
-            totalClicks: 6_140,
-            leftClicks: 5_290,
-            rightClicks: 710,
-            otherClicks: 140,
+            totalKeyPresses: 142_680,
+            totalClicks: 26_140,
+            leftClicks: 22_490,
+            rightClicks: 3_120,
+            otherClicks: 530,
             mouseDistanceMeters: 14_820,
             scrollDistanceMeters: 6_410,
             peakKPS: 13,
@@ -299,7 +299,12 @@ enum ShowcaseExporter {
                 AppActivitySummary(bundleID: "com.apple.finder", displayName: "Finder", keyPresses: 14_453, clicks: 7_507, scrollMeters: 603, scrollPx: 2_279_000, charactersSaved: 110),
                 AppActivitySummary(bundleID: "com.apple.iCal", displayName: "Calendar", keyPresses: 9_162, clicks: 1_357, scrollMeters: 103, scrollPx: 388_900, charactersSaved: 60),
                 AppActivitySummary(bundleID: "com.apple.Music", displayName: "Music", keyPresses: 8_292, clicks: 645, scrollMeters: 58, scrollPx: 219_400, charactersSaved: 30),
-                AppActivitySummary(bundleID: "com.apple.Preview", displayName: "Preview", keyPresses: 7_738, clicks: 495, scrollMeters: 14, scrollPx: 53_100, charactersSaved: 20)
+                AppActivitySummary(bundleID: "com.apple.Preview", displayName: "Preview", keyPresses: 7_738, clicks: 495, scrollMeters: 14, scrollPx: 53_100, charactersSaved: 20),
+                AppActivitySummary(bundleID: "com.tinyspeck.slackmacgap", displayName: "Slack", keyPresses: 6_840, clicks: 1_180, scrollMeters: 82, scrollPx: 310_400, charactersSaved: 190),
+                AppActivitySummary(bundleID: "com.apple.dt.Xcode", displayName: "Xcode", keyPresses: 6_120, clicks: 890, scrollMeters: 118, scrollPx: 446_200, charactersSaved: 150),
+                AppActivitySummary(bundleID: "com.linear", displayName: "Linear", keyPresses: 4_910, clicks: 1_420, scrollMeters: 96, scrollPx: 362_800, charactersSaved: 140),
+                AppActivitySummary(bundleID: "com.apple.TextEdit", displayName: "TextEdit", keyPresses: 3_240, clicks: 210, scrollMeters: 12, scrollPx: 45_000, charactersSaved: 75),
+                AppActivitySummary(bundleID: "com.apple.systempreferences", displayName: "System Settings", keyPresses: 1_480, clicks: 680, scrollMeters: 24, scrollPx: 91_200, charactersSaved: 10)
             ]
         )
         let appStatsVM = SettingsViewModel(
@@ -425,7 +430,7 @@ enum ShowcaseExporter {
             activeAppIcon: srgbIcon(forBundleID: "com.openai.codex"),
             brandIcon: srgbIcon(forBundleID: "app.wordtail.macos")
         )
-        let popoverShotSize = NSSize(width: 436, height: 760)
+        let popoverShotSize = NSSize(width: 436, height: 726)
         try renderSwiftUIViewToPNG(
             PopoverShowcaseBackdrop(size: popoverShotSize, isDark: false) {
                 MenuBarPopoverView(vm: popoverVM)
