@@ -92,10 +92,19 @@ Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electr
 
 ## Install
 
-### Option A: Download Prebuilt Release
-Download the latest `WordTail-*-macOS.zip` from [**Releases**](https://github.com/Popcornnnnnnnn/word-tail/releases), unzip, and drag **`WordTail.app`** to `/Applications`.
+### Option A: Homebrew Cask (Recommended)
+```bash
+brew install --cask Popcornnnnnnnn/tap/wordtail
+```
+To update later via Homebrew (or use WordTail's built-in 1-click auto-updater):
+```bash
+brew upgrade --cask Popcornnnnnnnn/tap/wordtail
+```
 
-### Option B: Build from Source
+### Option B: Download Prebuilt Release
+Download the Developer ID signed and Apple-notarized `WordTail-*-macOS.zip` from [**Releases**](https://github.com/Popcornnnnnnnn/word-tail/releases), unzip, and drag **`WordTail.app`** to `/Applications`.
+
+### Option C: Build from Source
 Requires **macOS 14.0 (Sonoma)+** and **Swift 5.10+ / Xcode Command Line Tools**:
 
 ```bash
