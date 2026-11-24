@@ -257,9 +257,15 @@ public final class SnippetStore {
         lock.withLock { SyncShard(records: records) }
     }
 
-    public func applyRemoteShards(_ shards: [String: SyncShard]) {
+    @discardableResult
+    public func applyRemoteShards(_ shards: [String: SyncShard]) -> Bool {
         lock.withLock {
-            _ = try? merge(shards.sorted { $0.key < $1.key }.map(\.value))
+            do {
+                _ = try merge(shards.sorted { $0.key < $1.key }.map(\.value))
+                return true
+            } catch {
+                return false
+            }
         }
     }
 

@@ -475,15 +475,7 @@ final class TypingEngine {
             guard let self, self.licenseManager.isUnlocked(.snippetStudio) else { return nil }
             return self.snippetStore.match(
                 textBeforeCursor: textBeforeCursor,
-                bundleID: bundleID,
-                clipboardTextProvider: {
-                    if Thread.isMainThread {
-                        return NSPasteboard.general.string(forType: .string)
-                    }
-                    return DispatchQueue.main.sync {
-                        NSPasteboard.general.string(forType: .string)
-                    }
-                }
+                bundleID: bundleID
             )
         }
         completer.bilingualCompletionEnabled = licenseManager.isUnlocked(.bilingualSpacing) && bilingualCompletionEnabled
@@ -1003,10 +995,6 @@ final class TypingEngine {
                 let capturedSnapshot = activeSnapshot
                 let trigger = match.prefix
                 let deleteCount = match.replacementDeleteCount
-                let expandedText = match.suffix
-                    .replacingOccurrences(of: "\r\n", with: "\n")
-                    .replacingOccurrences(of: "\r", with: "\n")
-                let cursorBackSteps = match.cursorBackSteps
                 let expectedCharAfter = activeSnapshot?.charAfterCursor
                 let bridgeEnabled = enableChromiumBridge
 
@@ -1018,15 +1006,30 @@ final class TypingEngine {
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    guard let verified = self.axContext.verifyDestinationStillMatches(
-                        snapshot: capturedSnapshot,
-                        expectedBundleID: acceptedBundle,
-                        expectedTrigger: trigger,
-                        expectedCharAfter: expectedCharAfter,
-                        enableChromiumBridge: bridgeEnabled
-                    ) else {
+                    guard self.licenseManager.isUnlocked(.snippetStudio),
+                          let verified = self.axContext.verifyDestinationStillMatches(
+                              snapshot: capturedSnapshot,
+                              expectedBundleID: acceptedBundle,
+                              expectedTrigger: trigger,
+                              expectedCharAfter: expectedCharAfter,
+                              enableChromiumBridge: bridgeEnabled
+                          ),
+                          let liveMatch = self.snippetStore.match(
+                              textBeforeCursor: trigger,
+                              bundleID: acceptedBundle,
+                              now: Date(),
+                              clipboardTextProvider: { NSPasteboard.general.string(forType: .string) }
+                          ) else {
                         return
                     }
+
+                    let resolvedText = liveMatch.expandedText
+                        .replacingOccurrences(of: "\r\n", with: "\n")
+                        .replacingOccurrences(of: "\r", with: "\n")
+                    guard !resolvedText.isEmpty else {
+                        return
+                    }
+                    let resolvedBackSteps = liveMatch.cursorBackSteps
 
                     let replaceOutcome: AXSnippetReplaceOutcome
                     if let caretLoc = verified.caretLocation {
@@ -1034,8 +1037,9 @@ final class TypingEngine {
                             element: verified.element,
                             caretLocation: caretLoc,
                             trigger: trigger,
-                            replacement: expandedText,
-                            cursorBackSteps: cursorBackSteps
+                            replacement: resolvedText,
+                            cursorBackSteps: resolvedBackSteps,
+                            enableChromiumBridge: bridgeEnabled
                         )
                     } else {
                         replaceOutcome = .unattempted
@@ -1047,16 +1051,21 @@ final class TypingEngine {
                     case .uncertain:
                         return
                     case .unattempted:
+                        guard !resolvedText.contains("\n"),
+                              resolvedText.count <= 512,
+                              resolvedBackSteps <= 256 else {
+                            return
+                        }
                         if deleteCount > 0 {
                             self.injectBackspaces(count: deleteCount)
                         }
-                        self.injectMultilineTextWithShiftReturn(expandedText)
-                        if cursorBackSteps > 0 {
-                            self.injectLeftArrows(count: cursorBackSteps)
+                        self.injectUnicodeString(resolvedText)
+                        if resolvedBackSteps > 0 {
+                            self.injectLeftArrows(count: resolvedBackSteps)
                         }
                     }
 
-                    let netSaved = max(1, expandedText.count - deleteCount)
+                    let netSaved = max(1, resolvedText.count - deleteCount)
                     if self.enableKeyStatsTracking {
                         self.keyStatsStore.recordWordTailCompletion(
                             charsSaved: netSaved,
@@ -1844,27 +1853,6 @@ final class TypingEngine {
             }
             down.post(tap: .cghidEventTap)
             up.post(tap: .cghidEventTap)
-        }
-    }
-
-    private func injectMultilineTextWithShiftReturn(_ text: String) {
-        let segments = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" })
-        guard let src = CGEventSource(stateID: .hidSystemState) else { return }
-        let vkReturn = CGKeyCode(kVK_Return)
-        for (idx, segment) in segments.enumerated() {
-            if !segment.isEmpty {
-                injectUnicodeString(String(segment))
-            }
-            if idx < segments.count - 1,
-               let down = CGEvent(keyboardEventSource: src, virtualKey: vkReturn, keyDown: true),
-               let up = CGEvent(keyboardEventSource: src, virtualKey: vkReturn, keyDown: false) {
-                down.flags = .maskShift
-                up.flags = .maskShift
-                down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-                up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-                down.post(tap: .cghidEventTap)
-                up.post(tap: .cghidEventTap)
-            }
         }
     }
 

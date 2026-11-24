@@ -234,7 +234,7 @@ struct ProSettingsView: View {
                 Spacer()
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 6)
         }
     }
 
@@ -294,7 +294,7 @@ struct ProSettingsView: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.vertical, 6)
             }
         }
     }

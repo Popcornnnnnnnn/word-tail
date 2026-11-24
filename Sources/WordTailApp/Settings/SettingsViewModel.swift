@@ -1005,6 +1005,19 @@ final class SettingsViewModel: ObservableObject {
             isInstallingUpdate = autoUpdater.isInstalling
             updateStatusText = autoUpdater.statusMessage
         }
+        syncDisplayedProfileTarget()
+    }
+
+    private func syncDisplayedProfileTarget() {
+        guard let engine, !isStaticShowcase else { return }
+        if let targetApp = engine.lastObservedTargetApp ?? lastTargetApp {
+            let friendlyName = Self.friendlyAppTitle(bundleID: targetApp.bundleID, rawName: targetApp.name)
+            displayedProfileTarget = (name: friendlyName, bundleID: targetApp.bundleID)
+            proUI.activeProfileTargetName = friendlyName
+        } else {
+            displayedProfileTarget = nil
+            proUI.activeProfileTargetName = nil
+        }
     }
 
     @MainActor
@@ -1098,16 +1111,8 @@ final class SettingsViewModel: ObservableObject {
             )
         }
 
-        let targetApp = engine.lastObservedTargetApp ?? lastTargetApp
-        if let targetApp {
-            let friendlyName = Self.friendlyAppTitle(bundleID: targetApp.bundleID, rawName: targetApp.name)
-            displayedProfileTarget = (name: friendlyName, bundleID: targetApp.bundleID)
-            proUI.activeProfileTargetName = friendlyName
-        } else {
-            displayedProfileTarget = nil
-            proUI.activeProfileTargetName = nil
-        }
-        let allStats = engine.keyStatsStore.allTimeReportSnapshot(deviceScope: .allDevices)
+        syncDisplayedProfileTarget()
+        let allStats = engine.keyStatsStore.snapshot(for: .allTime, deviceScope: .allDevices)
         let allInsights = engine.insightsSnapshot()
         let wrapped = TypingReportExporter.summarize(keyStats: allStats, insights: allInsights)
 
@@ -1208,6 +1213,13 @@ final class SettingsViewModel: ObservableObject {
                 guard SnippetStore.isValidTrigger(trigger) else {
                     self.refreshProUI(
                         statusMessage: "Trigger must start with ; / : ! @ # \\ and be 2–24 non-space characters.",
+                        isError: true
+                    )
+                    return
+                }
+                if engine.snippetStore.snippets.contains(where: { $0.trigger == trigger }) {
+                    self.refreshProUI(
+                        statusMessage: "A snippet for \(trigger) already exists.",
                         isError: true
                     )
                     return

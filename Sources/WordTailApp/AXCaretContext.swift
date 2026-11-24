@@ -862,8 +862,13 @@ final class AXCaretContext {
                 return nil
             }
             if let expectedCharAfter {
-                guard let afterNow = stringForRange(element, location: curRange.location, length: 1)?.first,
-                      afterNow == expectedCharAfter else {
+                let actualAfter: Character? = stringForRange(element, location: curRange.location, length: 1)?.first
+                    ?? copyStringAttribute(element, attribute: kAXValueAttribute as String).flatMap { fullValue in
+                        let ns = fullValue as NSString
+                        guard curRange.location < ns.length else { return nil }
+                        return ns.substring(with: NSRange(location: curRange.location, length: 1)).first
+                    }
+                guard actualAfter == expectedCharAfter else {
                     return nil
                 }
             }
@@ -894,7 +899,8 @@ final class AXCaretContext {
         caretLocation: Int,
         trigger: String,
         replacement: String,
-        cursorBackSteps: Int
+        cursorBackSteps: Int,
+        enableChromiumBridge: Bool
     ) -> AXSnippetReplaceOutcome {
         let triggerUTF16Count = (trigger as NSString).length
         guard caretLocation >= triggerUTF16Count else { return .unattempted }
@@ -908,14 +914,26 @@ final class AXCaretContext {
 
         if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, replacement as CFString) != .success {
             var restoreRange = CFRange(location: caretLocation, length: 0)
-            if let restoreVal = AXValueCreate(.cfRange, &restoreRange) {
-                _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, restoreVal)
+            guard let restoreVal = AXValueCreate(.cfRange, &restoreRange),
+                  AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, restoreVal) == .success,
+                  let liveApp = effectiveFocusedApplication(),
+                  let liveElem = resolveFocusedTextElement(app: liveApp, enableChromiumBridge: enableChromiumBridge),
+                  CFEqual(liveElem, element),
+                  let restoredRange = copySelectedRange(element),
+                  restoredRange.length == 0,
+                  restoredRange.location == caretLocation else {
+                return .uncertain
             }
-            if let intact = stringForRange(element, location: startLoc, length: triggerUTF16Count),
-               intact == trigger {
-                return .unattempted
+            let intactTrigger: String? = stringForRange(
+                element,
+                location: startLoc,
+                length: triggerUTF16Count
+            ) ?? copyStringAttribute(element, attribute: kAXValueAttribute as String).flatMap { fullValue in
+                let ns = fullValue as NSString
+                guard caretLocation <= ns.length else { return nil }
+                return ns.substring(with: NSRange(location: startLoc, length: triggerUTF16Count))
             }
-            return .uncertain
+            return intactTrigger == trigger ? .unattempted : .uncertain
         }
 
         let targetCharCount = max(0, replacement.count - cursorBackSteps)

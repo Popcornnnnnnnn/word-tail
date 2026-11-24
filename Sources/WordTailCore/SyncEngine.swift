@@ -317,8 +317,17 @@ public final class SyncEngine {
         }
 
         // 3. Apply all remote peer shards (merges additive stats + reconciles LWW custom words/rules/phrases)
-        applyPeerEnvelopes(remoteEnvelopes)
+        let proMergedOK = applyPeerEnvelopes(remoteEnvelopes)
         saveCachedEnvelopeMapLocked(remoteEnvelopes, for: rawPath)
+
+        knownPeers = remoteEnvelopes.values
+            .map { SyncPeerSummary(deviceID: $0.deviceID, deviceModel: $0.deviceModel, updatedAt: $0.updatedAt) }
+            .sorted { $0.updatedAt > $1.updatedAt }
+
+        guard proMergedOK else {
+            lastErrorValue = "Failed saving synced Pro data locally."
+            return makeStatusLocked()
+        }
 
         // 4. Export THIS Mac's local shard (including reconciled LWW custom rule/word/phrase metadata)
         let now = Date()
@@ -351,14 +360,11 @@ public final class SyncEngine {
             lastErrorValue = "Failed writing sync shard: \(error.localizedDescription)"
         }
 
-        knownPeers = remoteEnvelopes.values
-            .map { SyncPeerSummary(deviceID: $0.deviceID, deviceModel: $0.deviceModel, updatedAt: $0.updatedAt) }
-            .sorted { $0.updatedAt > $1.updatedAt }
-
         return makeStatusLocked()
     }
 
-    private func applyPeerEnvelopes(_ envelopes: [String: DeviceSyncEnvelope]) {
+    @discardableResult
+    private func applyPeerEnvelopes(_ envelopes: [String: DeviceSyncEnvelope]) -> Bool {
         var historyShards: [String: UserHistoryStore.SyncShard] = [:]
         var correctionShards: [String: AdaptiveCorrectionStore.SyncShard] = [:]
         var phraseShards: [String: PhrasePredictor.SyncShard] = [:]
@@ -394,15 +400,17 @@ public final class SyncEngine {
         phrasePredictor.applyRemoteShards(phraseShards)
         habitTracker.applyRemoteShards(insightShards)
         keyStatsStore.applyRemoteDeviceDays(keyStatsShards, claimedLegacyDeviceIDs: claimedLegacyIDs)
-        if !domainPackShards.isEmpty {
-            domainPackStore?.applyRemoteShards(domainPackShards)
+        var allProSaved = true
+        if !domainPackShards.isEmpty, let domainPackStore {
+            allProSaved = domainPackStore.applyRemoteShards(domainPackShards) && allProSaved
         }
-        if !appProfileShards.isEmpty {
-            appProfileStore?.applyRemoteShards(appProfileShards)
+        if !appProfileShards.isEmpty, let appProfileStore {
+            allProSaved = appProfileStore.applyRemoteShards(appProfileShards) && allProSaved
         }
-        if !snippetShards.isEmpty {
-            snippetStore?.applyRemoteShards(snippetShards)
+        if !snippetShards.isEmpty, let snippetStore {
+            allProSaved = snippetStore.applyRemoteShards(snippetShards) && allProSaved
         }
+        return allProSaved
     }
 
     // MARK: - File Coordination & Local Cache

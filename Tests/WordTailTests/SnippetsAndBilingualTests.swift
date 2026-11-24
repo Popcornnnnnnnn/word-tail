@@ -218,10 +218,11 @@ final class SnippetsAndBilingualTests: XCTestCase {
         let liveB = TextSnippet(id: ";sync", trigger: ";sync", title: "Beta", body: "Body Zebra", updatedAt: fixedTime)
         storeA.applyRemoteShards(["seedA": SnippetStore.SyncShard(records: [";sync": liveA])])
         storeB.applyRemoteShards(["seedB": SnippetStore.SyncShard(records: [";sync": liveB])])
-        storeA.applyRemoteShards(["b": storeB.exportLocalShard()])
-        storeB.applyRemoteShards(["a": storeA.exportLocalShard()])
+        XCTAssertTrue(storeA.applyRemoteShards(["b": storeB.exportLocalShard()]))
+        XCTAssertTrue(storeB.applyRemoteShards(["a": storeA.exportLocalShard()]))
         XCTAssertEqual(storeA.match(textBeforeCursor: ";sync", bundleID: nil)?.expandedText, "Body Zebra")
         XCTAssertEqual(storeB.match(textBeforeCursor: ";sync", bundleID: nil)?.expandedText, "Body Zebra")
+        XCTAssertEqual(storeA.match(textBeforeCursor: ";clip", bundleID: nil, clipboardText: nil)?.expandedText, "")
 
         // 4. recordSnippetAccepted increments Wrapped savings without storing body words in insights
         let tracker = TypingHabitTracker(fileURL: dirA.appendingPathComponent("insights.json"))
