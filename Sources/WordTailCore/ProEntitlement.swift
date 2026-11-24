@@ -1,5 +1,11 @@
 import Foundation
 
+public enum WordTailReleasePolicy {
+    /// All Studio capabilities ship 100% free while growing the initial user base.
+    /// Flip to `true` in a future release to re-enable offline Ed25519 license gating.
+    public static let monetizationEnabled = false
+}
+
 public enum WordTailProFeature: String, CaseIterable, Identifiable, Codable, Sendable {
     case domainLexiconPacks
     case snippetStudio

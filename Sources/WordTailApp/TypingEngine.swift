@@ -440,8 +440,12 @@ final class TypingEngine {
         }
     }
 
+    func isStudioFeatureUnlocked(_ feature: WordTailProFeature) -> Bool {
+        !WordTailReleasePolicy.monetizationEnabled || licenseManager.isUnlocked(feature)
+    }
+
     private func activeWritingProfile(forBundleID bundleID: String?) -> AppWritingProfile? {
-        guard licenseManager.isUnlocked(.appWritingProfiles),
+        guard isStudioFeatureUnlocked(.appWritingProfiles),
               let bundleID, !bundleID.isEmpty else {
             return nil
         }
@@ -461,27 +465,27 @@ final class TypingEngine {
     }
 
     private func effectiveBilingualSpacing(bundleID: String?) -> Bool {
-        guard licenseManager.isUnlocked(.bilingualSpacing) else { return false }
+        guard isStudioFeatureUnlocked(.bilingualSpacing) else { return false }
         return activeWritingProfile(forBundleID: bundleID)?.bilingualSpacingOverride ?? bilingualSpacingEnabled
     }
 
     func syncCompleterProState() {
         completer.domainLexiconProvider = { [weak self] lowerPrefix, bundleID in
-            guard let self, self.licenseManager.isUnlocked(.domainLexiconPacks) else { return [] }
+            guard let self, self.isStudioFeatureUnlocked(.domainLexiconPacks) else { return [] }
             let overrideIDs = self.activeWritingProfile(forBundleID: bundleID)?.enabledDomainPackIDs
             return self.domainPackStore.matching(lowercasedPrefix: lowerPrefix, overrideEnabledPackIDs: overrideIDs)
         }
         completer.snippetMatcher = { [weak self] textBeforeCursor, bundleID in
-            guard let self, self.licenseManager.isUnlocked(.snippetStudio) else { return nil }
+            guard let self, self.isStudioFeatureUnlocked(.snippetStudio) else { return nil }
             return self.snippetStore.match(
                 textBeforeCursor: textBeforeCursor,
                 bundleID: bundleID
             )
         }
-        completer.bilingualCompletionEnabled = licenseManager.isUnlocked(.bilingualSpacing) && bilingualCompletionEnabled
+        completer.bilingualCompletionEnabled = isStudioFeatureUnlocked(.bilingualSpacing) && bilingualCompletionEnabled
         completer.bilingualCompletionProvider = { [weak self] in
             guard let self else { return false }
-            return self.licenseManager.isUnlocked(.bilingualSpacing) && self.bilingualCompletionEnabled
+            return self.isStudioFeatureUnlocked(.bilingualSpacing) && self.bilingualCompletionEnabled
         }
         completer.bilingualSpacingProvider = { [weak self] bundleID in
             self?.effectiveBilingualSpacing(bundleID: bundleID) ?? false
@@ -1008,7 +1012,7 @@ final class TypingEngine {
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    guard self.licenseManager.isUnlocked(.snippetStudio) else {
+                    guard self.isStudioFeatureUnlocked(.snippetStudio) else {
                         return
                     }
 
@@ -1537,7 +1541,7 @@ final class TypingEngine {
 
             let activeBid = activeBundleID ?? lastObservedBundleID
             let shouldTriggerSnippetKey: Bool
-            if licenseManager.isUnlocked(.snippetStudio),
+            if isStudioFeatureUnlocked(.snippetStudio),
                let lastChar = typed.last,
                !lastChar.isWhitespace {
                 let trailingToken = rollingBuffer.split(whereSeparator: \.isWhitespace).last.map(String.init) ?? ""

@@ -475,9 +475,9 @@ enum ShowcaseExporter {
             ProAppProfileItem(id: "com.tencent.xinWeChat", bundleID: "com.tencent.xinWeChat", displayName: "WeChat", presetTitle: "Casual Chat", summary: "Auto-Cap Off · PanGu On")
         ]
         let sampleProUI = WordTailProUIState(
-            entitlementState: .trial(daysRemaining: 12, expiresAt: Date().addingTimeInterval(12 * 86_400)),
-            hasUsedTrial: true,
-            statusMessage: "Activated AI, ML & Quant + Systems & DevOps packs.",
+            entitlementState: .free,
+            hasUsedTrial: false,
+            statusMessage: "AI, ML & Quant + Systems & DevOps packs active.",
             isErrorStatus: false,
             licenseKeyDraft: "",
             packs: proPacks,
@@ -508,7 +508,7 @@ enum ShowcaseExporter {
                 SettingsView(vm: proVM)
             },
             size: windowShotSize,
-            to: outDir.appendingPathComponent("pro-settings-window.png")
+            to: outDir.appendingPathComponent("studio-settings-window.png")
         )
 
         // 8. Standalone Typing Wrapped 3:4 Dark Poster PNG (1200 x 1600)

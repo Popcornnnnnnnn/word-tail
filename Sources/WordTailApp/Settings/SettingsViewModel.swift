@@ -11,7 +11,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case insights = "Insights"
     case dictionary = "Dictionary"
     case preferences = "Preferences"
-    case pro = "Pro"
+    case pro = "Studio"
 
     var id: String { rawValue }
     var symbol: String {
@@ -1291,7 +1291,7 @@ final class SettingsViewModel: ObservableObject {
             exportPoster: { [weak self] aspect, colorScheme in
                 Task { @MainActor [weak self] in
                     guard let self, let engine = self.engine else { return }
-                    guard engine.licenseManager.isUnlocked(.wrappedAndReports) else {
+                    guard engine.isStudioFeatureUnlocked(.wrappedAndReports) else {
                         self.refreshProUI(statusMessage: "Activate Pro or start a trial to export posters.", isError: true)
                         return
                     }
@@ -1320,7 +1320,7 @@ final class SettingsViewModel: ObservableObject {
             exportCSV: { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self, let engine = self.engine else { return }
-                    guard engine.licenseManager.isUnlocked(.wrappedAndReports) else {
+                    guard engine.isStudioFeatureUnlocked(.wrappedAndReports) else {
                         self.refreshProUI(statusMessage: "Activate Pro or start a trial to export CSV.", isError: true)
                         return
                     }
@@ -1341,7 +1341,7 @@ final class SettingsViewModel: ObservableObject {
             exportMarkdown: { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self, let engine = self.engine else { return }
-                    guard engine.licenseManager.isUnlocked(.wrappedAndReports) else {
+                    guard engine.isStudioFeatureUnlocked(.wrappedAndReports) else {
                         self.refreshProUI(statusMessage: "Activate Pro or start a trial to export Markdown.", isError: true)
                         return
                     }

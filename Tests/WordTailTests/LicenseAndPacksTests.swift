@@ -306,6 +306,10 @@ final class LicenseAndPacksTests: XCTestCase {
         XCTAssertEqual(restarted.profile(forBundleID: bundleID), recreated)
     }
 
+    func testReleasePolicyShipsStudioFeaturesFreeByDefault() {
+        XCTAssertFalse(WordTailReleasePolicy.monetizationEnabled)
+    }
+
     private func isolatedDefaults() throws -> UserDefaults {
         let suiteName = "WordTailLicenseAndPacksTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

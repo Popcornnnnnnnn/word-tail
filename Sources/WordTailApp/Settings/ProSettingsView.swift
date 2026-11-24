@@ -85,10 +85,21 @@ struct ProSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Text("WordTail Pro")
-                .font(.system(size: 16, weight: .semibold))
+            HStack(spacing: 10) {
+                Text(WordTailReleasePolicy.monetizationEnabled ? "WordTail Pro" : "Studio")
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer(minLength: 8)
+                if !WordTailReleasePolicy.monetizationEnabled, let status = state.statusMessage {
+                    Text(status)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(state.isErrorStatus ? LinearUI.warning : Color.secondary)
+                        .lineLimit(1)
+                }
+            }
 
-            licenseSection
+            if WordTailReleasePolicy.monetizationEnabled {
+                licenseSection
+            }
             packSection.disabled(!isProUnlocked)
             snippetSection.disabled(!isProUnlocked)
             profileSection.disabled(!isProUnlocked)
@@ -97,9 +108,10 @@ struct ProSettingsView: View {
     }
 
     private var isProUnlocked: Bool {
+        if !WordTailReleasePolicy.monetizationEnabled { return true }
         switch state.entitlementState {
-        case .free: false
-        case .trial, .licensed: true
+        case .free: return false
+        case .trial, .licensed: return true
         }
     }
 
@@ -213,7 +225,13 @@ struct ProSettingsView: View {
                             set: { callbacks.setPackEnabled(pack.id, $0) }
                         ))
                         .disabled(pack.isCustom)
-                        .help(pack.isCustom ? "Imported custom packs remain active while Pro is unlocked" : "Enable \(pack.name)")
+                        .help(
+                            pack.isCustom
+                                ? (WordTailReleasePolicy.monetizationEnabled
+                                    ? "Imported custom packs remain active while Pro is unlocked"
+                                    : "Imported custom packs are always active")
+                                : "Enable \(pack.name)"
+                        )
                         .accessibilityLabel(pack.name)
                     }
                     .padding(.horizontal, 10)
