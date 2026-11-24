@@ -249,17 +249,18 @@ final class GhostOverlayWindow {
         // Mid-sentence insertion: float a crisp Linear micro-pill just above the caret so zero existing words are covered!
         if hasTextAfterOnLine {
             panel.hasShadow = true
+            let useArrowBadge = match.isTypoCorrection || match.isSnippet
             let mode = GhostDisplayMode.floatingPillAbove(
                 prefix: match.prefix,
                 fullWord: match.fullWord,
-                isTypoFix: match.isTypoCorrection
+                isTypoFix: useArrowBadge
             )
             ghostView.mode = mode
 
             let sampleAttr = GhostTextView.makePillAttributedString(
                 prefix: match.prefix,
                 fullWord: match.fullWord,
-                isTypoFix: match.isTypoCorrection,
+                isTypoFix: useArrowBadge,
                 isDark: false,
                 accentColor: .systemBlue
             )
@@ -287,7 +288,7 @@ final class GhostOverlayWindow {
 
         panel.hasShadow = false
         let displayText: String
-        if match.isTypoCorrection {
+        if match.isTypoCorrection || match.isSnippet {
             displayText = " → \(match.fullWord)"
             ghostView.mode = .inlineTypoFix(match.fullWord)
         } else {

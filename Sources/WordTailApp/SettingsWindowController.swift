@@ -65,6 +65,8 @@ struct SettingsView: View {
                             vm.refreshInsights()
                         } else if section == .keyStats || section == .appStats {
                             vm.refreshKeyStats()
+                        } else if section == .pro {
+                            vm.refreshProUI()
                         }
                         vm.selectedSection = section
                     }
@@ -163,6 +165,12 @@ struct SettingsView: View {
                 DictionarySettingsView(vm: vm)
             case .preferences:
                 PreferencesSettingsView(vm: vm)
+            case .pro:
+                ProSettingsView(
+                    state: $vm.proUI,
+                    callbacks: vm.proCallbacks,
+                    isStaticShowcase: vm.isStaticShowcase
+                )
             }
         }
         .padding(.horizontal, 24)

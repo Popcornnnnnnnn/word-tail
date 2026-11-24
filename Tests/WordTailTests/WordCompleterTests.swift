@@ -1884,4 +1884,82 @@ final class WordCompleterTests: XCTestCase {
         let allAfterReset = store.snapshot(for: .allTime, deviceScope: .allDevices)
         XCTAssertEqual(allAfterReset.totalKeyPresses, 4_001) // peer Nov 17 (4000) + local Nov 20 (1)
     }
+
+    func testProIntegrationDomainPacksBilingualSnippetsAndProfileOverrides() throws {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("WordTailProInt-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let history = UserHistoryStore(fileURL: tempDir.appendingPathComponent("accepted.json"))
+        let phrasePredictor = PhrasePredictor(fileURL: tempDir.appendingPathComponent("phrases.json"))
+        let domainPacks = DomainPackStore(directoryURL: tempDir)
+        XCTAssertTrue(domainPacks.setEnabledPackIDs(["ai_quant"]))
+        let snippetStore = SnippetStore(directoryURL: tempDir)
+        var clipboardFetches = 0
+
+        let emptySpell = MockSpellCompleter { _, _ in [] }
+        let completer = WordCompleter(spellCompleter: emptySpell, historyStore: history, enableTechLexicon: false)
+        completer.phrasePredictor = phrasePredictor
+        completer.domainLexiconProvider = { lowerPrefix, _ in
+            domainPacks.matching(lowercasedPrefix: lowerPrefix)
+        }
+        completer.snippetMatcher = { textBeforeCursor, bundleID in
+            snippetStore.match(
+                textBeforeCursor: textBeforeCursor,
+                bundleID: bundleID,
+                now: Date(timeIntervalSince1970: 1_763_540_000),
+                clipboardTextProvider: {
+                    clipboardFetches += 1
+                    return "PASTE_OK"
+                }
+            )
+        }
+
+        // 1. Domain vocabulary pack fallback works even when MIT TechLexicon is disabled
+        let packMatch = try XCTUnwrap(completer.complete(textBeforeCursor: "model heteroske"))
+        XCTAssertEqual(packMatch.fullWord, "heteroskedasticity")
+        XCTAssertEqual(packMatch.suffix, "dasticity")
+        XCTAssertFalse(packMatch.needsLeadingSpace)
+
+        // 2. Bilingual CJK-English boundaries & PanGu leading space
+        XCTAssertNil(completer.complete(textBeforeCursor: "请看heteroske"))
+        completer.bilingualCompletionEnabled = true
+        completer.bilingualSpacingProvider = { _ in true }
+        let biMatch = try XCTUnwrap(completer.complete(textBeforeCursor: "请看heteroske"))
+        XCTAssertEqual(biMatch.fullWord, "heteroskedasticity")
+        XCTAssertTrue(biMatch.needsLeadingSpace)
+        XCTAssertNil(completer.complete(textBeforeCursor: "中文/heteroske"))
+
+        // 3. Snippets: lazy clipboard, isSnippet != isTypoCorrection, and {cursor} back-steps
+        let dateMatch = try XCTUnwrap(completer.complete(textBeforeCursor: "today ;date"))
+        XCTAssertTrue(dateMatch.isSnippet)
+        XCTAssertFalse(dateMatch.isTypoCorrection)
+        XCTAssertEqual(dateMatch.prefix, ";date")
+        XCTAssertEqual(dateMatch.replacementDeleteCount, 5)
+        XCTAssertEqual(dateMatch.cursorBackSteps, 0)
+        XCTAssertEqual(clipboardFetches, 0)
+
+        let meetMatch = try XCTUnwrap(completer.complete(textBeforeCursor: ";meet"))
+        XCTAssertTrue(meetMatch.isSnippet)
+        XCTAssertFalse(meetMatch.isTypoCorrection)
+        XCTAssertEqual(meetMatch.fullWord, "Meeting Notes")
+        XCTAssertGreaterThan(meetMatch.cursorBackSteps, 0)
+        XCTAssertEqual(clipboardFetches, 0)
+
+        let clipMatch = try XCTUnwrap(completer.complete(textBeforeCursor: ";clip"))
+        XCTAssertTrue(clipMatch.isSnippet)
+        XCTAssertEqual(clipMatch.suffix, "PASTE_OK")
+        XCTAssertEqual(clipboardFetches, 1)
+
+        // 4. Per-app writing profile provider overrides global typo-fix & phrase prediction flags
+        completer.inlineTypoFixProvider = { bundleID in bundleID != "com.openai.codex" }
+        completer.phrasePredictionProvider = { bundleID in bundleID != "com.openai.codex" }
+        let notesFix = completer.complete(textBeforeCursor: "I saw teh", bundleID: "com.apple.Notes")
+        XCTAssertEqual(notesFix?.fullWord, "the")
+        XCTAssertEqual(notesFix?.isTypoCorrection, true)
+        XCTAssertNil(completer.complete(textBeforeCursor: "I saw teh", bundleID: "com.openai.codex"))
+        XCTAssertFalse(completer.candidates(textBeforeCursor: "as far as ", bundleID: "com.apple.Notes").isEmpty)
+        XCTAssertTrue(completer.candidates(textBeforeCursor: "as far as ", bundleID: "com.openai.codex").isEmpty)
+    }
 }

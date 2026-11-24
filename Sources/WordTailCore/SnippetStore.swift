@@ -102,13 +102,15 @@ public final class SnippetStore {
         textBeforeCursor: String,
         bundleID: String?,
         now: Date = Date(),
-        clipboardText: String? = nil
+        clipboardText: String? = nil,
+        clipboardTextProvider: (() -> String?)? = nil
     ) -> SnippetMatch? {
         let snippet = lock.withLock {
             matchingSnippet(textBeforeCursor: textBeforeCursor, bundleID: bundleID)
         }
         guard let snippet else { return nil }
-        let expanded = Self.expand(body: snippet.body, now: now, clipboardText: clipboardText)
+        let resolvedClipboard = clipboardText ?? (snippet.body.contains("{clipboard}") ? clipboardTextProvider?() : nil)
+        let expanded = Self.expand(body: snippet.body, now: now, clipboardText: resolvedClipboard)
         return SnippetMatch(
             snippet: snippet,
             trigger: snippet.trigger,

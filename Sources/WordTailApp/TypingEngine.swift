@@ -13,6 +13,10 @@ final class TypingEngine {
     let phrasePredictor: PhrasePredictor
     let keyStatsStore: KeyStatsStore
     let syncEngine: SyncEngine
+    let licenseManager: LicenseManager
+    let domainPackStore: DomainPackStore
+    let appProfileStore: AppProfileStore
+    let snippetStore: SnippetStore
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
     private let overlay = GhostOverlayWindow()
@@ -397,6 +401,103 @@ final class TypingEngine {
         }
     }
 
+    var lastObservedTargetApp: (name: String, bundleID: String)? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        let bid = activeBundleID ?? lastObservedBundleID
+        guard let bid,
+              bid != Bundle.main.bundleIdentifier,
+              !InputGuard.defaultExcludedBundleIDs.contains(bid) else {
+            return nil
+        }
+        let name = (bid == activeBundleID ? activeAppName : lastObservedAppName) ?? SettingsViewModel.appName(forBundleID: bid)
+        return (name: name, bundleID: bid)
+    }
+
+    var bilingualCompletionEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "WordTailProBilingualCompletion") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "WordTailProBilingualCompletion")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailProBilingualCompletion")
+            syncCompleterProState()
+        }
+    }
+
+    var bilingualSpacingEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "WordTailProBilingualSpacing") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "WordTailProBilingualSpacing")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailProBilingualSpacing")
+            syncCompleterProState()
+        }
+    }
+
+    private func activeWritingProfile(forBundleID bundleID: String?) -> AppWritingProfile? {
+        guard licenseManager.isUnlocked(.appWritingProfiles),
+              let bundleID, !bundleID.isEmpty else {
+            return nil
+        }
+        return appProfileStore.profile(forBundleID: bundleID)
+    }
+
+    private func effectiveAutoCorrectOnSpace(bundleID: String?) -> Bool {
+        activeWritingProfile(forBundleID: bundleID)?.autoCorrectOnSpace ?? autoCorrectOnSpace
+    }
+
+    private func effectiveAutoCapitalizeSentences(bundleID: String?) -> Bool {
+        activeWritingProfile(forBundleID: bundleID)?.autoCapitalizeSentences ?? autoCapitalizeSentences
+    }
+
+    private func effectivePhrasePrediction(bundleID: String?) -> Bool {
+        activeWritingProfile(forBundleID: bundleID)?.enablePhrasePrediction ?? enablePhrasePrediction
+    }
+
+    private func effectiveBilingualSpacing(bundleID: String?) -> Bool {
+        guard licenseManager.isUnlocked(.bilingualSpacing) else { return false }
+        return activeWritingProfile(forBundleID: bundleID)?.bilingualSpacingOverride ?? bilingualSpacingEnabled
+    }
+
+    func syncCompleterProState() {
+        completer.domainLexiconProvider = { [weak self] lowerPrefix, bundleID in
+            guard let self, self.licenseManager.isUnlocked(.domainLexiconPacks) else { return [] }
+            let overrideIDs = self.activeWritingProfile(forBundleID: bundleID)?.enabledDomainPackIDs
+            return self.domainPackStore.matching(lowercasedPrefix: lowerPrefix, overrideEnabledPackIDs: overrideIDs)
+        }
+        completer.snippetMatcher = { [weak self] textBeforeCursor, bundleID in
+            guard let self, self.licenseManager.isUnlocked(.snippetStudio) else { return nil }
+            return self.snippetStore.match(
+                textBeforeCursor: textBeforeCursor,
+                bundleID: bundleID,
+                clipboardTextProvider: {
+                    if Thread.isMainThread {
+                        return NSPasteboard.general.string(forType: .string)
+                    }
+                    return DispatchQueue.main.sync {
+                        NSPasteboard.general.string(forType: .string)
+                    }
+                }
+            )
+        }
+        completer.bilingualCompletionEnabled = licenseManager.isUnlocked(.bilingualSpacing) && bilingualCompletionEnabled
+        completer.bilingualSpacingProvider = { [weak self] bundleID in
+            self?.effectiveBilingualSpacing(bundleID: bundleID) ?? false
+        }
+        completer.inlineTypoFixProvider = { [weak self] bundleID in
+            self?.effectiveAutoCorrectOnSpace(bundleID: bundleID) ?? true
+        }
+        completer.phrasePredictionProvider = { [weak self] bundleID in
+            self?.effectivePhrasePrediction(bundleID: bundleID) ?? true
+        }
+    }
+
     init(
         completer: WordCompleter,
         historyStore: UserHistoryStore,
@@ -404,7 +505,11 @@ final class TypingEngine {
         adaptiveStore: AdaptiveCorrectionStore = AdaptiveCorrectionStore(),
         phrasePredictor: PhrasePredictor = PhrasePredictor(),
         keyStatsStore: KeyStatsStore = KeyStatsStore(),
-        inputGuard: InputGuard
+        inputGuard: InputGuard,
+        licenseManager: LicenseManager = LicenseManager(),
+        domainPackStore: DomainPackStore = DomainPackStore(),
+        appProfileStore: AppProfileStore = AppProfileStore(),
+        snippetStore: SnippetStore = SnippetStore()
     ) {
         self.completer = completer
         self.historyStore = historyStore
@@ -412,12 +517,19 @@ final class TypingEngine {
         self.adaptiveStore = adaptiveStore
         self.phrasePredictor = phrasePredictor
         self.keyStatsStore = keyStatsStore
+        self.licenseManager = licenseManager
+        self.domainPackStore = domainPackStore
+        self.appProfileStore = appProfileStore
+        self.snippetStore = snippetStore
         self.syncEngine = SyncEngine(
             historyStore: historyStore,
             adaptiveStore: adaptiveStore,
             phrasePredictor: phrasePredictor,
             habitTracker: habitTracker,
-            keyStatsStore: keyStatsStore
+            keyStatsStore: keyStatsStore,
+            domainPackStore: domainPackStore,
+            appProfileStore: appProfileStore,
+            snippetStore: snippetStore
         )
         self.inputGuard = inputGuard
         completer.habitTracker = habitTracker
@@ -445,6 +557,7 @@ final class TypingEngine {
         if UserDefaults.standard.object(forKey: "WordTailEnableTechLexicon") != nil {
             completer.enableTechLexicon = UserDefaults.standard.bool(forKey: "WordTailEnableTechLexicon")
         }
+        syncCompleterProState()
         observeWorkspaceNotifications()
     }
 
@@ -870,7 +983,7 @@ final class TypingEngine {
             return Unmanaged.passUnretained(event)
         }
 
-        // Tab while ghost text is visible -> swallow Tab and inject suffix or minimal-diff typo replacement!
+        // Tab while ghost text is visible -> swallow Tab and inject suffix, snippet expansion, or minimal-diff typo replacement!
         if keyCode == kVK_Tab, !flags.contains(.maskShift), overlay.isVisible,
            let match = overlay.currentMatch {
             pendingSpaceUndo = nil
@@ -880,9 +993,46 @@ final class TypingEngine {
             let prevWord = match.previousWord
             let acceptedBundle = activeBundleID ?? lastObservedBundleID
             let acceptedAppName = activeAppName ?? lastObservedAppName
-            let shouldAddSpace = WordCompleter.shouldAppendSpaceOnTab(
+
+            if match.isSnippet {
+                let deleteCount = match.replacementDeleteCount
+                let expandedText = match.suffix
+                let cursorBackSteps = match.cursorBackSteps
+
+                overlay.hide()
+                activeCandidates.removeAll(keepingCapacity: true)
+                activeSnapshot = nil
+                rollingBuffer.removeAll(keepingCapacity: true)
+                lastCapturedLineText = nil
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if deleteCount > 0 {
+                        self.injectBackspaces(count: deleteCount)
+                    }
+                    self.injectMultilineText(expandedText)
+                    if cursorBackSteps > 0 {
+                        self.injectLeftArrows(count: cursorBackSteps)
+                    }
+                    if self.enableKeyStatsTracking {
+                        self.keyStatsStore.recordWordTailCompletion(
+                            charsSaved: max(1, expandedText.count - deleteCount),
+                            appBundleID: acceptedBundle,
+                            appName: acceptedAppName
+                        )
+                    }
+                    self.phrasePredictor.resetSentenceWindow()
+                }
+                return nil
+            }
+
+            let allowAutoCorrect = effectiveAutoCorrectOnSpace(bundleID: acceptedBundle)
+            let allowAutoCap = effectiveAutoCapitalizeSentences(bundleID: acceptedBundle)
+            let allowPhrasePred = effectivePhrasePrediction(bundleID: acceptedBundle)
+            let shouldAddSpace = BilingualSpacingGuard.needsTrailingSpace(
                 charAfterCursor: charAfter,
-                appendSpacePreference: appendSpaceOnAccept
+                appendSpacePreference: appendSpaceOnAccept,
+                bilingualSpacingEnabled: effectiveBilingualSpacing(bundleID: acceptedBundle)
             )
             var resolvedFullWord = match.fullWord
             var deleteCount = match.replacementDeleteCount
@@ -895,7 +1045,7 @@ final class TypingEngine {
                !match.fullWord.contains(" "),
                !prefixIsAllCaps {
                 let lowerFull = match.fullWord.lowercased()
-                if autoCorrectOnSpace,
+                if allowAutoCorrect,
                    !adaptiveStore.isMuted(lowerFull),
                    let cased = (match.prefix == match.prefix.lowercased() ? historyStore.customPinnedCasing(for: lowerFull) : nil)
                     ?? ObviousTypoCorrector.canonicalBrandCasing[lowerFull]
@@ -905,7 +1055,7 @@ final class TypingEngine {
                     resolvedFullWord = cased
                     deleteCount = diff.deleteCount
                     rawInsertSuffix = diff.insertText
-                } else if autoCapitalizeSentences,
+                } else if allowAutoCap,
                           match.prefix == match.prefix.lowercased(),
                           let first = resolvedFullWord.first,
                           first.isLowercase,
@@ -932,6 +1082,11 @@ final class TypingEngine {
                         rawInsertSuffix = diff.insertText
                     }
                 }
+            }
+
+            if match.needsLeadingSpace, !match.prefix.isEmpty {
+                deleteCount = match.prefix.count
+                rawInsertSuffix = " " + resolvedFullWord
             }
 
             let textToInsert = shouldAddSpace ? (rawInsertSuffix + " ") : rawInsertSuffix
@@ -979,8 +1134,8 @@ final class TypingEngine {
                         bundleID: learnContext ? acceptedBundle : nil
                     )
                     if shouldAddSpace {
-                        self.recordPhraseWordIfValid(resolvedFullWord, endedSentence: false)
-                        if self.enablePhrasePrediction {
+                        self.recordPhraseWordIfValid(resolvedFullWord, endedSentence: false, bundleID: acceptedBundle)
+                        if allowPhrasePred {
                             self.schedulePredictionQuery()
                         }
                     }
@@ -1131,8 +1286,11 @@ final class TypingEngine {
         if let delim = boundaryTriggerDelimiter {
             pendingSpaceUndo = nil
             let bid = activeBundleID ?? lastObservedBundleID
+            let allowAutoCorrect = effectiveAutoCorrectOnSpace(bundleID: bid)
+            let allowAutoCap = effectiveAutoCapitalizeSentences(bundleID: bid)
+            let allowPhrasePred = effectivePhrasePrediction(bundleID: bid)
             if bid != Bundle.main.bundleIdentifier,
-               (autoCorrectOnSpace || autoCapitalizeSentences),
+               (allowAutoCorrect || allowAutoCap),
                inputGuard.shouldAllowPrediction(frontmostBundleID: bid, cachedRomanLayout: lastKnownRomanLayout),
                let target = ObviousTypoCorrector.extractPunctuationOrSpaceTarget(
                    rollingBuffer: rollingBuffer,
@@ -1149,8 +1307,8 @@ final class TypingEngine {
                     if ObviousTypoCorrector.needsLiveSentenceContextOnSpace(
                         forWord: typedWord,
                         rollingBuffer: target.bufferUpToWord,
-                        autoCorrectTypos: autoCorrectOnSpace,
-                        autoCapitalizeSentences: autoCapitalizeSentences,
+                        autoCorrectTypos: allowAutoCorrect,
+                        autoCapitalizeSentences: allowAutoCap,
                         adaptiveStore: adaptiveStore
                     ) {
                         let expectedInEditor = target.existingTrailingDot ? (typedWord + ".") : typedWord
@@ -1190,8 +1348,8 @@ final class TypingEngine {
                         lineContextIncludingWord: lineCtx,
                         isAtDocumentStart: isDocStart,
                         sliceStartsAtDocumentZero: sliceAtZero,
-                        autoCorrectTypos: autoCorrectOnSpace,
-                        autoCapitalizeSentences: autoCapitalizeSentences,
+                        autoCorrectTypos: allowAutoCorrect,
+                        autoCapitalizeSentences: allowAutoCap,
                         adaptiveStore: adaptiveStore,
                         habitTracker: habitTracker,
                         historyStore: historyStore
@@ -1238,9 +1396,9 @@ final class TypingEngine {
                                     )
                                 }
                                 let ended = outDelim.contains(".") || outDelim == "!" || outDelim == "?" || outDelim == ";"
-                                self.recordPhraseWordIfValid(transform.replacementText, endedSentence: ended)
+                                self.recordPhraseWordIfValid(transform.replacementText, endedSentence: ended, bundleID: bid)
                             }
-                            if outDelim == " " && self.enablePhrasePrediction {
+                            if outDelim == " " && allowPhrasePred {
                                 self.schedulePredictionQuery()
                             }
                         }
@@ -1290,7 +1448,7 @@ final class TypingEngine {
                         if isPhraseBoundaryChar {
                             let ended = ".!?;:\n\r".contains(ch)
                             if let w = wordBeforeBoundary {
-                                self.recordPhraseWordIfValid(w, endedSentence: ended)
+                                self.recordPhraseWordIfValid(w, endedSentence: ended, bundleID: bid)
                             } else if ended {
                                 self.phrasePredictor.resetSentenceWindow()
                             }
@@ -1301,7 +1459,18 @@ final class TypingEngine {
                 }
             }
 
-            if let last = typed.last, (last.isLetter && last.isASCII) || last == "'" || last == "’" {
+            let activeBid = activeBundleID ?? lastObservedBundleID
+            let shouldTriggerSnippetKey: Bool
+            if licenseManager.isUnlocked(.snippetStudio),
+               let lastChar = typed.last,
+               lastChar.isASCII && (lastChar.isNumber || lastChar == "-" || lastChar == "_") {
+                let trailingToken = rollingBuffer.split(whereSeparator: \.isWhitespace).last
+                shouldTriggerSnippetKey = trailingToken?.first.map { ";/:!@#\\".contains($0) } ?? false
+            } else {
+                shouldTriggerSnippetKey = false
+            }
+
+            if let last = typed.last, (last.isLetter && last.isASCII) || last == "'" || last == "’" || shouldTriggerSnippetKey {
                 // Immediately hide the previous character's overlay so a newly typed glyph never renders underneath stale ghost text!
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
@@ -1312,7 +1481,7 @@ final class TypingEngine {
                     }
                 }
                 schedulePredictionQuery()
-            } else if typed == " " && enablePhrasePrediction {
+            } else if typed == " " && effectivePhrasePrediction(bundleID: activeBid) {
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
@@ -1327,8 +1496,9 @@ final class TypingEngine {
         return Unmanaged.passUnretained(event)
     }
 
-    private func recordPhraseWordIfValid(_ rawText: String, endedSentence: Bool) {
-        guard enableHabitLearning && enablePhrasePrediction else { return }
+    private func recordPhraseWordIfValid(_ rawText: String, endedSentence: Bool, bundleID: String? = nil) {
+        let targetBundle = bundleID ?? activeBundleID ?? lastObservedBundleID
+        guard enableHabitLearning && effectivePhrasePrediction(bundleID: targetBundle) else { return }
         let parts = rawText.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !parts.isEmpty else { return }
 
@@ -1595,20 +1765,72 @@ final class TypingEngine {
     private func injectUnicodeString(_ text: String) {
         let utf16 = Array(text.utf16)
         guard !utf16.isEmpty,
-              let src = CGEventSource(stateID: .hidSystemState),
-              let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
-              let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else {
+              let src = CGEventSource(stateID: .hidSystemState) else {
             return
         }
 
-        down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-        up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+        var offset = 0
+        while offset < utf16.count {
+            var end = min(utf16.count, offset + 16)
+            if end < utf16.count, (0xD800...0xDBFF).contains(utf16[end - 1]) {
+                end -= 1
+            }
+            if end == offset {
+                end = min(utf16.count, offset + 2)
+            }
+            let chunk = Array(utf16[offset..<end])
+            offset = end
+            guard let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else {
+                continue
+            }
+            down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+            up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+            chunk.withUnsafeBufferPointer { buf in
+                guard let base = buf.baseAddress else { return }
+                down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
+                up.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
+            }
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+        }
+    }
 
-        down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+    private func injectMultilineText(_ text: String) {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let segments = normalized.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" })
+        guard let src = CGEventSource(stateID: .hidSystemState) else { return }
+        let vkReturn = CGKeyCode(kVK_Return)
+        for (idx, segment) in segments.enumerated() {
+            if !segment.isEmpty {
+                injectUnicodeString(String(segment))
+            }
+            if idx < segments.count - 1,
+               let down = CGEvent(keyboardEventSource: src, virtualKey: vkReturn, keyDown: true),
+               let up = CGEvent(keyboardEventSource: src, virtualKey: vkReturn, keyDown: false) {
+                down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+                up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
+        }
+    }
 
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+    private func injectLeftArrows(count: Int) {
+        guard count > 0, let src = CGEventSource(stateID: .hidSystemState) else { return }
+        let vkLeft = CGKeyCode(kVK_LeftArrow)
+        for _ in 0..<count {
+            guard let down = CGEvent(keyboardEventSource: src, virtualKey: vkLeft, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: src, virtualKey: vkLeft, keyDown: false) else {
+                continue
+            }
+            down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+            up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+        }
     }
 
     private static func unicodeString(from event: CGEvent) -> String? {

@@ -89,7 +89,7 @@ public struct DomainLexiconPack: Identifiable, Equatable, Sendable {
         traction tradeoff transformation typography unification usability validation value versatility
         viability visibility visualization walkthrough whitespace wireframe workshop
         """),
-        builtIn("academic_science", "Academic & Scientific Writing", "Research methods, publication, and scientific argument", """
+        builtIn("academic_science", "Academic & Scientific Writing", "Research methods, papers, and scientific prose", """
         abduction abscissa absorption abstract abstraction academia acoustics adjunction admissibility
         adsorption aerodynamics ambiguity anthropogenic antithesis apparatus applicability asymmetry
         attenuation axiom axiomatic background bibliographic bibliography biogeography causality caveat

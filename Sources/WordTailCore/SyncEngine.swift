@@ -12,6 +12,9 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
     public var phrases: PhrasePredictor.SyncShard
     public var insights: TypingHabitTracker.SyncShard
     public var keyStatsDays: [String: DailyKeyStatsRecord]
+    public var domainPacks: DomainPackStore.SyncShard?
+    public var appProfiles: AppProfileStore.SyncShard?
+    public var snippets: SnippetStore.SyncShard?
 
     public init(
         schemaVersion: Int = 1,
@@ -23,7 +26,10 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
         corrections: AdaptiveCorrectionStore.SyncShard,
         phrases: PhrasePredictor.SyncShard,
         insights: TypingHabitTracker.SyncShard,
-        keyStatsDays: [String: DailyKeyStatsRecord]
+        keyStatsDays: [String: DailyKeyStatsRecord],
+        domainPacks: DomainPackStore.SyncShard? = nil,
+        appProfiles: AppProfileStore.SyncShard? = nil,
+        snippets: SnippetStore.SyncShard? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.deviceID = deviceID
@@ -35,6 +41,9 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
         self.phrases = phrases
         self.insights = insights
         self.keyStatsDays = keyStatsDays
+        self.domainPacks = domainPacks
+        self.appProfiles = appProfiles
+        self.snippets = snippets
     }
 }
 
@@ -101,6 +110,9 @@ public final class SyncEngine {
     private let phrasePredictor: PhrasePredictor
     private let habitTracker: TypingHabitTracker
     private let keyStatsStore: KeyStatsStore
+    private let domainPackStore: DomainPackStore?
+    private let appProfileStore: AppProfileStore?
+    private let snippetStore: SnippetStore?
     private let defaults: UserDefaults
     private let localCacheURL: URL
     private let queue = DispatchQueue(label: "app.wordtail.macos.sync", qos: .utility)
@@ -120,6 +132,9 @@ public final class SyncEngine {
         phrasePredictor: PhrasePredictor,
         habitTracker: TypingHabitTracker,
         keyStatsStore: KeyStatsStore,
+        domainPackStore: DomainPackStore? = nil,
+        appProfileStore: AppProfileStore? = nil,
+        snippetStore: SnippetStore? = nil,
         defaults: UserDefaults = .standard,
         overrideDeviceID: String? = nil,
         localCacheURL: URL? = nil
@@ -129,6 +144,9 @@ public final class SyncEngine {
         self.phrasePredictor = phrasePredictor
         self.habitTracker = habitTracker
         self.keyStatsStore = keyStatsStore
+        self.domainPackStore = domainPackStore
+        self.appProfileStore = appProfileStore
+        self.snippetStore = snippetStore
         self.defaults = defaults
         self.deviceModel = Self.hardwareModelIdentifier()
 
@@ -314,7 +332,10 @@ public final class SyncEngine {
             corrections: adaptiveStore.exportLocalShard(),
             phrases: phrasePredictor.exportLocalShard(),
             insights: habitTracker.exportLocalShard(),
-            keyStatsDays: keyStatsStore.exportLocalDaysShard()
+            keyStatsDays: keyStatsStore.exportLocalDaysShard(),
+            domainPacks: domainPackStore?.exportSyncShard(),
+            appProfiles: appProfileStore?.exportLocalShard(),
+            snippets: snippetStore?.exportLocalShard()
         )
 
         let encoder = JSONEncoder()
@@ -343,6 +364,9 @@ public final class SyncEngine {
         var phraseShards: [String: PhrasePredictor.SyncShard] = [:]
         var insightShards: [String: TypingHabitTracker.SyncShard] = [:]
         var keyStatsShards: [String: [String: DailyKeyStatsRecord]] = [:]
+        var domainPackShards: [String: DomainPackStore.SyncShard] = [:]
+        var appProfileShards: [String: AppProfileStore.SyncShard] = [:]
+        var snippetShards: [String: SnippetStore.SyncShard] = [:]
         var claimedLegacyIDs = Set<String>()
 
         for (peerID, env) in envelopes where peerID != deviceID {
@@ -351,6 +375,15 @@ public final class SyncEngine {
             phraseShards[peerID] = env.phrases
             insightShards[peerID] = env.insights
             keyStatsShards[peerID] = env.keyStatsDays
+            if let domainPacks = env.domainPacks {
+                domainPackShards[peerID] = domainPacks
+            }
+            if let appProfiles = env.appProfiles {
+                appProfileShards[peerID] = appProfiles
+            }
+            if let snippets = env.snippets {
+                snippetShards[peerID] = snippets
+            }
             if let legacyID = env.legacyKeyStatsDeviceID, !legacyID.isEmpty {
                 claimedLegacyIDs.insert(legacyID)
             }
@@ -361,6 +394,15 @@ public final class SyncEngine {
         phrasePredictor.applyRemoteShards(phraseShards)
         habitTracker.applyRemoteShards(insightShards)
         keyStatsStore.applyRemoteDeviceDays(keyStatsShards, claimedLegacyDeviceIDs: claimedLegacyIDs)
+        if !domainPackShards.isEmpty {
+            domainPackStore?.applyRemoteShards(domainPackShards)
+        }
+        if !appProfileShards.isEmpty {
+            appProfileStore?.applyRemoteShards(appProfileShards)
+        }
+        if !snippetShards.isEmpty {
+            snippetStore?.applyRemoteShards(snippetShards)
+        }
     }
 
     // MARK: - File Coordination & Local Cache

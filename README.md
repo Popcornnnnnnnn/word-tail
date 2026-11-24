@@ -154,6 +154,21 @@ word-tail/
 
 ---
 
+## WordTail Pro (Open-Core Pack)
+
+Every feature in `v0.8.3` — inline Tab completion, multi-word phrase prediction, inline typo rescue, adaptive auto-correct & sentence capitalization, KeyStats, per-device iCloud/folder sync, and baseline calibration — remains **MIT open source and free forever**.
+
+The optional **Pro** tab adds offline Ed25519-licensed power packs (14-day zero-card local trial, zero network calls or accounts):
+
+- **Domain Vocabulary Packs:** 6 built-in specialized packs (AI/ML & Quant, Systems & DevOps, Biomedical, Legal/Finance, Product/Design, Academic Research) plus portable `.wordtailpack` JSON imports/exports.
+- **Snippet Studio & Macros:** Trigger-based expansion (`;date`, `;iso`, `;time`, `;meet`, `;pr`, `;clip`) supporting `{date}`, `{date:...}`, `{time}`, `{iso}`, `{weekday}`, `{clipboard}`, and `{cursor}` caret positioning.
+- **Per-App Writing Profiles & Bilingual CJK–English:** Automatic or preset-based rule overrides per app (`Casual Chat`, `Formal Docs`, `Engineering Chat`) alongside CJK–English completion boundaries and PanGu spacing on acceptance.
+- **Typing Wrapped & Exports:** Offline `3:4` and `16:9` Light/Dark PNG posters, CSV daily/per-app tables, and Markdown summaries.
+
+See [docs/MONETIZATION.md](docs/MONETIZATION.md) for offline licensing architecture and key generation details.
+
+---
+
 ## License
 
 Released under the [MIT License](LICENSE).

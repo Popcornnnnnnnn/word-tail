@@ -75,12 +75,16 @@ struct ProSettingsView: View {
     @Environment(\.colorScheme) private var scheme
     @Binding var state: WordTailProUIState
     let callbacks: ProSettingsCallbacks
+    var isStaticShowcase: Bool = false
 
     private let checkoutPlaceholder = URL(string: "https://popcornnn.xyz")!
     private let macros = ["{date}", "{time}", "{iso}", "{clipboard}", "{cursor}"]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 11) {
+            Text("WordTail Pro")
+                .font(.system(size: 16, weight: .semibold))
+
             licenseSection
             packSection.disabled(!isProUnlocked)
             snippetSection.disabled(!isProUnlocked)
@@ -109,13 +113,22 @@ struct ProSettingsView: View {
             "WordTail Pro Collector License & 14-Day Free Trial",
             subtitle: "Try all Pro features locally for 14 days. No card required."
         ) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(entitlementBadge.label)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .background(entitlementBadge.color.opacity(0.14), in: Capsule())
-                    .overlay { Capsule().strokeBorder(entitlementBadge.color.opacity(0.35)) }
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 10) {
+                    Text(entitlementBadge.label)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(entitlementBadge.color.opacity(0.14), in: Capsule())
+                        .overlay { Capsule().strokeBorder(entitlementBadge.color.opacity(0.35)) }
+                    Spacer(minLength: 8)
+                    if let status = state.statusMessage {
+                        Text(status)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(state.isErrorStatus ? LinearUI.warning : Color.secondary)
+                            .lineLimit(1)
+                    }
+                }
 
                 if case .licensed(let license) = state.entitlementState {
                     HStack {
@@ -128,10 +141,13 @@ struct ProSettingsView: View {
                     }
                 } else {
                     HStack(spacing: 8) {
-                        TextField("WTPRO-…", text: $state.licenseKeyDraft)
-                            .font(.system(size: 12.5, design: .monospaced))
-                            .accessibilityLabel("License key")
-                            .onSubmit(activateLicense)
+                        linearInputField(
+                            "WTPRO-…",
+                            text: $state.licenseKeyDraft,
+                            monospaced: true,
+                            accessibilityLabel: "License key",
+                            onSubmit: activateLicense
+                        )
                         LinearActionButton(title: "Activate", icon: "key", action: activateLicense)
                             .disabled(state.licenseKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
@@ -148,50 +164,69 @@ struct ProSettingsView: View {
                         }
                     }
 
-                    HStack(spacing: 12) {
-                        Link("Creem (International / Alipay) · placeholder", destination: checkoutPlaceholder)
-                        Link("面包多 · placeholder", destination: checkoutPlaceholder)
+                    HStack(spacing: 14) {
+                        externalLinkButton("Get Pro Key (Creem · International / Alipay)", url: checkoutPlaceholder)
+                        externalLinkButton("获取 Pro 激活码（面包多）", url: checkoutPlaceholder)
                     }
                     .font(.system(size: 11.5))
                 }
-
-                if let status = state.statusMessage {
-                    Text(status)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(state.isErrorStatus ? LinearUI.warning : Color.secondary)
-                }
             }
-            .padding(14)
+            .padding(10)
         }
     }
 
     private var packSection: some View {
         section("Domain Vocabulary Packs", subtitle: "Six built-in packs plus custom .wordtailpack files.") {
-            ForEach(state.packs) { pack in
-                HStack(spacing: 10) {
-                    rowLabel(pack.name, subtitle: pack.tagline)
-                    Spacer()
-                    if pack.isCustom { LinearKbd(label: "Custom") }
-                    Text("\(pack.wordCount.formatted()) words")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                    LinearSwitch(isOn: Binding(
-                        get: { state.packs.first { $0.id == pack.id }?.isEnabled ?? pack.isEnabled },
-                        set: { callbacks.setPackEnabled(pack.id, $0) }
-                    ))
-                    .accessibilityLabel(pack.name)
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+                spacing: 6
+            ) {
+                ForEach(state.packs) { pack in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 5) {
+                                Text(pack.name)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                    .lineLimit(1)
+                                Text("\(pack.wordCount.formatted()) words")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize()
+                                if pack.isCustom { LinearKbd(label: "Custom") }
+                            }
+                            Text(pack.tagline)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        LinearSwitch(isOn: Binding(
+                            get: { state.packs.first { $0.id == pack.id }?.isEnabled ?? pack.isEnabled },
+                            set: { callbacks.setPackEnabled(pack.id, $0) }
+                        ))
+                        .disabled(pack.isCustom)
+                        .help(pack.isCustom ? "Imported custom packs remain active while Pro is unlocked" : "Enable \(pack.name)")
+                        .accessibilityLabel(pack.name)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(LinearUI.hairline(scheme))
+                    }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                rowDivider
             }
+            .padding(10)
+
+            rowDivider
             HStack(spacing: 8) {
                 LinearActionButton(title: "Import .wordtailpack", icon: "tray.and.arrow.down", action: callbacks.importPack)
                 LinearActionButton(title: "Export", icon: "tray.and.arrow.up", action: callbacks.exportPacks)
                 Spacer()
             }
-            .padding(14)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
         }
     }
 
@@ -199,13 +234,19 @@ struct ProSettingsView: View {
         section("Snippet Studio & Macros") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    TextField("Trigger (e.g. ;sig)", text: $state.newSnippetTrigger)
-                        .font(.system(size: 12, design: .monospaced))
-                        .frame(width: 132)
-                    TextField("Title", text: $state.newSnippetTitle)
+                    linearInputField(
+                        "Trigger (e.g. ;sig)",
+                        text: $state.newSnippetTrigger,
+                        monospaced: true
+                    )
+                    .frame(width: 148)
+                    linearInputField("Title", text: $state.newSnippetTitle)
                 }
-                TextField("Body with {date} and {cursor}", text: $state.newSnippetBody, axis: .vertical)
-                    .lineLimit(2...5)
+                linearInputField(
+                    "Body with {date} and {cursor}",
+                    text: $state.newSnippetBody,
+                    multiline: true
+                )
                 HStack(spacing: 5) {
                     ForEach(macros, id: \.self) { LinearKbd(label: $0) }
                     Spacer()
@@ -218,7 +259,7 @@ struct ProSettingsView: View {
                 }
             }
             .font(.system(size: 12.5))
-            .padding(14)
+            .padding(10)
 
             ForEach(state.snippets) { snippet in
                 rowDivider
@@ -403,5 +444,59 @@ struct ProSettingsView: View {
             .fill(LinearUI.hairline(scheme))
             .frame(height: 1)
             .padding(.leading, 14)
+    }
+
+    @ViewBuilder
+    private func linearInputField(
+        _ placeholder: String,
+        text: Binding<String>,
+        monospaced: Bool = false,
+        multiline: Bool = false,
+        accessibilityLabel: String? = nil,
+        onSubmit: (() -> Void)? = nil
+    ) -> some View {
+        let font: Font = monospaced ? .system(size: 12, design: .monospaced) : .system(size: 12.5)
+        Group {
+            if isStaticShowcase {
+                let value = text.wrappedValue
+                Text(value.isEmpty ? placeholder : value)
+                    .font(font)
+                    .foregroundStyle(value.isEmpty ? Color.secondary.opacity(0.7) : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(multiline ? 3 : 1)
+            } else if multiline {
+                TextField(placeholder, text: text, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(font)
+                    .lineLimit(2...5)
+            } else {
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.plain)
+                    .font(font)
+                    .onSubmit { onSubmit?() }
+            }
+        }
+        .accessibilityLabel(accessibilityLabel ?? placeholder)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(LinearUI.controlBorder(scheme))
+        }
+    }
+
+    private func externalLinkButton(_ title: String, url: URL) -> some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9.5, weight: .semibold))
+            }
+            .foregroundStyle(LinearUI.accent)
+        }
+        .buttonStyle(.plain)
     }
 }
