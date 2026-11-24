@@ -201,8 +201,11 @@ final class LicenseAndPacksTests: XCTestCase {
         XCTAssertThrowsError(try store.importCustomPack(data: Data(count: 513 * 1_024))) {
             XCTAssertEqual($0 as? DomainPackStore.ImportError, .fileTooLarge)
         }
-        let words = (0...5_000).map { number in
-            "word" + String(decoding: [number / 676, number / 26 % 26, number % 26].map { UInt8(97 + $0) }, as: UTF8.self)
+        let words: [String] = (0...5_000).map { number in
+            let c1 = UInt8(97 + number / 676)
+            let c2 = UInt8(97 + (number / 26) % 26)
+            let c3 = UInt8(97 + number % 26)
+            return "word" + String(decoding: [c1, c2, c3], as: UTF8.self)
         }
         let input = CustomDomainPack(id: "large", name: "Large Pack", words: words)
         let pack = try store.importCustomPack(data: JSONEncoder().encode(input))
