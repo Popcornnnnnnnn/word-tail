@@ -487,6 +487,10 @@ final class TypingEngine {
             )
         }
         completer.bilingualCompletionEnabled = licenseManager.isUnlocked(.bilingualSpacing) && bilingualCompletionEnabled
+        completer.bilingualCompletionProvider = { [weak self] in
+            guard let self else { return false }
+            return self.licenseManager.isUnlocked(.bilingualSpacing) && self.bilingualCompletionEnabled
+        }
         completer.bilingualSpacingProvider = { [weak self] bundleID in
             self?.effectiveBilingualSpacing(bundleID: bundleID) ?? false
         }
@@ -935,6 +939,7 @@ final class TypingEngine {
         if overlay.isVisible,
            let match = overlay.currentMatch,
            !match.isTypoCorrection,
+           !match.isSnippet,
            match.suffix.contains(" "),
            keyCode == kVK_RightArrow,
            flags.contains(.maskAlternate),
@@ -995,9 +1000,15 @@ final class TypingEngine {
             let acceptedAppName = activeAppName ?? lastObservedAppName
 
             if match.isSnippet {
+                let capturedSnapshot = activeSnapshot
+                let trigger = match.prefix
                 let deleteCount = match.replacementDeleteCount
                 let expandedText = match.suffix
+                    .replacingOccurrences(of: "\r\n", with: "\n")
+                    .replacingOccurrences(of: "\r", with: "\n")
                 let cursorBackSteps = match.cursorBackSteps
+                let expectedCharAfter = activeSnapshot?.charAfterCursor
+                let bridgeEnabled = enableChromiumBridge
 
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
@@ -1007,19 +1018,61 @@ final class TypingEngine {
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    if deleteCount > 0 {
-                        self.injectBackspaces(count: deleteCount)
+                    guard let verified = self.axContext.verifyDestinationStillMatches(
+                        snapshot: capturedSnapshot,
+                        expectedBundleID: acceptedBundle,
+                        expectedTrigger: trigger,
+                        expectedCharAfter: expectedCharAfter,
+                        enableChromiumBridge: bridgeEnabled
+                    ) else {
+                        return
                     }
-                    self.injectMultilineText(expandedText)
-                    if cursorBackSteps > 0 {
-                        self.injectLeftArrows(count: cursorBackSteps)
+
+                    var insertedViaAX = false
+                    if let caretLoc = verified.caretLocation {
+                        insertedViaAX = self.axContext.replaceRangeViaAX(
+                            element: verified.element,
+                            caretLocation: caretLoc,
+                            trigger: trigger,
+                            replacement: expandedText,
+                            cursorBackSteps: cursorBackSteps
+                        )
                     }
+
+                    if !insertedViaAX {
+                        if deleteCount > 0 {
+                            self.injectBackspaces(count: deleteCount)
+                        }
+                        if expandedText.contains("\n") {
+                            self.injectMultilineTextViaPaste(expandedText)
+                            if cursorBackSteps > 0 {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(45)) { [weak self] in
+                                    guard let self else { return }
+                                    if let acceptedBundle,
+                                       self.axContext.effectiveFocusedApplication()?.bundleIdentifier != acceptedBundle {
+                                        return
+                                    }
+                                    self.injectLeftArrows(count: cursorBackSteps)
+                                }
+                            }
+                        } else {
+                            self.injectUnicodeString(expandedText)
+                            if cursorBackSteps > 0 {
+                                self.injectLeftArrows(count: cursorBackSteps)
+                            }
+                        }
+                    }
+
+                    let netSaved = max(1, expandedText.count - deleteCount)
                     if self.enableKeyStatsTracking {
                         self.keyStatsStore.recordWordTailCompletion(
-                            charsSaved: max(1, expandedText.count - deleteCount),
+                            charsSaved: netSaved,
                             appBundleID: acceptedBundle,
                             appName: acceptedAppName
                         )
+                    }
+                    if self.enableHabitLearning {
+                        self.habitTracker.recordSnippetAccepted(charsSaved: netSaved)
                     }
                     self.phrasePredictor.resetSentenceWindow()
                 }
@@ -1463,9 +1516,9 @@ final class TypingEngine {
             let shouldTriggerSnippetKey: Bool
             if licenseManager.isUnlocked(.snippetStudio),
                let lastChar = typed.last,
-               lastChar.isASCII && (lastChar.isNumber || lastChar == "-" || lastChar == "_") {
-                let trailingToken = rollingBuffer.split(whereSeparator: \.isWhitespace).last
-                shouldTriggerSnippetKey = trailingToken?.first.map { ";/:!@#\\".contains($0) } ?? false
+               lastChar.isASCII && !lastChar.isWhitespace {
+                let trailingToken = rollingBuffer.split(whereSeparator: \.isWhitespace).last.map(String.init) ?? ""
+                shouldTriggerSnippetKey = SnippetStore.isValidTrigger(trailingToken)
             } else {
                 shouldTriggerSnippetKey = false
             }
@@ -1796,24 +1849,47 @@ final class TypingEngine {
         }
     }
 
-    private func injectMultilineText(_ text: String) {
-        let normalized = text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-        let segments = normalized.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" })
-        guard let src = CGEventSource(stateID: .hidSystemState) else { return }
-        let vkReturn = CGKeyCode(kVK_Return)
-        for (idx, segment) in segments.enumerated() {
-            if !segment.isEmpty {
-                injectUnicodeString(String(segment))
+    private func injectMultilineTextViaPaste(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        let savedItems: [[(NSPasteboard.PasteboardType, Data)]] = (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in
+                guard let data = item.data(forType: type) else { return nil }
+                return (type, data)
             }
-            if idx < segments.count - 1,
-               let down = CGEvent(keyboardEventSource: src, virtualKey: vkReturn, keyDown: true),
-               let up = CGEvent(keyboardEventSource: src, virtualKey: vkReturn, keyDown: false) {
-                down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-                up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-                down.post(tap: .cghidEventTap)
-                up.post(tap: .cghidEventTap)
+        }
+
+        pasteboard.clearContents()
+        let tempItem = NSPasteboardItem()
+        tempItem.setString(text, forType: .string)
+        tempItem.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        tempItem.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.AutoGeneratedType"))
+        pasteboard.writeObjects([tempItem])
+        let transientChangeCount = pasteboard.changeCount
+
+        if let src = CGEventSource(stateID: .hidSystemState),
+           let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
+           let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false) {
+            down.flags = .maskCommand
+            up.flags = .maskCommand
+            down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+            up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) {
+            guard pasteboard.changeCount == transientChangeCount else { return }
+            pasteboard.clearContents()
+            let restored = savedItems.compactMap { pairs -> NSPasteboardItem? in
+                guard !pairs.isEmpty else { return nil }
+                let item = NSPasteboardItem()
+                for (type, data) in pairs {
+                    item.setData(data, forType: type)
+                }
+                return item
+            }
+            if !restored.isEmpty {
+                pasteboard.writeObjects(restored)
             }
         }
     }

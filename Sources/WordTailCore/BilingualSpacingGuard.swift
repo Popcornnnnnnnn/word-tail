@@ -30,6 +30,10 @@ public enum BilingualSpacingGuard {
             || (bilingualEnabled && (isCJKCharacter(boundary) || isCJKPunctuation(boundary)))
     }
 
+    public static func shouldAllowTrailingBoundary(_ boundary: Character, bilingualEnabled: Bool) -> Bool {
+        bilingualEnabled && (isCJKCharacter(boundary) || isCJKPunctuation(boundary))
+    }
+
     public static func needsLeadingSpace(
         beforeWordStartBoundary boundary: Character?,
         bilingualSpacingEnabled: Bool

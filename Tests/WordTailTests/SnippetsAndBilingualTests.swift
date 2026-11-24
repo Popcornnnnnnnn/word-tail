@@ -191,6 +191,48 @@ final class SnippetsAndBilingualTests: XCTestCase {
         }
     }
 
+    func testPunctuationTriggersTombstoneScrubbingTieBreakerAndHabitAcceptance() throws {
+        let dirA = temporaryDirectory()
+        let dirB = temporaryDirectory()
+        let storeA = SnippetStore(directoryURL: dirA)
+        let storeB = SnippetStore(directoryURL: dirB)
+
+        // 1. Punctuation-ending triggers are valid and match cleanly
+        XCTAssertTrue(SnippetStore.isValidTrigger(";ok!"))
+        XCTAssertTrue(SnippetStore.isValidTrigger(";v2."))
+        XCTAssertTrue(storeA.addOrUpdateSnippet(TextSnippet(id: ";ok!", trigger: ";ok!", title: "ACK", body: "Sounds good!")))
+        XCTAssertEqual(storeA.match(textBeforeCursor: "hi ;ok!", bundleID: nil)?.expandedText, "Sounds good!")
+
+        // 2. Deletion clears sensitive body/title/trigger from tombstone sync shards
+        XCTAssertTrue(storeA.addOrUpdateSnippet(TextSnippet(id: ";secret", trigger: ";secret", title: "Private", body: "Confidential Token 123")))
+        XCTAssertTrue(storeA.deleteSnippet(id: ";secret"))
+        let deletedShardRecord = try XCTUnwrap(storeA.exportLocalShard().records[";secret"])
+        XCTAssertTrue(deletedShardRecord.isDeleted)
+        XCTAssertEqual(deletedShardRecord.trigger, "")
+        XCTAssertEqual(deletedShardRecord.title, "")
+        XCTAssertEqual(deletedShardRecord.body, "")
+
+        // 3. Deterministic tie-breaker for equal-timestamp distinct live edits converges across both Macs
+        let fixedTime: TimeInterval = 2_000_000_000
+        let liveA = TextSnippet(id: ";sync", trigger: ";sync", title: "Alpha", body: "Body Alpha", updatedAt: fixedTime)
+        let liveB = TextSnippet(id: ";sync", trigger: ";sync", title: "Beta", body: "Body Zebra", updatedAt: fixedTime)
+        storeA.applyRemoteShards(["seedA": SnippetStore.SyncShard(records: [";sync": liveA])])
+        storeB.applyRemoteShards(["seedB": SnippetStore.SyncShard(records: [";sync": liveB])])
+        storeA.applyRemoteShards(["b": storeB.exportLocalShard()])
+        storeB.applyRemoteShards(["a": storeA.exportLocalShard()])
+        XCTAssertEqual(storeA.match(textBeforeCursor: ";sync", bundleID: nil)?.expandedText, "Body Zebra")
+        XCTAssertEqual(storeB.match(textBeforeCursor: ";sync", bundleID: nil)?.expandedText, "Body Zebra")
+
+        // 4. recordSnippetAccepted increments Wrapped savings without storing body words in insights
+        let tracker = TypingHabitTracker(fileURL: dirA.appendingPathComponent("insights.json"))
+        tracker.recordSnippetAccepted(charsSaved: 37, persistAsync: false)
+        let insights = tracker.snapshot()
+        XCTAssertEqual(insights.tabsAccepted, 1)
+        XCTAssertEqual(insights.charactersSaved, 37)
+        XCTAssertTrue(insights.topSavedWords.isEmpty)
+        XCTAssertTrue(insights.typoTraps.isEmpty)
+    }
+
     private func temporaryDirectory() -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }

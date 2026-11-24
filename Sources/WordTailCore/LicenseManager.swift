@@ -36,6 +36,7 @@ public final class LicenseManager: ProEntitlementProviding {
     private let trialConsumedKey: String
     private let licenseKey: String
     private let nowProvider: () -> Date
+    private var cachedVerifiedLicense: (key: String, payload: ProLicensePayload)?
 
     public init(
         publicKey: Curve25519.Signing.PublicKey = LicenseManager.loadDefaultPublicKey(),
@@ -99,14 +100,20 @@ public final class LicenseManager: ProEntitlementProviding {
     public func activate(licenseKey: String) -> Result<ProLicensePayload, LicenseActivationError> {
         let key = licenseKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let result = verify(key)
-        if case .success = result {
-            Self.lock.withLock { defaults.set(key, forKey: self.licenseKey) }
+        if case .success(let payload) = result {
+            Self.lock.withLock {
+                defaults.set(key, forKey: self.licenseKey)
+                cachedVerifiedLicense = (key, payload)
+            }
         }
         return result
     }
 
     public func deactivateLicense() {
-        Self.lock.withLock { defaults.removeObject(forKey: licenseKey) }
+        Self.lock.withLock {
+            defaults.removeObject(forKey: licenseKey)
+            cachedVerifiedLicense = nil
+        }
     }
 
     public static func sign(
@@ -130,9 +137,20 @@ public final class LicenseManager: ProEntitlementProviding {
     }
 
     private func verifiedStoredLicense() -> (key: String, payload: ProLicensePayload)? {
-        guard let key = defaults.string(forKey: licenseKey),
-              case .success(let payload) = verify(key) else { return nil }
-        return (key, payload)
+        guard let key = defaults.string(forKey: licenseKey) else {
+            cachedVerifiedLicense = nil
+            return nil
+        }
+        if let cached = cachedVerifiedLicense, cached.key == key {
+            return cached
+        }
+        guard case .success(let payload) = verify(key) else {
+            cachedVerifiedLicense = nil
+            return nil
+        }
+        let pair = (key: key, payload: payload)
+        cachedVerifiedLicense = pair
+        return pair
     }
 
     private func verify(_ key: String) -> Result<ProLicensePayload, LicenseActivationError> {

@@ -226,9 +226,15 @@ public final class SnippetStore {
     public func deleteSnippet(id: String) -> Bool {
         lock.withLock {
             guard var snippet = records[id] else { return false }
-            guard !snippet.isDeleted else { return true }
+            guard !snippet.isDeleted || !snippet.body.isEmpty || !snippet.title.isEmpty || !snippet.trigger.isEmpty else {
+                return true
+            }
             snippet.isDeleted = true
             snippet.isEnabled = false
+            snippet.trigger = ""
+            snippet.title = ""
+            snippet.body = ""
+            snippet.scopedBundleIDs = []
             return saveLocalEdit(snippet)
         }
     }
@@ -281,9 +287,8 @@ public final class SnippetStore {
         var changedIDs = Set<String>()
         for shard in shards {
             for (id, incoming) in shard.records where Self.isValidRecord(incoming, id: id) {
-                if let current = snapshot[id] {
-                    let deletionWinsTie = incoming.updatedAt == current.updatedAt && incoming.isDeleted && !current.isDeleted
-                    guard incoming.updatedAt > current.updatedAt || deletionWinsTie else { continue }
+                if let current = snapshot[id], !Self.shouldIncomingWin(incoming, over: current) {
+                    continue
                 }
                 snapshot[id] = incoming
                 changedIDs.insert(id)
@@ -291,6 +296,20 @@ public final class SnippetStore {
         }
         if !changedIDs.isEmpty { try commit(snapshot) }
         return changedIDs.count
+    }
+
+    private static func shouldIncomingWin(_ incoming: TextSnippet, over current: TextSnippet) -> Bool {
+        if incoming.updatedAt != current.updatedAt {
+            return incoming.updatedAt > current.updatedAt
+        }
+        if incoming.isDeleted != current.isDeleted {
+            return incoming.isDeleted
+        }
+        if incoming.body != current.body { return incoming.body > current.body }
+        if incoming.title != current.title { return incoming.title > current.title }
+        if incoming.trigger != current.trigger { return incoming.trigger > current.trigger }
+        if incoming.isEnabled != current.isEnabled { return incoming.isEnabled && !current.isEnabled }
+        return current.scopedBundleIDs.lexicographicallyPrecedes(incoming.scopedBundleIDs)
     }
 
     private func commit(_ snapshot: [String: TextSnippet]) throws {

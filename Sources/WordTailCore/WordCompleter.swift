@@ -105,6 +105,7 @@ public final class WordCompleter {
     public var domainLexiconProvider: ((_ lowercasedPrefix: String, _ bundleID: String?) -> [String])?
     public var snippetMatcher: ((_ textBeforeCursor: String, _ bundleID: String?) -> SnippetMatch?)?
     public var bilingualCompletionEnabled: Bool = false
+    public var bilingualCompletionProvider: (() -> Bool)?
     public var bilingualSpacingProvider: ((_ bundleID: String?) -> Bool)?
     public var inlineTypoFixProvider: ((_ bundleID: String?) -> Bool)?
     public var phrasePredictionProvider: ((_ bundleID: String?) -> Bool)?
@@ -217,9 +218,10 @@ public final class WordCompleter {
         }
 
         // Ignore URLs, paths, emails, flags, domains, and snake_case identifiers.
+        let allowBilingual = bilingualCompletionProvider?() ?? bilingualCompletionEnabled
         if wordStart > 0 {
             let boundary = chars[wordStart - 1]
-            if !BilingualSpacingGuard.shouldAllowLeadingBoundary(boundary, bilingualEnabled: bilingualCompletionEnabled) {
+            if !BilingualSpacingGuard.shouldAllowLeadingBoundary(boundary, bilingualEnabled: allowBilingual) {
                 return []
             }
         }
@@ -238,7 +240,9 @@ public final class WordCompleter {
                   chars[chars.count - 2] != " " else {
                 return []
             }
-            if let after = effectiveCharAfter, !Self.allowedTrailingChars.contains(after) {
+            if let after = effectiveCharAfter,
+               !Self.allowedTrailingChars.contains(after),
+               !BilingualSpacingGuard.shouldAllowTrailingBoundary(after, bilingualEnabled: allowBilingual) {
                 guard Self.isASCIILetter(after),
                       let afterLine = textAfterCursorOnLine,
                       Self.isInsertingBeforeSeparateWord(prefix: "", afterSlice: afterLine) else {
@@ -254,7 +258,9 @@ public final class WordCompleter {
         }
 
         // Case 2: Mid-word — validate trailing boundary first so neither phrase nor word completions fire inside a single word ("kn|ow").
-        if let after = effectiveCharAfter, !Self.allowedTrailingChars.contains(after) {
+        if let after = effectiveCharAfter,
+           !Self.allowedTrailingChars.contains(after),
+           !BilingualSpacingGuard.shouldAllowTrailingBoundary(after, bilingualEnabled: allowBilingual) {
             // Allow mid-sentence insertion directly against the start of an existing word ("just al|behind" or "to kn|the")
             // ONLY when `trailingWord` is a complete standalone word AND `prefix + trailingWord` is NOT a single valid word!
             guard Self.isASCIILetter(after),

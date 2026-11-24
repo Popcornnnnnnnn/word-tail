@@ -488,6 +488,7 @@ enum ShowcaseExporter {
             profiles: proProfiles,
             bilingualCompletionEnabled: true,
             bilingualSpacingEnabled: true,
+            activeProfileTargetName: "Codex (ChatGPT)",
             wrappedSummary: proSummary,
             posterAspect: .portrait3x4,
             posterColorScheme: .dark

@@ -1097,7 +1097,8 @@ final class SettingsViewModel: ObservableObject {
             )
         }
 
-        let allStats = engine.keyStatsStore.snapshot(for: .allTime, deviceScope: .allDevices)
+        let targetApp = engine.lastObservedTargetApp ?? lastTargetApp
+        let allStats = engine.keyStatsStore.allTimeReportSnapshot(deviceScope: .allDevices)
         let allInsights = engine.insightsSnapshot()
         let wrapped = TypingReportExporter.summarize(keyStats: allStats, insights: allInsights)
 
@@ -1112,6 +1113,7 @@ final class SettingsViewModel: ObservableObject {
         proUI.profiles = profileItems
         proUI.bilingualCompletionEnabled = engine.bilingualCompletionEnabled
         proUI.bilingualSpacingEnabled = engine.bilingualSpacingEnabled
+        proUI.activeProfileTargetName = targetApp.map { Self.friendlyAppTitle(bundleID: $0.bundleID, rawName: $0.name) }
         proUI.wrappedSummary = wrapped
     }
 
@@ -1183,36 +1185,10 @@ final class SettingsViewModel: ObservableObject {
                 }
             },
             exportPacks: { [weak self] in
-                Task { @MainActor [weak self] in
-                    guard let self, let engine = self.engine else { return }
-                    let panel = NSSavePanel()
-                    panel.allowedContentTypes = [UTType(filenameExtension: "wordtailpack") ?? .json, .json]
-                    let latestCustom = engine.domainPackStore.customPacks.last
-                    panel.nameFieldStringValue = "\(latestCustom?.id ?? "custom-domain-pack").wordtailpack"
-                    guard panel.runModal() == .OK, let url = panel.url else { return }
-                    do {
-                        let data: Data
-                        let note: String
-                        if let latestCustom {
-                            data = try engine.domainPackStore.exportCustomPackJSON(id: latestCustom.id)
-                            note = "Exported \"\(latestCustom.name)\" to \(url.lastPathComponent)."
-                        } else {
-                            let sample = CustomDomainPack(
-                                id: "custom-team-pack",
-                                name: "Custom Team Vocabulary",
-                                words: Array((DomainLexiconPack.builtInPacks.first?.words ?? ["algorithm", "telemetry"]).prefix(20))
-                            )
-                            let encoder = JSONEncoder()
-                            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                            data = try encoder.encode(sample)
-                            note = "Exported starter template \(url.lastPathComponent)."
-                        }
-                        try data.write(to: url, options: .atomic)
-                        self.refreshProUI(statusMessage: note)
-                    } catch {
-                        self.refreshProUI(statusMessage: "Export failed: \(error.localizedDescription)", isError: true)
-                    }
-                }
+                self?.exportPackPanel(packID: nil)
+            },
+            exportCustomPack: { [weak self] id in
+                self?.exportPackPanel(packID: id)
             },
             addSnippet: { [weak self] rawTrigger, rawTitle, rawBody in
                 guard let self, let engine = self.engine else { return }
@@ -1255,13 +1231,24 @@ final class SettingsViewModel: ObservableObject {
                 case .prose: .formalDocs
                 case .bilingual: .casualChat
                 }
-                let target = self.lastTargetApp
-                    ?? engine.lastObservedTargetApp
-                    ?? self.appOffsets.first.map { ($0.displayName, $0.bundleID) }
-                    ?? ("Notes", "com.apple.Notes")
-                engine.appProfileStore.applyPreset(mapped, toBundleID: target.bundleID, displayName: target.name)
+                guard let target = engine.lastObservedTargetApp ?? self.lastTargetApp else {
+                    self.refreshProUI(
+                        statusMessage: "Switch to another app briefly so WordTail detects the target app first.",
+                        isError: true
+                    )
+                    return
+                }
+                let friendly = Self.friendlyAppTitle(bundleID: target.bundleID, rawName: target.name)
+                engine.appProfileStore.applyPreset(mapped, toBundleID: target.bundleID, displayName: friendly)
                 engine.syncCompleterProState()
-                self.refreshProUI(statusMessage: "Applied \(mapped.title) profile to \(target.name).")
+                self.refreshProUI(statusMessage: "Applied \(mapped.title) profile to \(friendly).")
+                self.pushSyncInBackgroundIfEnabled()
+            },
+            deleteProfile: { [weak self] bundleID in
+                guard let self, let engine = self.engine else { return }
+                engine.appProfileStore.delete(bundleID: bundleID)
+                engine.syncCompleterProState()
+                self.refreshProUI(statusMessage: "Restored global settings for \(bundleID).")
                 self.pushSyncInBackgroundIfEnabled()
             },
             exportPoster: { [weak self] aspect, colorScheme in
@@ -1304,8 +1291,8 @@ final class SettingsViewModel: ObservableObject {
                     panel.allowedContentTypes = [.commaSeparatedText]
                     panel.nameFieldStringValue = "WordTail-Typing-Stats.csv"
                     guard panel.runModal() == .OK, let url = panel.url else { return }
-                    let snapshot = engine.keyStatsStore.snapshot(for: .allTime, deviceScope: .allDevices)
-                    let data = TypingReportExporter.csv(dailyPoints: snapshot.dailyTrend, appSummaries: snapshot.topApps)
+                    let reportSnap = engine.keyStatsStore.allTimeReportSnapshot(deviceScope: .allDevices)
+                    let data = TypingReportExporter.csv(dailyPoints: reportSnap.dailyTrend, appSummaries: reportSnap.topApps)
                     do {
                         try data.write(to: url, options: .atomic)
                         self.refreshProUI(statusMessage: "Saved CSV to \(url.lastPathComponent).")
@@ -1325,10 +1312,12 @@ final class SettingsViewModel: ObservableObject {
                     panel.allowedContentTypes = [.plainText]
                     panel.nameFieldStringValue = "WordTail-Typing-Wrapped.md"
                     guard panel.runModal() == .OK, let url = panel.url else { return }
-                    let snapshot = engine.keyStatsStore.snapshot(for: .allTime, deviceScope: .allDevices)
+                    let reportSnap = engine.keyStatsStore.allTimeReportSnapshot(deviceScope: .allDevices)
+                    let freshInsights = engine.insightsSnapshot()
+                    let summary = TypingReportExporter.summarize(keyStats: reportSnap, insights: freshInsights)
                     let markdown = TypingReportExporter.markdownReport(
-                        summary: self.proUI.wrappedSummary,
-                        dailyPoints: snapshot.dailyTrend
+                        summary: summary,
+                        dailyPoints: reportSnap.dailyTrend
                     )
                     do {
                         try Data(markdown.utf8).write(to: url, options: .atomic)
@@ -1339,6 +1328,41 @@ final class SettingsViewModel: ObservableObject {
                 }
             }
         )
+    }
+
+    private func exportPackPanel(packID: String?) {
+        Task { @MainActor [weak self] in
+            guard let self, let engine = self.engine else { return }
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [UTType(filenameExtension: "wordtailpack") ?? .json, .json]
+            let targetCustom: CustomDomainPack? = packID.flatMap { id in
+                engine.domainPackStore.customPacks.first(where: { $0.id == id })
+            } ?? engine.domainPackStore.customPacks.first
+            panel.nameFieldStringValue = "\(targetCustom?.id ?? "custom-domain-pack").wordtailpack"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                let data: Data
+                let note: String
+                if let targetCustom {
+                    data = try engine.domainPackStore.exportCustomPackJSON(id: targetCustom.id)
+                    note = "Exported \"\(targetCustom.name)\" to \(url.lastPathComponent)."
+                } else {
+                    let sample = CustomDomainPack(
+                        id: "custom-team-pack",
+                        name: "Custom Team Vocabulary",
+                        words: Array((DomainLexiconPack.builtInPacks.first?.words ?? ["algorithm", "telemetry"]).prefix(20))
+                    )
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    data = try encoder.encode(sample)
+                    note = "Exported starter template \(url.lastPathComponent)."
+                }
+                try data.write(to: url, options: .atomic)
+                self.refreshProUI(statusMessage: note)
+            } catch {
+                self.refreshProUI(statusMessage: "Export failed: \(error.localizedDescription)", isError: true)
+            }
+        }
     }
 
     private static func summarizeWritingProfile(_ profile: AppWritingProfile) -> String {
@@ -1397,10 +1421,12 @@ final class SettingsViewModel: ObservableObject {
             setPackEnabled: { _, _ in },
             importPack: {},
             exportPacks: {},
+            exportCustomPack: { _ in },
             addSnippet: { _, _, _ in },
             setSnippetEnabled: { _, _ in },
             deleteSnippet: { _ in },
             applyProfilePreset: { _ in },
+            deleteProfile: { _ in },
             exportPoster: { _, _ in },
             exportCSV: {},
             exportMarkdown: {}

@@ -16,6 +16,13 @@ struct CaretSnapshot {
     let font: NSFont
     let rawAXRect: CGRect
     let primaryScreenHeight: CGFloat
+    let focusedElement: AXUIElement?
+    let caretLocation: Int?
+}
+
+struct VerifiedSnippetDestination {
+    let element: AXUIElement
+    let caretLocation: Int?
 }
 
 final class AXCaretContext {
@@ -251,7 +258,9 @@ final class AXCaretContext {
                     placement: placement,
                     font: font,
                     rawAXRect: axRect,
-                    primaryScreenHeight: primaryHeight
+                    primaryScreenHeight: primaryHeight,
+                    focusedElement: element,
+                    caretLocation: selectedRange.location
                 )
             }
         }
@@ -798,8 +807,122 @@ final class AXCaretContext {
             placement: placement,
             font: font,
             rawAXRect: axRect,
-            primaryScreenHeight: primaryHeight
+            primaryScreenHeight: primaryHeight,
+            focusedElement: element,
+            caretLocation: nil
         )
+    }
+
+    func verifyDestinationStillMatches(
+        snapshot: CaretSnapshot?,
+        expectedBundleID: String?,
+        expectedTrigger: String,
+        expectedCharAfter: Character?,
+        enableChromiumBridge: Bool
+    ) -> VerifiedSnippetDestination? {
+        guard AXIsProcessTrusted(),
+              let snapshot,
+              let expectedElem = snapshot.focusedElement,
+              let app = effectiveFocusedApplication(),
+              app.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            return nil
+        }
+        if let expectedBundleID, app.bundleIdentifier != expectedBundleID {
+            return nil
+        }
+        guard let element = resolveFocusedTextElement(app: app, enableChromiumBridge: enableChromiumBridge),
+              CFEqual(element, expectedElem) else {
+            return nil
+        }
+
+        if let expectedLoc = snapshot.caretLocation {
+            guard let curRange = copySelectedRange(element),
+                  curRange.length == 0,
+                  curRange.location == expectedLoc else {
+                return nil
+            }
+            let triggerUTF16Len = (expectedTrigger as NSString).length
+            guard curRange.location >= triggerUTF16Len else { return nil }
+            let actualTrigger: String? = stringForRange(
+                element,
+                location: curRange.location - triggerUTF16Len,
+                length: triggerUTF16Len
+            ) ?? copyStringAttribute(element, attribute: kAXValueAttribute as String).flatMap { fullValue in
+                let ns = fullValue as NSString
+                guard curRange.location <= ns.length else { return nil }
+                return ns.substring(with: NSRange(location: curRange.location - triggerUTF16Len, length: triggerUTF16Len))
+            }
+            if let actualTrigger {
+                guard actualTrigger == expectedTrigger else { return nil }
+            } else if !snapshot.isFallbackText {
+                return nil
+            }
+            if let expectedCharAfter,
+               let afterNow = stringForRange(element, location: curRange.location, length: 1)?.first,
+               afterNow != expectedCharAfter {
+                return nil
+            }
+            return VerifiedSnippetDestination(element: element, caretLocation: curRange.location)
+        }
+
+        if let selectedRange = copySelectedRange(element), selectedRange.length != 0 {
+            return nil
+        }
+        if let recheck = capture(
+            targetApp: app,
+            fallbackBuffer: expectedTrigger,
+            enableChromiumBridge: enableChromiumBridge,
+            verticalAdjustment: 0
+        ) {
+            guard let recheckElem = recheck.focusedElement, CFEqual(recheckElem, expectedElem) else {
+                return nil
+            }
+            if !recheck.isFallbackText {
+                guard recheck.textBeforeCursor.hasSuffix(expectedTrigger) else { return nil }
+                if recheck.charAfterCursor != expectedCharAfter { return nil }
+            }
+        }
+        return VerifiedSnippetDestination(element: element, caretLocation: nil)
+    }
+
+    func replaceRangeViaAX(
+        element: AXUIElement,
+        caretLocation: Int,
+        trigger: String,
+        replacement: String,
+        cursorBackSteps: Int
+    ) -> Bool {
+        let triggerUTF16Count = (trigger as NSString).length
+        guard caretLocation >= triggerUTF16Count else { return false }
+
+        let startLoc = caretLocation - triggerUTF16Count
+        var replaceRange = CFRange(location: startLoc, length: triggerUTF16Count)
+        guard let replaceRangeVal = AXValueCreate(.cfRange, &replaceRange),
+              AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, replaceRangeVal) == .success else {
+            return false
+        }
+
+        if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, replacement as CFString) != .success {
+            var restoreRange = CFRange(location: caretLocation, length: 0)
+            if let restoreVal = AXValueCreate(.cfRange, &restoreRange) {
+                _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, restoreVal)
+            }
+            return false
+        }
+
+        let replacementUTF16Len = (replacement as NSString).length
+        if let verified = stringForRange(element, location: startLoc, length: replacementUTF16Len),
+           verified != replacement {
+            return false
+        }
+
+        let targetCharCount = max(0, replacement.count - cursorBackSteps)
+        let finalUTF16Offset = (String(replacement.prefix(targetCharCount)) as NSString).length
+        var finalRange = CFRange(location: startLoc + finalUTF16Offset, length: 0)
+        if let finalVal = AXValueCreate(.cfRange, &finalRange) {
+            _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, finalVal)
+        }
+        return true
     }
 
     /// Live lightweight inspection called on `Space` so even 1- or 2-letter sentence starters ("do ", "in ", "we ")

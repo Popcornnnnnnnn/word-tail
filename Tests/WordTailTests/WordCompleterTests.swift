@@ -1922,14 +1922,41 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertEqual(packMatch.suffix, "dasticity")
         XCTAssertFalse(packMatch.needsLeadingSpace)
 
-        // 2. Bilingual CJK-English boundaries & PanGu leading space
+        // 2. Bilingual CJK-English boundaries (leading & trailing), PanGu spacing, and live trial lock
         XCTAssertNil(completer.complete(textBeforeCursor: "请看heteroske"))
-        completer.bilingualCompletionEnabled = true
+        var liveBilingualUnlocked = true
+        completer.bilingualCompletionEnabled = false
+        completer.bilingualCompletionProvider = { liveBilingualUnlocked }
         completer.bilingualSpacingProvider = { _ in true }
         let biMatch = try XCTUnwrap(completer.complete(textBeforeCursor: "请看heteroske"))
         XCTAssertEqual(biMatch.fullWord, "heteroskedasticity")
         XCTAssertTrue(biMatch.needsLeadingSpace)
+
+        let beforeCJKMatch = try XCTUnwrap(completer.complete(
+            textBeforeCursor: "请看heteroske",
+            charAfterCursor: "中",
+            textAfterCursorOnLine: "中文"
+        ))
+        XCTAssertEqual(beforeCJKMatch.fullWord, "heteroskedasticity")
+        XCTAssertTrue(beforeCJKMatch.needsLeadingSpace)
+        XCTAssertTrue(BilingualSpacingGuard.needsTrailingSpace(
+            charAfterCursor: "中", appendSpacePreference: false, bilingualSpacingEnabled: true
+        ))
+
+        let beforePunctMatch = try XCTUnwrap(completer.complete(
+            textBeforeCursor: "请看heteroske",
+            charAfterCursor: "。",
+            textAfterCursorOnLine: "。"
+        ))
+        XCTAssertEqual(beforePunctMatch.fullWord, "heteroskedasticity")
+        XCTAssertFalse(BilingualSpacingGuard.needsTrailingSpace(
+            charAfterCursor: "。", appendSpacePreference: true, bilingualSpacingEnabled: true
+        ))
+
         XCTAssertNil(completer.complete(textBeforeCursor: "中文/heteroske"))
+        liveBilingualUnlocked = false
+        XCTAssertNil(completer.complete(textBeforeCursor: "请看heteroske"))
+        XCTAssertNil(completer.complete(textBeforeCursor: "请看heteroske", charAfterCursor: "中", textAfterCursorOnLine: "中文"))
 
         // 3. Snippets: lazy clipboard, isSnippet != isTypoCorrection, and {cursor} back-steps
         let dateMatch = try XCTUnwrap(completer.complete(textBeforeCursor: "today ;date"))

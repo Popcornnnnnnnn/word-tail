@@ -147,6 +147,30 @@ final class TypingReportExporterTests: XCTestCase {
         XCTAssertTrue(report.contains("- ⌘S · 5"))
         XCTAssertTrue(report.contains("- teh → the · 4"))
         XCTAssertTrue(report.contains("| 2026-11-24 | 90 | 4 | 1.25 | 2.50 |"))
+        XCTAssertTrue(report.contains("Non-Roman"))
+    }
+
+    func testAllTimeReportSnapshotRemovesAppPreviewCap() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("WordTailReportCap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = KeyStatsStore(fileURL: dir.appendingPathComponent("stats.json"))
+        for idx in 0..<205 {
+            store.recordKeyDown(
+                keyCode: 0,
+                rawFlags: 0,
+                isAutoRepeat: false,
+                isSecureInput: false,
+                isRomanLayout: true,
+                appBundleID: String(format: "com.example.app%03d", idx),
+                appName: "App \(idx)"
+            )
+        }
+        store.flushNow()
+
+        XCTAssertEqual(store.snapshot(for: .allTime, deviceScope: .allDevices).topApps.count, 200)
+        XCTAssertEqual(store.allTimeReportSnapshot(deviceScope: .allDevices).topApps.count, 205)
     }
 
     private func makeApp(key: String, label: String) -> AppActivitySummary {

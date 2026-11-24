@@ -30,7 +30,7 @@ struct WrappedPosterView: View {
             header
             heroStats
             HStack(spacing: gap) {
-                shareBar("Roman", summary.romanSharePercent, "CJK", summary.cjkSharePercent)
+                shareBar("Roman", summary.romanSharePercent, "Non-Roman", summary.cjkSharePercent)
                 shareBar("Left hand", summary.leftHandPercent, "Right hand", summary.rightHandPercent)
             }
             HStack(spacing: gap) {

@@ -109,7 +109,7 @@ public enum TypingReportExporter {
             "- **Characters saved:** \(summary.charactersSaved)",
             "- **Tabs accepted:** \(summary.tabsAccepted)",
             "- **Burst speed:** \(summary.averageBurstWPM) WPM average, \(summary.peakBurstWPM) WPM peak",
-            "- **Keyboard layout:** \(decimal(summary.romanSharePercent))% Roman, \(decimal(summary.cjkSharePercent))% CJK",
+            "- **Keyboard layout:** \(decimal(summary.romanSharePercent))% Roman, \(decimal(summary.cjkSharePercent))% Non-Roman",
             "- **Hand balance:** \(decimal(summary.leftHandPercent))% left, \(decimal(summary.rightHandPercent))% right",
             "- **Mouse distance:** \(decimal(summary.mouseDistanceMeters)) m (\(decimal(summary.marathonsEquivalent)) marathons)",
             "- **Scroll distance:** \(decimal(summary.scrollDistanceMeters)) m (\(decimal(summary.everestsEquivalent)) Everests)",

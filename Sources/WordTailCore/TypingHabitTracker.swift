@@ -558,6 +558,28 @@ public final class TypingHabitTracker {
         }
     }
 
+    /// Records a snippet expansion in Wrapped totals without adding template/clipboard body text into word dictionaries or mistype rules.
+    public func recordSnippetAccepted(charsSaved: Int, persistAsync: Bool = true) {
+        queue.sync {
+            state.tabsAccepted += 1
+            state.charactersSaved += max(1, charsSaved)
+            if !shownOpportunityForCurrentWord {
+                state.suggestionsShown += 1
+            }
+            resetCurrentWordLocked(clearLastWord: true)
+            lastCompletedWord = nil
+
+            if persistAsync {
+                let snapshot = state
+                queue.async { [weak self] in
+                    self?.writeSnapshot(snapshot)
+                }
+            } else {
+                persistLocked()
+            }
+        }
+    }
+
     public func clearAll() {
         queue.sync {
             state = PersistedState()

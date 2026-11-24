@@ -42,6 +42,7 @@ struct WordTailProUIState {
     var profiles: [ProAppProfileItem]
     var bilingualCompletionEnabled: Bool
     var bilingualSpacingEnabled: Bool
+    var activeProfileTargetName: String? = nil
     var wrappedSummary: TypingWrappedSummary
     var posterAspect: WrappedPosterAspect
     var posterColorScheme: ColorScheme
@@ -62,10 +63,12 @@ struct ProSettingsCallbacks {
     var setPackEnabled: (String, Bool) -> Void
     var importPack: () -> Void
     var exportPacks: () -> Void
+    var exportCustomPack: (String) -> Void
     var addSnippet: (_ trigger: String, _ title: String, _ body: String) -> Void
     var setSnippetEnabled: (String, Bool) -> Void
     var deleteSnippet: (String) -> Void
     var applyProfilePreset: (ProWritingPreset) -> Void
+    var deleteProfile: (String) -> Void
     var exportPoster: (WrappedPosterAspect, ColorScheme) -> Void
     var exportCSV: () -> Void
     var exportMarkdown: () -> Void
@@ -200,6 +203,11 @@ struct ProSettingsView: View {
                                 .lineLimit(1)
                         }
                         Spacer(minLength: 4)
+                        if pack.isCustom {
+                            LinearIconButton(symbol: "tray.and.arrow.up", helpText: "Export \(pack.name)") {
+                                callbacks.exportCustomPack(pack.id)
+                            }
+                        }
                         LinearSwitch(isOn: Binding(
                             get: { state.packs.first { $0.id == pack.id }?.isEnabled ?? pack.isEnabled },
                             set: { callbacks.setPackEnabled(pack.id, $0) }
@@ -290,14 +298,20 @@ struct ProSettingsView: View {
 
     private var profileSection: some View {
         section("Per-App Writing Profiles & Bilingual CJK–English") {
-            HStack(spacing: 8) {
-                ForEach(ProWritingPreset.allCases) { preset in
-                    LinearActionButton(title: preset.rawValue, icon: nil) {
-                        callbacks.applyProfilePreset(preset)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(state.activeProfileTargetName.map { "Target app: \($0)" } ?? "Switch to an external app first so WordTail detects which app to configure.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    ForEach(ProWritingPreset.allCases) { preset in
+                        LinearActionButton(title: preset.rawValue, icon: nil) {
+                            callbacks.applyProfilePreset(preset)
+                        }
+                        .disabled(state.activeProfileTargetName == nil)
+                        .help(state.activeProfileTargetName.map { "Apply the \(preset.rawValue) writing preset to \($0)" } ?? "Detect a target app first")
                     }
-                    .help("Apply the \(preset.rawValue) writing preset to an app")
+                    Spacer()
                 }
-                Spacer()
             }
             .padding(14)
 
@@ -308,6 +322,9 @@ struct ProSettingsView: View {
                         .help(profile.bundleID)
                     Spacer()
                     LinearKbd(label: profile.presetTitle)
+                    LinearIconButton(symbol: "xmark", helpText: "Use global settings for \(profile.displayName)") {
+                        callbacks.deleteProfile(profile.bundleID)
+                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)
