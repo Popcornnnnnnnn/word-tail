@@ -171,6 +171,31 @@ final class TypingReportExporterTests: XCTestCase {
 
         XCTAssertEqual(store.snapshot(for: .allTime, deviceScope: .allDevices).topApps.count, 200)
         XCTAssertEqual(store.allTimeReportSnapshot(deviceScope: .allDevices).topApps.count, 205)
+
+        // Mouse-only / scroll-only day appears in uncapped all-time report dailyTrend even with 0 keys/clicks
+        let mouseOnlyStore = KeyStatsStore(
+            fileURL: dir.appendingPathComponent("mouse-only-stats.json"),
+            nowProvider: { Date(timeIntervalSince1970: 1_763_626_400) }
+        )
+        mouseOnlyStore.recordMouseMove(to: CGPoint(x: 0, y: 0))
+        mouseOnlyStore.recordMouseMove(to: CGPoint(x: 400, y: 0))
+        mouseOnlyStore.flushNow()
+        let reportSnap = mouseOnlyStore.allTimeReportSnapshot(deviceScope: .allDevices)
+        XCTAssertEqual(reportSnap.dailyTrend.count, 1)
+        XCTAssertEqual(reportSnap.dailyTrend.first?.keyPresses, 0)
+        XCTAssertGreaterThan(reportSnap.dailyTrend.first?.mouseDistanceMeters ?? 0, 0)
+
+        // charsSavedOverride credits net characters saved rather than rewritten prefix + spacing length
+        let tracker = TypingHabitTracker(fileURL: dir.appendingPathComponent("insights.json"))
+        _ = tracker.recordTabAccepted(
+            fullWord: "algorithm",
+            insertedText: " algorithm ",
+            previousWordFromContext: nil,
+            bundleID: "com.apple.Notes",
+            persistAsync: false,
+            charsSavedOverride: 5
+        )
+        XCTAssertEqual(tracker.snapshot().charactersSaved, 5)
     }
 
     private func makeApp(key: String, label: String) -> AppActivitySummary {

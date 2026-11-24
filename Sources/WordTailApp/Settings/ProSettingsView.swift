@@ -239,7 +239,10 @@ struct ProSettingsView: View {
     }
 
     private var snippetSection: some View {
-        section("Snippet Studio & Macros") {
+        section(
+            "Snippet Studio & Macros",
+            subtitle: "Explicit triggers with macros. Custom snippets sync when Multi-Device Sync is enabled."
+        ) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     linearInputField(

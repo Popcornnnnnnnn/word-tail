@@ -505,12 +505,13 @@ public final class TypingHabitTracker {
         insertedText: String,
         previousWordFromContext: String?,
         bundleID: String?,
-        persistAsync: Bool = true
+        persistAsync: Bool = true,
+        charsSavedOverride: Int? = nil
     ) -> WordCompletionOutcome {
         let now = nowProvider().timeIntervalSince1970
         return queue.sync {
             let lower = fullWord.lowercased()
-            let savedCount = insertedText.count
+            let savedCount = max(1, charsSavedOverride ?? insertedText.count)
             state.tabsAccepted += 1
             state.charactersSaved += savedCount
             if !shownOpportunityForCurrentWord {

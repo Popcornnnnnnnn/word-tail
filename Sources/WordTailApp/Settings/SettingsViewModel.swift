@@ -358,6 +358,7 @@ final class SettingsViewModel: ObservableObject {
 
     private var isRefreshing = false
     private var lastTargetApp: (name: String, bundleID: String)?
+    private var displayedProfileTarget: (name: String, bundleID: String)?
 
     @MainActor
     init(
@@ -910,7 +911,7 @@ final class SettingsViewModel: ObservableObject {
             return err
         }
         guard syncStatus.isEnabled else {
-            return "Off · Syncs dictionary, rules, phrases, Insights & KeyStats across Macs"
+            return "Off · Syncs dictionary, rules, phrases, Pro packs/snippets/profiles, Insights & KeyStats across Macs"
         }
         let locLabel: String
         if syncStatus.isICloudDrive {
@@ -1098,6 +1099,14 @@ final class SettingsViewModel: ObservableObject {
         }
 
         let targetApp = engine.lastObservedTargetApp ?? lastTargetApp
+        if let targetApp {
+            let friendlyName = Self.friendlyAppTitle(bundleID: targetApp.bundleID, rawName: targetApp.name)
+            displayedProfileTarget = (name: friendlyName, bundleID: targetApp.bundleID)
+            proUI.activeProfileTargetName = friendlyName
+        } else {
+            displayedProfileTarget = nil
+            proUI.activeProfileTargetName = nil
+        }
         let allStats = engine.keyStatsStore.allTimeReportSnapshot(deviceScope: .allDevices)
         let allInsights = engine.insightsSnapshot()
         let wrapped = TypingReportExporter.summarize(keyStats: allStats, insights: allInsights)
@@ -1113,7 +1122,6 @@ final class SettingsViewModel: ObservableObject {
         proUI.profiles = profileItems
         proUI.bilingualCompletionEnabled = engine.bilingualCompletionEnabled
         proUI.bilingualSpacingEnabled = engine.bilingualSpacingEnabled
-        proUI.activeProfileTargetName = targetApp.map { Self.friendlyAppTitle(bundleID: $0.bundleID, rawName: $0.name) }
         proUI.wrappedSummary = wrapped
     }
 
@@ -1174,7 +1182,10 @@ final class SettingsViewModel: ObservableObject {
                     ]
                     guard panel.runModal() == .OK, let url = panel.url else { return }
                     do {
-                        let data = try Data(contentsOf: url)
+                        let handle = try FileHandle(forReadingFrom: url)
+                        defer { try? handle.close() }
+                        let maxPackReadBytes = 512 * 1024 + 1
+                        let data = try handle.read(upToCount: maxPackReadBytes) ?? Data()
                         let imported = try engine.domainPackStore.importCustomPack(data: data)
                         engine.syncCompleterProState()
                         self.refreshProUI(statusMessage: "Imported \"\(imported.name)\" (\(imported.words.count) words).")
@@ -1214,13 +1225,19 @@ final class SettingsViewModel: ObservableObject {
             },
             setSnippetEnabled: { [weak self] id, isEnabled in
                 guard let self, let engine = self.engine else { return }
-                engine.snippetStore.toggleSnippet(id: id, isEnabled: isEnabled)
+                guard engine.snippetStore.toggleSnippet(id: id, isEnabled: isEnabled) else {
+                    self.refreshProUI(statusMessage: "Failed updating snippet state.", isError: true)
+                    return
+                }
                 self.refreshProUI()
                 self.pushSyncInBackgroundIfEnabled()
             },
             deleteSnippet: { [weak self] id in
                 guard let self, let engine = self.engine else { return }
-                engine.snippetStore.deleteSnippet(id: id)
+                guard engine.snippetStore.deleteSnippet(id: id) else {
+                    self.refreshProUI(statusMessage: "Failed deleting snippet.", isError: true)
+                    return
+                }
                 self.refreshProUI(statusMessage: "Deleted snippet.")
                 self.pushSyncInBackgroundIfEnabled()
             },
@@ -1231,22 +1248,27 @@ final class SettingsViewModel: ObservableObject {
                 case .prose: .formalDocs
                 case .bilingual: .casualChat
                 }
-                guard let target = engine.lastObservedTargetApp ?? self.lastTargetApp else {
+                guard let target = self.displayedProfileTarget else {
                     self.refreshProUI(
                         statusMessage: "Switch to another app briefly so WordTail detects the target app first.",
                         isError: true
                     )
                     return
                 }
-                let friendly = Self.friendlyAppTitle(bundleID: target.bundleID, rawName: target.name)
-                engine.appProfileStore.applyPreset(mapped, toBundleID: target.bundleID, displayName: friendly)
+                guard engine.appProfileStore.applyPreset(mapped, toBundleID: target.bundleID, displayName: target.name) else {
+                    self.refreshProUI(statusMessage: "Failed saving profile for \(target.name).", isError: true)
+                    return
+                }
                 engine.syncCompleterProState()
-                self.refreshProUI(statusMessage: "Applied \(mapped.title) profile to \(friendly).")
+                self.refreshProUI(statusMessage: "Applied \(mapped.title) profile to \(target.name).")
                 self.pushSyncInBackgroundIfEnabled()
             },
             deleteProfile: { [weak self] bundleID in
                 guard let self, let engine = self.engine else { return }
-                engine.appProfileStore.delete(bundleID: bundleID)
+                guard engine.appProfileStore.delete(bundleID: bundleID) else {
+                    self.refreshProUI(statusMessage: "Failed restoring global settings for \(bundleID).", isError: true)
+                    return
+                }
                 engine.syncCompleterProState()
                 self.refreshProUI(statusMessage: "Restored global settings for \(bundleID).")
                 self.pushSyncInBackgroundIfEnabled()

@@ -1318,7 +1318,7 @@ public final class KeyStatsStore {
                 trendKeys = Self.recentDayKeys(count: 30, referenceDate: nowDate).reversed()
             case .allTime:
                 if uncappedDailyTrend {
-                    trendKeys = allScopeKeys
+                    trendKeys = includedKeys.sorted()
                 } else if let first = firstActiveKey {
                     trendKeys = Self.chronologicalDayKeys(from: first, to: todayKey, maxDays: 1095)
                 } else {

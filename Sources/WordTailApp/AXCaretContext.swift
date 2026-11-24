@@ -25,6 +25,12 @@ struct VerifiedSnippetDestination {
     let caretLocation: Int?
 }
 
+enum AXSnippetReplaceOutcome {
+    case applied
+    case unattempted
+    case uncertain
+}
+
 final class AXCaretContext {
     /// Strict per-IPC messaging cap (`50 ms` instead of macOS's `6.0 s` default) so a stalled target app
     /// can never block accessibility queries or keystroke delivery.
@@ -852,15 +858,14 @@ final class AXCaretContext {
                 guard curRange.location <= ns.length else { return nil }
                 return ns.substring(with: NSRange(location: curRange.location - triggerUTF16Len, length: triggerUTF16Len))
             }
-            if let actualTrigger {
-                guard actualTrigger == expectedTrigger else { return nil }
-            } else if !snapshot.isFallbackText {
+            guard let actualTrigger, actualTrigger == expectedTrigger else {
                 return nil
             }
-            if let expectedCharAfter,
-               let afterNow = stringForRange(element, location: curRange.location, length: 1)?.first,
-               afterNow != expectedCharAfter {
-                return nil
+            if let expectedCharAfter {
+                guard let afterNow = stringForRange(element, location: curRange.location, length: 1)?.first,
+                      afterNow == expectedCharAfter else {
+                    return nil
+                }
             }
             return VerifiedSnippetDestination(element: element, caretLocation: curRange.location)
         }
@@ -868,19 +873,18 @@ final class AXCaretContext {
         if let selectedRange = copySelectedRange(element), selectedRange.length != 0 {
             return nil
         }
-        if let recheck = capture(
+        guard let recheck = capture(
             targetApp: app,
-            fallbackBuffer: expectedTrigger,
+            fallbackBuffer: "",
             enableChromiumBridge: enableChromiumBridge,
             verticalAdjustment: 0
-        ) {
-            guard let recheckElem = recheck.focusedElement, CFEqual(recheckElem, expectedElem) else {
-                return nil
-            }
-            if !recheck.isFallbackText {
-                guard recheck.textBeforeCursor.hasSuffix(expectedTrigger) else { return nil }
-                if recheck.charAfterCursor != expectedCharAfter { return nil }
-            }
+        ),
+        !recheck.isFallbackText,
+        let recheckElem = recheck.focusedElement,
+        CFEqual(recheckElem, expectedElem),
+        recheck.textBeforeCursor.hasSuffix(expectedTrigger),
+        recheck.charAfterCursor == expectedCharAfter else {
+            return nil
         }
         return VerifiedSnippetDestination(element: element, caretLocation: nil)
     }
@@ -891,15 +895,15 @@ final class AXCaretContext {
         trigger: String,
         replacement: String,
         cursorBackSteps: Int
-    ) -> Bool {
+    ) -> AXSnippetReplaceOutcome {
         let triggerUTF16Count = (trigger as NSString).length
-        guard caretLocation >= triggerUTF16Count else { return false }
+        guard caretLocation >= triggerUTF16Count else { return .unattempted }
 
         let startLoc = caretLocation - triggerUTF16Count
         var replaceRange = CFRange(location: startLoc, length: triggerUTF16Count)
         guard let replaceRangeVal = AXValueCreate(.cfRange, &replaceRange),
               AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, replaceRangeVal) == .success else {
-            return false
+            return .unattempted
         }
 
         if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, replacement as CFString) != .success {
@@ -907,13 +911,11 @@ final class AXCaretContext {
             if let restoreVal = AXValueCreate(.cfRange, &restoreRange) {
                 _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, restoreVal)
             }
-            return false
-        }
-
-        let replacementUTF16Len = (replacement as NSString).length
-        if let verified = stringForRange(element, location: startLoc, length: replacementUTF16Len),
-           verified != replacement {
-            return false
+            if let intact = stringForRange(element, location: startLoc, length: triggerUTF16Count),
+               intact == trigger {
+                return .unattempted
+            }
+            return .uncertain
         }
 
         let targetCharCount = max(0, replacement.count - cursorBackSteps)
@@ -922,7 +924,7 @@ final class AXCaretContext {
         if let finalVal = AXValueCreate(.cfRange, &finalRange) {
             _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, finalVal)
         }
-        return true
+        return .applied
     }
 
     /// Live lightweight inspection called on `Space` so even 1- or 2-letter sentence starters ("do ", "in ", "we ")

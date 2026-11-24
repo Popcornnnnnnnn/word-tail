@@ -1028,38 +1028,31 @@ final class TypingEngine {
                         return
                     }
 
-                    var insertedViaAX = false
+                    let replaceOutcome: AXSnippetReplaceOutcome
                     if let caretLoc = verified.caretLocation {
-                        insertedViaAX = self.axContext.replaceRangeViaAX(
+                        replaceOutcome = self.axContext.replaceRangeViaAX(
                             element: verified.element,
                             caretLocation: caretLoc,
                             trigger: trigger,
                             replacement: expandedText,
                             cursorBackSteps: cursorBackSteps
                         )
+                    } else {
+                        replaceOutcome = .unattempted
                     }
 
-                    if !insertedViaAX {
+                    switch replaceOutcome {
+                    case .applied:
+                        break
+                    case .uncertain:
+                        return
+                    case .unattempted:
                         if deleteCount > 0 {
                             self.injectBackspaces(count: deleteCount)
                         }
-                        if expandedText.contains("\n") {
-                            self.injectMultilineTextViaPaste(expandedText)
-                            if cursorBackSteps > 0 {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(45)) { [weak self] in
-                                    guard let self else { return }
-                                    if let acceptedBundle,
-                                       self.axContext.effectiveFocusedApplication()?.bundleIdentifier != acceptedBundle {
-                                        return
-                                    }
-                                    self.injectLeftArrows(count: cursorBackSteps)
-                                }
-                            }
-                        } else {
-                            self.injectUnicodeString(expandedText)
-                            if cursorBackSteps > 0 {
-                                self.injectLeftArrows(count: cursorBackSteps)
-                            }
+                        self.injectMultilineTextWithShiftReturn(expandedText)
+                        if cursorBackSteps > 0 {
+                            self.injectLeftArrows(count: cursorBackSteps)
                         }
                     }
 
@@ -1177,7 +1170,8 @@ final class TypingEngine {
                         fullWord: resolvedFullWord,
                         insertedText: textToInsert,
                         previousWordFromContext: prevWord,
-                        bundleID: acceptedBundle
+                        bundleID: acceptedBundle,
+                        charsSavedOverride: max(1, textToInsert.count - deleteCount)
                     )
                     : nil
                 if !resolvedFullWord.contains(" ") {
@@ -1516,7 +1510,7 @@ final class TypingEngine {
             let shouldTriggerSnippetKey: Bool
             if licenseManager.isUnlocked(.snippetStudio),
                let lastChar = typed.last,
-               lastChar.isASCII && !lastChar.isWhitespace {
+               !lastChar.isWhitespace {
                 let trailingToken = rollingBuffer.split(whereSeparator: \.isWhitespace).last.map(String.init) ?? ""
                 shouldTriggerSnippetKey = SnippetStore.isValidTrigger(trailingToken)
             } else {
@@ -1808,6 +1802,8 @@ final class TypingEngine {
                   let up = CGEvent(keyboardEventSource: src, virtualKey: vkDelete, keyDown: false) else {
                 continue
             }
+            down.flags = []
+            up.flags = []
             down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
             up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
             down.post(tap: .cghidEventTap)
@@ -1837,6 +1833,8 @@ final class TypingEngine {
                   let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else {
                 continue
             }
+            down.flags = []
+            up.flags = []
             down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
             up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
             chunk.withUnsafeBufferPointer { buf in
@@ -1849,47 +1847,23 @@ final class TypingEngine {
         }
     }
 
-    private func injectMultilineTextViaPaste(_ text: String) {
-        let pasteboard = NSPasteboard.general
-        let savedItems: [[(NSPasteboard.PasteboardType, Data)]] = (pasteboard.pasteboardItems ?? []).map { item in
-            item.types.compactMap { type in
-                guard let data = item.data(forType: type) else { return nil }
-                return (type, data)
+    private func injectMultilineTextWithShiftReturn(_ text: String) {
+        let segments = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" })
+        guard let src = CGEventSource(stateID: .hidSystemState) else { return }
+        let vkReturn = CGKeyCode(kVK_Return)
+        for (idx, segment) in segments.enumerated() {
+            if !segment.isEmpty {
+                injectUnicodeString(String(segment))
             }
-        }
-
-        pasteboard.clearContents()
-        let tempItem = NSPasteboardItem()
-        tempItem.setString(text, forType: .string)
-        tempItem.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
-        tempItem.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.AutoGeneratedType"))
-        pasteboard.writeObjects([tempItem])
-        let transientChangeCount = pasteboard.changeCount
-
-        if let src = CGEventSource(stateID: .hidSystemState),
-           let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
-           let up = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false) {
-            down.flags = .maskCommand
-            up.flags = .maskCommand
-            down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-            up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) {
-            guard pasteboard.changeCount == transientChangeCount else { return }
-            pasteboard.clearContents()
-            let restored = savedItems.compactMap { pairs -> NSPasteboardItem? in
-                guard !pairs.isEmpty else { return nil }
-                let item = NSPasteboardItem()
-                for (type, data) in pairs {
-                    item.setData(data, forType: type)
-                }
-                return item
-            }
-            if !restored.isEmpty {
-                pasteboard.writeObjects(restored)
+            if idx < segments.count - 1,
+               let down = CGEvent(keyboardEventSource: src, virtualKey: vkReturn, keyDown: true),
+               let up = CGEvent(keyboardEventSource: src, virtualKey: vkReturn, keyDown: false) {
+                down.flags = .maskShift
+                up.flags = .maskShift
+                down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+                up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
             }
         }
     }
@@ -1902,6 +1876,8 @@ final class TypingEngine {
                   let up = CGEvent(keyboardEventSource: src, virtualKey: vkLeft, keyDown: false) else {
                 continue
             }
+            down.flags = []
+            up.flags = []
             down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
             up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
             down.post(tap: .cghidEventTap)
