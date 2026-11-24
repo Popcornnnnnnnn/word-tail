@@ -1005,7 +1005,7 @@ final class SettingsViewModel: ObservableObject {
             isInstallingUpdate = autoUpdater.isInstalling
             updateStatusText = autoUpdater.statusMessage
         }
-        syncDisplayedProfileTarget()
+        refreshProUI()
     }
 
     private func syncDisplayedProfileTarget() {
@@ -1169,7 +1169,10 @@ final class SettingsViewModel: ObservableObject {
                 } else {
                     nextIDs.removeAll { $0 == id }
                 }
-                engine.domainPackStore.setEnabledPackIDs(nextIDs)
+                guard engine.domainPackStore.setEnabledPackIDs(nextIDs) else {
+                    self.refreshProUI(statusMessage: "Could not save domain pack settings.", isError: true)
+                    return
+                }
                 engine.syncCompleterProState()
                 self.refreshProUI()
                 self.pushSyncInBackgroundIfEnabled()
@@ -1224,7 +1227,7 @@ final class SettingsViewModel: ObservableObject {
                     )
                     return
                 }
-                let snippet = TextSnippet(id: trigger, trigger: trigger, title: title.isEmpty ? trigger : title, body: rawBody)
+                let snippet = TextSnippet(trigger: trigger, title: title.isEmpty ? trigger : title, body: rawBody)
                 if engine.snippetStore.addOrUpdateSnippet(snippet) {
                     self.proUI.newSnippetTrigger = ""
                     self.proUI.newSnippetTitle = ""

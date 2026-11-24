@@ -894,6 +894,34 @@ final class AXCaretContext {
         return VerifiedSnippetDestination(element: element, caretLocation: nil)
     }
 
+    private func isCaretCollapsedWithIntactTrigger(
+        element: AXUIElement,
+        caretLocation: Int,
+        startLoc: Int,
+        triggerUTF16Count: Int,
+        trigger: String,
+        enableChromiumBridge: Bool
+    ) -> Bool {
+        guard let liveApp = effectiveFocusedApplication(),
+              let liveElem = resolveFocusedTextElement(app: liveApp, enableChromiumBridge: enableChromiumBridge),
+              CFEqual(liveElem, element),
+              let restoredRange = copySelectedRange(element),
+              restoredRange.length == 0,
+              restoredRange.location == caretLocation else {
+            return false
+        }
+        let intactTrigger: String? = stringForRange(
+            element,
+            location: startLoc,
+            length: triggerUTF16Count
+        ) ?? copyStringAttribute(element, attribute: kAXValueAttribute as String).flatMap { fullValue in
+            let ns = fullValue as NSString
+            guard caretLocation <= ns.length else { return nil }
+            return ns.substring(with: NSRange(location: startLoc, length: triggerUTF16Count))
+        }
+        return intactTrigger == trigger
+    }
+
     func replaceRangeViaAX(
         element: AXUIElement,
         caretLocation: Int,
@@ -907,33 +935,35 @@ final class AXCaretContext {
 
         let startLoc = caretLocation - triggerUTF16Count
         var replaceRange = CFRange(location: startLoc, length: triggerUTF16Count)
-        guard let replaceRangeVal = AXValueCreate(.cfRange, &replaceRange),
-              AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, replaceRangeVal) == .success else {
+        guard let replaceRangeVal = AXValueCreate(.cfRange, &replaceRange) else {
             return .unattempted
+        }
+        if AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, replaceRangeVal) != .success {
+            return isCaretCollapsedWithIntactTrigger(
+                element: element,
+                caretLocation: caretLocation,
+                startLoc: startLoc,
+                triggerUTF16Count: triggerUTF16Count,
+                trigger: trigger,
+                enableChromiumBridge: enableChromiumBridge
+            ) ? .unattempted : .uncertain
         }
 
         if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, replacement as CFString) != .success {
             var restoreRange = CFRange(location: caretLocation, length: 0)
             guard let restoreVal = AXValueCreate(.cfRange, &restoreRange),
                   AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, restoreVal) == .success,
-                  let liveApp = effectiveFocusedApplication(),
-                  let liveElem = resolveFocusedTextElement(app: liveApp, enableChromiumBridge: enableChromiumBridge),
-                  CFEqual(liveElem, element),
-                  let restoredRange = copySelectedRange(element),
-                  restoredRange.length == 0,
-                  restoredRange.location == caretLocation else {
+                  isCaretCollapsedWithIntactTrigger(
+                      element: element,
+                      caretLocation: caretLocation,
+                      startLoc: startLoc,
+                      triggerUTF16Count: triggerUTF16Count,
+                      trigger: trigger,
+                      enableChromiumBridge: enableChromiumBridge
+                  ) else {
                 return .uncertain
             }
-            let intactTrigger: String? = stringForRange(
-                element,
-                location: startLoc,
-                length: triggerUTF16Count
-            ) ?? copyStringAttribute(element, attribute: kAXValueAttribute as String).flatMap { fullValue in
-                let ns = fullValue as NSString
-                guard caretLocation <= ns.length else { return nil }
-                return ns.substring(with: NSRange(location: startLoc, length: triggerUTF16Count))
-            }
-            return intactTrigger == trigger ? .unattempted : .uncertain
+            return .unattempted
         }
 
         let targetCharCount = max(0, replacement.count - cursorBackSteps)

@@ -997,6 +997,8 @@ final class TypingEngine {
                 let deleteCount = match.replacementDeleteCount
                 let expectedCharAfter = activeSnapshot?.charAfterCursor
                 let bridgeEnabled = enableChromiumBridge
+                let capturedSnippetID = match.snippetID
+                let capturedSnippetUpdatedAt = match.snippetUpdatedAt
 
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
@@ -1006,22 +1008,30 @@ final class TypingEngine {
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    guard self.licenseManager.isUnlocked(.snippetStudio),
-                          let verified = self.axContext.verifyDestinationStillMatches(
-                              snapshot: capturedSnapshot,
-                              expectedBundleID: acceptedBundle,
-                              expectedTrigger: trigger,
-                              expectedCharAfter: expectedCharAfter,
-                              enableChromiumBridge: bridgeEnabled
-                          ),
-                          let liveMatch = self.snippetStore.match(
-                              textBeforeCursor: trigger,
-                              bundleID: acceptedBundle,
-                              now: Date(),
-                              clipboardTextProvider: { NSPasteboard.general.string(forType: .string) }
-                          ) else {
+                    guard self.licenseManager.isUnlocked(.snippetStudio) else {
                         return
                     }
+
+                    // Expand snippet & read clipboard before destination verification so pasteboard IPC
+                    // never opens a stale focus/caret race window before AX checks or HID typing.
+                    let liveMatch: SnippetMatch?
+                    if let capturedSnippetID {
+                        liveMatch = self.snippetStore.expandSnippet(
+                            id: capturedSnippetID,
+                            expectedUpdatedAt: capturedSnippetUpdatedAt,
+                            bundleID: acceptedBundle,
+                            now: Date(),
+                            clipboardTextProvider: { NSPasteboard.general.string(forType: .string) }
+                        )
+                    } else {
+                        liveMatch = self.snippetStore.match(
+                            textBeforeCursor: trigger,
+                            bundleID: acceptedBundle,
+                            now: Date(),
+                            clipboardTextProvider: { NSPasteboard.general.string(forType: .string) }
+                        )
+                    }
+                    guard let liveMatch else { return }
 
                     let resolvedText = liveMatch.expandedText
                         .replacingOccurrences(of: "\r\n", with: "\n")
@@ -1030,6 +1040,16 @@ final class TypingEngine {
                         return
                     }
                     let resolvedBackSteps = liveMatch.cursorBackSteps
+
+                    guard let verified = self.axContext.verifyDestinationStillMatches(
+                        snapshot: capturedSnapshot,
+                        expectedBundleID: acceptedBundle,
+                        expectedTrigger: trigger,
+                        expectedCharAfter: expectedCharAfter,
+                        enableChromiumBridge: bridgeEnabled
+                    ) else {
+                        return
+                    }
 
                     let replaceOutcome: AXSnippetReplaceOutcome
                     if let caretLoc = verified.caretLocation {
@@ -1670,13 +1690,21 @@ final class TypingEngine {
             }
         }
 
-        let matches = completer.candidates(
+        let rawMatches = completer.candidates(
             textBeforeCursor: snapshot.textBeforeCursor,
             charAfterCursor: snapshot.charAfterCursor,
             textAfterCursorOnLine: snapshot.textAfterOnLine,
             bundleID: frontBundle,
             limit: 5
         )
+        let matches = rawMatches.filter { match in
+            if snapshot.caretLocation == nil,
+               match.isSnippet,
+               match.suffix.contains("\n") || match.suffix.contains("\r") {
+                return false
+            }
+            return true
+        }
         guard let first = matches.first else {
             axContext.recordOverlayOutcome("shown=no")
             stateLock.lock()

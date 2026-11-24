@@ -51,7 +51,7 @@ public final class SnippetStore {
     private static let delimiters = Set(";/:!@#\\")
     private static let maximumTriggerLength = 24
     private static let macroPattern = try! NSRegularExpression(pattern: #"\{([^{}\r\n]*)\}"#)
-    private static let dateFormatFields = Set("ABbcdDeEFgGhHkKLmMOqQrsSuUvVwWxXyYzZ")
+    private static let dateFormatFields = Set("AaBbcdDeEFgGhHkKLmMOqQrsSuUvVwWxXyYzZ")
 
     private static let starterSnippets = [
         TextSnippet(id: ";date", trigger: ";date", title: "Date", body: "{date}", updatedAt: 0),
@@ -109,8 +109,51 @@ public final class SnippetStore {
             matchingSnippet(textBeforeCursor: textBeforeCursor, bundleID: bundleID)
         }
         guard let snippet else { return nil }
+        return Self.buildMatch(
+            for: snippet,
+            now: now,
+            clipboardText: clipboardText,
+            clipboardTextProvider: clipboardTextProvider
+        )
+    }
+
+    public func expandSnippet(
+        id: String,
+        expectedUpdatedAt: TimeInterval?,
+        bundleID: String?,
+        now: Date = Date(),
+        clipboardText: String? = nil,
+        clipboardTextProvider: (() -> String?)? = nil
+    ) -> SnippetMatch? {
+        let snippet: TextSnippet? = lock.withLock {
+            guard let candidate = records[id],
+                  !candidate.isDeleted,
+                  candidate.isEnabled,
+                  Self.matchesBundle(candidate, bundleID: bundleID) else {
+                return nil
+            }
+            if let expectedUpdatedAt, candidate.updatedAt != expectedUpdatedAt {
+                return nil
+            }
+            return candidate
+        }
+        guard let snippet else { return nil }
+        return Self.buildMatch(
+            for: snippet,
+            now: now,
+            clipboardText: clipboardText,
+            clipboardTextProvider: clipboardTextProvider
+        )
+    }
+
+    private static func buildMatch(
+        for snippet: TextSnippet,
+        now: Date,
+        clipboardText: String?,
+        clipboardTextProvider: (() -> String?)?
+    ) -> SnippetMatch {
         let resolvedClipboard = clipboardText ?? (snippet.body.contains("{clipboard}") ? clipboardTextProvider?() : nil)
-        let expanded = Self.expand(body: snippet.body, now: now, clipboardText: resolvedClipboard)
+        let expanded = expand(body: snippet.body, now: now, clipboardText: resolvedClipboard)
         return SnippetMatch(
             snippet: snippet,
             trigger: snippet.trigger,
@@ -118,6 +161,10 @@ public final class SnippetStore {
             cursorBackSteps: expanded.cursorBackSteps,
             deleteCount: snippet.trigger.count
         )
+    }
+
+    private static func matchesBundle(_ snippet: TextSnippet, bundleID: String?) -> Bool {
+        snippet.scopedBundleIDs.isEmpty || bundleID.map { snippet.scopedBundleIDs.contains($0) } == true
     }
 
     private func matchingSnippet(textBeforeCursor: String, bundleID: String?) -> TextSnippet? {
@@ -136,9 +183,7 @@ public final class SnippetStore {
             }
 
             let trigger = String(textBeforeCursor[start...])
-            if let candidate = snippetsByTrigger[trigger]?.first(where: { snippet in
-                snippet.scopedBundleIDs.isEmpty || bundleID.map { snippet.scopedBundleIDs.contains($0) } == true
-            }) {
+            if let candidate = snippetsByTrigger[trigger]?.first(where: { Self.matchesBundle($0, bundleID: bundleID) }) {
                 match = candidate
             }
         }

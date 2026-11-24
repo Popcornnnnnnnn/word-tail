@@ -234,6 +234,53 @@ final class SnippetsAndBilingualTests: XCTestCase {
         XCTAssertTrue(insights.typoTraps.isEmpty)
     }
 
+    func testTwelveHourAMPMDateMacroAndExpandSnippetRevisionChecks() {
+        let store = SnippetStore(directoryURL: temporaryDirectory())
+        var comps = DateComponents()
+        comps.year = 2026
+        comps.month = 11
+        comps.day = 25
+        comps.hour = 14
+        comps.minute = 5
+        comps.second = 0
+        let sampleDate = Calendar(identifier: .gregorian).date(from: comps)!
+
+        let ampmSnippet = TextSnippet(
+            id: "ampm-id",
+            trigger: ";ampm",
+            title: "Time 12h",
+            body: "{date:h:mm a}",
+            scopedBundleIDs: ["com.example.Notes"],
+            updatedAt: 100
+        )
+        XCTAssertTrue(store.addOrUpdateSnippet(ampmSnippet))
+
+        let matched = store.match(textBeforeCursor: ";ampm", bundleID: "com.example.Notes", now: sampleDate)
+        XCTAssertEqual(matched?.expandedText, "2:05 PM")
+
+        let savedRevision = matched?.snippet.updatedAt
+        XCTAssertNotNil(savedRevision)
+
+        let exactExpand = store.expandSnippet(
+            id: "ampm-id",
+            expectedUpdatedAt: savedRevision,
+            bundleID: "com.example.Notes",
+            now: sampleDate
+        )
+        XCTAssertEqual(exactExpand?.expandedText, "2:05 PM")
+
+        // Wrong bundle, stale revision, disabled, and deleted snippets must be rejected.
+        XCTAssertNil(store.expandSnippet(id: "ampm-id", expectedUpdatedAt: savedRevision, bundleID: "com.example.Other", now: sampleDate))
+        XCTAssertNil(store.expandSnippet(id: "ampm-id", expectedUpdatedAt: (savedRevision ?? 0) - 1, bundleID: "com.example.Notes", now: sampleDate))
+
+        XCTAssertTrue(store.toggleSnippet(id: "ampm-id", isEnabled: false))
+        XCTAssertNil(store.expandSnippet(id: "ampm-id", expectedUpdatedAt: nil, bundleID: "com.example.Notes", now: sampleDate))
+
+        XCTAssertTrue(store.toggleSnippet(id: "ampm-id", isEnabled: true))
+        XCTAssertTrue(store.deleteSnippet(id: "ampm-id"))
+        XCTAssertNil(store.expandSnippet(id: "ampm-id", expectedUpdatedAt: nil, bundleID: "com.example.Notes", now: sampleDate))
+    }
+
     private func temporaryDirectory() -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }

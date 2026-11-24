@@ -10,6 +10,8 @@ public struct CompletionMatch: Equatable {
     public let isSnippet: Bool
     public let cursorBackSteps: Int
     public let needsLeadingSpace: Bool
+    public let snippetID: String?
+    public let snippetUpdatedAt: TimeInterval?
 
     public var isTypoCorrection: Bool {
         replacementDeleteCount > 0 && !isSnippet
@@ -23,7 +25,9 @@ public struct CompletionMatch: Equatable {
         replacementDeleteCount: Int = 0,
         isSnippet: Bool = false,
         cursorBackSteps: Int = 0,
-        needsLeadingSpace: Bool = false
+        needsLeadingSpace: Bool = false,
+        snippetID: String? = nil,
+        snippetUpdatedAt: TimeInterval? = nil
     ) {
         self.prefix = prefix
         self.fullWord = fullWord
@@ -33,6 +37,8 @@ public struct CompletionMatch: Equatable {
         self.isSnippet = isSnippet
         self.cursorBackSteps = cursorBackSteps
         self.needsLeadingSpace = needsLeadingSpace
+        self.snippetID = snippetID
+        self.snippetUpdatedAt = snippetUpdatedAt
     }
 
     public static func == (lhs: CompletionMatch, rhs: CompletionMatch) -> Bool {
@@ -43,6 +49,8 @@ public struct CompletionMatch: Equatable {
             && lhs.isSnippet == rhs.isSnippet
             && lhs.cursorBackSteps == rhs.cursorBackSteps
             && lhs.needsLeadingSpace == rhs.needsLeadingSpace
+            && lhs.snippetID == rhs.snippetID
+            && lhs.snippetUpdatedAt == rhs.snippetUpdatedAt
     }
 }
 
@@ -199,7 +207,9 @@ public final class WordCompleter {
                     replacementDeleteCount: hit.deleteCount,
                     isSnippet: true,
                     cursorBackSteps: hit.cursorBackSteps,
-                    needsLeadingSpace: false
+                    needsLeadingSpace: false,
+                    snippetID: hit.snippet.id,
+                    snippetUpdatedAt: hit.snippet.updatedAt
                 )
             ]
         }
@@ -324,7 +334,7 @@ public final class WordCompleter {
         let techCandidates = enableTechLexicon
             ? TechLexicon.matching(lowercasedPrefix: lowerPrefix)
             : []
-        let domainCandidates = domainLexiconProvider?(lowerPrefix, bundleID) ?? []
+        let domainCandidates = Array((domainLexiconProvider?(lowerPrefix, bundleID) ?? []).prefix(60))
 
         // Order: user contextual/pinned words -> macOS grammar-ranked completions -> curated Tech/AI & Pro domain packs.
         var seen = Set<String>()
@@ -356,17 +366,12 @@ public final class WordCompleter {
                 if combined.isEmpty {
                     return [customMatch]
                 }
-                let rankedRest = combined.enumerated().sorted { lhs, rhs in
-                    let lScore = contextualPriority(for: lhs.element, previousWord: prevWord, bundleID: bundleID)
-                    let rScore = contextualPriority(for: rhs.element, previousWord: prevWord, bundleID: bundleID)
-                    if lScore != rScore { return lScore > rScore }
-                    return lhs.offset < rhs.offset
-                }
-                let restMatches = rankedRest.prefix(max(0, limit - 1)).map { entry in
+                let rankedRest = rankedCandidates(combined, previousWord: prevWord, bundleID: bundleID)
+                let restMatches = rankedRest.prefix(max(0, limit - 1)).map { full in
                     CompletionMatch(
                         prefix: prefix,
-                        fullWord: entry.element,
-                        suffix: String(entry.element.dropFirst(prefix.count)),
+                        fullWord: full,
+                        suffix: String(full.dropFirst(prefix.count)),
                         previousWord: prevWord,
                         needsLeadingSpace: needsLeadingSpace
                     )
@@ -402,17 +407,9 @@ public final class WordCompleter {
         }
 
         // Contextual ranking: custom pinned -> personal bigrams -> per-app vocabulary -> typo-trap rescue -> global accepts -> system grammar order.
-        let ranked = combined.enumerated().sorted { lhs, rhs in
-            let lScore = contextualPriority(for: lhs.element, previousWord: prevWord, bundleID: bundleID)
-            let rScore = contextualPriority(for: rhs.element, previousWord: prevWord, bundleID: bundleID)
-            if lScore != rScore {
-                return lScore > rScore
-            }
-            return lhs.offset < rhs.offset
-        }
+        let ranked = rankedCandidates(combined, previousWord: prevWord, bundleID: bundleID)
 
-        let singleWordMatches = ranked.prefix(limit).map { entry in
-            let full = entry.element
+        let singleWordMatches = ranked.prefix(limit).map { full in
             let suffix = String(full.dropFirst(prefix.count))
             return CompletionMatch(
                 prefix: prefix,
@@ -436,6 +433,22 @@ public final class WordCompleter {
             }
         }
         return mergedOut
+    }
+
+    private func rankedCandidates(_ candidates: [String], previousWord: String?, bundleID: String?) -> [String] {
+        let scored = candidates.enumerated().map { entry in
+            (
+                index: entry.offset,
+                word: entry.element,
+                score: contextualPriority(for: entry.element, previousWord: previousWord, bundleID: bundleID)
+            )
+        }
+        return scored.sorted { lhs, rhs in
+            if lhs.score != rhs.score {
+                return lhs.score > rhs.score
+            }
+            return lhs.index < rhs.index
+        }.map(\.word)
     }
 
     private func contextualPriority(for word: String, previousWord: String?, bundleID: String?) -> Int {
