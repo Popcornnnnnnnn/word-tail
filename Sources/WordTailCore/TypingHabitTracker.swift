@@ -505,12 +505,13 @@ public final class TypingHabitTracker {
         insertedText: String,
         previousWordFromContext: String?,
         bundleID: String?,
-        persistAsync: Bool = true
+        persistAsync: Bool = true,
+        charsSavedOverride: Int? = nil
     ) -> WordCompletionOutcome {
         let now = nowProvider().timeIntervalSince1970
         return queue.sync {
             let lower = fullWord.lowercased()
-            let savedCount = insertedText.count
+            let savedCount = max(1, charsSavedOverride ?? insertedText.count)
             state.tabsAccepted += 1
             state.charactersSaved += savedCount
             if !shownOpportunityForCurrentWord {
@@ -555,6 +556,28 @@ public final class TypingHabitTracker {
                 bundleID: bundleID,
                 detectedTypoMistype: mistype
             )
+        }
+    }
+
+    /// Records a snippet expansion in Wrapped totals without adding template/clipboard body text into word dictionaries or mistype rules.
+    public func recordSnippetAccepted(charsSaved: Int, persistAsync: Bool = true) {
+        queue.sync {
+            state.tabsAccepted += 1
+            state.charactersSaved += max(1, charsSaved)
+            if !shownOpportunityForCurrentWord {
+                state.suggestionsShown += 1
+            }
+            resetCurrentWordLocked(clearLastWord: true)
+            lastCompletedWord = nil
+
+            if persistAsync {
+                let snapshot = state
+                queue.async { [weak self] in
+                    self?.writeSnapshot(snapshot)
+                }
+            } else {
+                persistLocked()
+            }
         }
     }
 

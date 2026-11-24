@@ -154,6 +154,17 @@ word-tail/
 
 ---
 
+## Studio Tools (Included Free)
+
+Every feature in `v0.8.3` — inline Tab completion, multi-word phrase prediction, inline typo rescue, adaptive auto-correct & sentence capitalization, KeyStats, per-device iCloud/folder sync, baseline calibration — plus the new **Studio** tools remain **MIT open source and 100% free**:
+
+- **Domain Vocabulary Packs:** 6 built-in specialized packs (AI/ML & Quant, Systems & DevOps, Biomedical, Legal/Finance, Product/Design, Academic Research) plus portable `.wordtailpack` JSON imports/exports.
+- **Snippet Studio & Macros:** Trigger-based expansion (`;date`, `;iso`, `;time`, `;meet`, `;pr`, `;clip`) supporting `{date}`, `{date:...}`, `{time}`, `{iso}`, `{weekday}`, `{clipboard}`, and `{cursor}` caret positioning.
+- **Per-App Writing Profiles & Bilingual CJK–English:** Automatic or preset-based rule overrides per app (`Casual Chat`, `Formal Docs`, `Engineering Chat`) alongside CJK–English completion boundaries and PanGu spacing on acceptance.
+- **Typing Wrapped & Exports:** Offline `3:4` and `16:9` Light/Dark PNG posters, CSV daily/per-app tables, and Markdown summaries.
+
+---
+
 ## License
 
 Released under the [MIT License](LICENSE).

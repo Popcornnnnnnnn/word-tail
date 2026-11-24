@@ -11,6 +11,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case insights = "Insights"
     case dictionary = "Dictionary"
     case preferences = "Preferences"
+    case pro = "Studio"
 
     var id: String { rawValue }
     var symbol: String {
@@ -21,6 +22,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .insights: return "chart.bar.xaxis"
         case .dictionary: return "character.book.closed"
         case .preferences: return "switch.2"
+        case .pro: return "sparkles"
         }
     }
 }
@@ -341,8 +343,22 @@ final class SettingsViewModel: ObservableObject {
     @Published var isCheckingUpdates: Bool = false
     @Published var isInstallingUpdate: Bool = false
     @Published var updateStatusText: String = ""
+    @Published var proUI: WordTailProUIState {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase, let engine else { return }
+            if oldValue.bilingualCompletionEnabled != proUI.bilingualCompletionEnabled {
+                engine.bilingualCompletionEnabled = proUI.bilingualCompletionEnabled
+            }
+            if oldValue.bilingualSpacingEnabled != proUI.bilingualSpacingEnabled {
+                engine.bilingualSpacingEnabled = proUI.bilingualSpacingEnabled
+            }
+        }
+    }
+    var proCallbacks: ProSettingsCallbacks = SettingsViewModel.placeholderProCallbacks()
 
     private var isRefreshing = false
+    private var lastTargetApp: (name: String, bundleID: String)?
+    private var displayedProfileTarget: (name: String, bundleID: String)?
 
     @MainActor
     init(
@@ -387,6 +403,10 @@ final class SettingsViewModel: ObservableObject {
         let initialSync = engine.syncEngine.statusSnapshot()
         self.syncStatus = initialSync
         self.syncEnabled = initialSync.isEnabled
+        self.proUI = Self.makeEmptyProUIState(
+            bilingualCompletion: engine.bilingualCompletionEnabled,
+            bilingualSpacing: engine.bilingualSpacingEnabled
+        )
         if let autoUpdater {
             self.autoCheckUpdates = autoUpdater.autoCheckEnabled
             self.availableRelease = autoUpdater.availableRelease
@@ -396,6 +416,7 @@ final class SettingsViewModel: ObservableObject {
         } else {
             self.updateStatusText = "Current version v\(AutoUpdateManager.currentAppVersion())"
         }
+        self.proCallbacks = makeProCallbacks()
         refresh(currentApp: currentApp)
     }
 
@@ -408,7 +429,8 @@ final class SettingsViewModel: ObservableObject {
         vocabulary: [VocabularyEntry],
         keyStats: KeyStatsAggregateSnapshot = KeyStatsAggregateSnapshot(),
         hourlyTrendBuckets: [HourlyTrendBucket] = [],
-        showcaseAppIcons: [String: NSImage] = [:]
+        showcaseAppIcons: [String: NSImage] = [:],
+        proUI: WordTailProUIState? = nil
     ) {
         self.engine = nil
         self.autoUpdater = nil
@@ -455,6 +477,11 @@ final class SettingsViewModel: ObservableObject {
         self.busiestKeyHour = hourlyTrendBuckets.max(by: { $0.syncedKeys < $1.syncedKeys })?.axisLabel
         self.busiestClickHour = hourlyTrendBuckets.max(by: { $0.syncedClicks < $1.syncedClicks })?.axisLabel
         self.showcaseAppIcons = showcaseAppIcons
+        self.proUI = proUI ?? Self.makeEmptyProUIState(
+            bilingualCompletion: true,
+            bilingualSpacing: true,
+            wrappedSummary: TypingReportExporter.summarize(keyStats: keyStats, insights: insights)
+        )
     }
 
     func refresh(currentApp: (name: String, bundleID: String)?) {
@@ -532,6 +559,7 @@ final class SettingsViewModel: ObservableObject {
            currentApp.bundleID != Bundle.main.bundleIdentifier,
            !InputGuard.defaultExcludedBundleIDs.contains(currentApp.bundleID) {
             runningNames[currentApp.bundleID] = currentApp.name
+            lastTargetApp = currentApp
         }
 
         let savedDict = (UserDefaults.standard.dictionary(forKey: "WordTailPerAppVerticalOffsets") as? [String: Double]) ?? [:]
@@ -552,6 +580,8 @@ final class SettingsViewModel: ObservableObject {
             )
         }
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+
+        refreshProUI()
 
         let existingIDs = Set(appOffsets.map(\.bundleID))
         availableAppsToAdd = runningNames
@@ -881,7 +911,7 @@ final class SettingsViewModel: ObservableObject {
             return err
         }
         guard syncStatus.isEnabled else {
-            return "Off · Syncs dictionary, rules, phrases, Insights & KeyStats across Macs"
+            return "Off · Syncs dictionary, rules, phrases, Pro packs/snippets/profiles, Insights & KeyStats across Macs"
         }
         let locLabel: String
         if syncStatus.isICloudDrive {
@@ -975,6 +1005,19 @@ final class SettingsViewModel: ObservableObject {
             isInstallingUpdate = autoUpdater.isInstalling
             updateStatusText = autoUpdater.statusMessage
         }
+        refreshProUI()
+    }
+
+    private func syncDisplayedProfileTarget() {
+        guard let engine, !isStaticShowcase else { return }
+        if let targetApp = engine.lastObservedTargetApp ?? lastTargetApp {
+            let friendlyName = Self.friendlyAppTitle(bundleID: targetApp.bundleID, rawName: targetApp.name)
+            displayedProfileTarget = (name: friendlyName, bundleID: targetApp.bundleID)
+            proUI.activeProfileTargetName = friendlyName
+        } else {
+            displayedProfileTarget = nil
+            proUI.activeProfileTargetName = nil
+        }
     }
 
     @MainActor
@@ -1005,7 +1048,426 @@ final class SettingsViewModel: ObservableObject {
         busiestKeyHour = hourly.busiestKeyHour
         busiestClickHour = hourly.busiestClickHour
         isRefreshing = false
+        refreshProUI()
         onStateChange()
+    }
+
+    func refreshProUI(statusMessage: String? = nil, isError: Bool = false) {
+        guard let engine, !isStaticShowcase else { return }
+        let wasRefreshing = isRefreshing
+        isRefreshing = true
+        defer { isRefreshing = wasRefreshing }
+
+        let enabledSet = Set(engine.domainPackStore.enabledPackIDs)
+        let builtInItems = DomainLexiconPack.builtInPacks.map { pack in
+            ProDomainPackItem(
+                id: pack.id,
+                name: pack.name,
+                tagline: pack.tagline,
+                wordCount: pack.words.count,
+                isEnabled: enabledSet.contains(pack.id),
+                isCustom: false
+            )
+        }
+        let customItems = engine.domainPackStore.customPacks.map { custom in
+            ProDomainPackItem(
+                id: custom.id,
+                name: custom.name,
+                tagline: "Imported custom vocabulary pack",
+                wordCount: custom.words.count,
+                isEnabled: true,
+                isCustom: true
+            )
+        }
+
+        let starterSnippetIDs: Set<String> = [";date", ";iso", ";time", ";meet", ";pr", ";clip"]
+        let snippetItems = engine.snippetStore.snippets.map { snippet in
+            let scope: String
+            if snippet.scopedBundleIDs.isEmpty {
+                scope = "All Apps"
+            } else if snippet.scopedBundleIDs.count == 1 {
+                scope = Self.appName(forBundleID: snippet.scopedBundleIDs[0])
+            } else {
+                scope = "\(snippet.scopedBundleIDs.count) Apps"
+            }
+            return ProSnippetItem(
+                id: snippet.id,
+                trigger: snippet.trigger,
+                title: snippet.title,
+                previewBody: snippet.body.replacingOccurrences(of: "\n", with: " ↵ "),
+                appScopeLabel: scope,
+                isEnabled: snippet.isEnabled,
+                isBuiltIn: starterSnippetIDs.contains(snippet.id)
+            )
+        }
+
+        let profileItems = engine.appProfileStore.profiles.map { profile in
+            ProAppProfileItem(
+                id: profile.id,
+                bundleID: profile.bundleID,
+                displayName: Self.friendlyAppTitle(bundleID: profile.bundleID, rawName: profile.displayName),
+                presetTitle: profile.preset.title,
+                summary: Self.summarizeWritingProfile(profile)
+            )
+        }
+
+        syncDisplayedProfileTarget()
+        let allStats = engine.keyStatsStore.snapshot(for: .allTime, deviceScope: .allDevices)
+        let allInsights = engine.insightsSnapshot()
+        let wrapped = TypingReportExporter.summarize(keyStats: allStats, insights: allInsights)
+
+        proUI.entitlementState = engine.licenseManager.entitlementState
+        proUI.hasUsedTrial = engine.licenseManager.hasUsedTrial
+        if let statusMessage {
+            proUI.statusMessage = statusMessage
+            proUI.isErrorStatus = isError
+        }
+        proUI.packs = builtInItems + customItems
+        proUI.snippets = snippetItems
+        proUI.profiles = profileItems
+        proUI.bilingualCompletionEnabled = engine.bilingualCompletionEnabled
+        proUI.bilingualSpacingEnabled = engine.bilingualSpacingEnabled
+        proUI.wrappedSummary = wrapped
+    }
+
+    private func makeProCallbacks() -> ProSettingsCallbacks {
+        ProSettingsCallbacks(
+            activateLicense: { [weak self] rawKey in
+                guard let self, let engine = self.engine else { return }
+                switch engine.licenseManager.activate(licenseKey: rawKey) {
+                case .success(let payload):
+                    engine.syncCompleterProState()
+                    self.proUI.licenseKeyDraft = ""
+                    self.refreshProUI(statusMessage: "Activated Pro license for \(payload.email).")
+                    self.onStateChange()
+                case .failure(let error):
+                    self.refreshProUI(statusMessage: error.localizedDescription, isError: true)
+                }
+            },
+            startTrial: { [weak self] in
+                guard let self, let engine = self.engine else { return }
+                if engine.licenseManager.startLocalTrial() {
+                    engine.syncCompleterProState()
+                    self.refreshProUI(statusMessage: "14-day free trial started.")
+                    self.onStateChange()
+                } else {
+                    self.refreshProUI(statusMessage: "Free trial is already used on this Mac.", isError: true)
+                }
+            },
+            deactivateLicense: { [weak self] in
+                guard let self, let engine = self.engine else { return }
+                engine.licenseManager.deactivateLicense()
+                engine.syncCompleterProState()
+                self.refreshProUI(statusMessage: "License deactivated on this Mac.")
+                self.onStateChange()
+            },
+            setPackEnabled: { [weak self] id, enabled in
+                guard let self, let engine = self.engine else { return }
+                var nextIDs = engine.domainPackStore.enabledPackIDs
+                if enabled {
+                    if !nextIDs.contains(id) { nextIDs.append(id) }
+                } else {
+                    nextIDs.removeAll { $0 == id }
+                }
+                guard engine.domainPackStore.setEnabledPackIDs(nextIDs) else {
+                    self.refreshProUI(statusMessage: "Could not save domain pack settings.", isError: true)
+                    return
+                }
+                engine.syncCompleterProState()
+                self.refreshProUI()
+                self.pushSyncInBackgroundIfEnabled()
+            },
+            importPack: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, let engine = self.engine else { return }
+                    let panel = NSOpenPanel()
+                    panel.canChooseFiles = true
+                    panel.canChooseDirectories = false
+                    panel.allowsMultipleSelection = false
+                    panel.allowedContentTypes = [
+                        .json,
+                        UTType(filenameExtension: "wordtailpack") ?? .json
+                    ]
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    do {
+                        let handle = try FileHandle(forReadingFrom: url)
+                        defer { try? handle.close() }
+                        let maxPackReadBytes = 512 * 1024 + 1
+                        let data = try handle.read(upToCount: maxPackReadBytes) ?? Data()
+                        let imported = try engine.domainPackStore.importCustomPack(data: data)
+                        engine.syncCompleterProState()
+                        self.refreshProUI(statusMessage: "Imported \"\(imported.name)\" (\(imported.words.count) words).")
+                        self.pushSyncInBackgroundIfEnabled()
+                    } catch {
+                        self.refreshProUI(statusMessage: "Import failed: \(error.localizedDescription)", isError: true)
+                    }
+                }
+            },
+            exportPacks: { [weak self] in
+                self?.exportPackPanel(packID: nil)
+            },
+            exportCustomPack: { [weak self] id in
+                self?.exportPackPanel(packID: id)
+            },
+            addSnippet: { [weak self] rawTrigger, rawTitle, rawBody in
+                guard let self, let engine = self.engine else { return }
+                let trigger = rawTrigger.trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard SnippetStore.isValidTrigger(trigger) else {
+                    self.refreshProUI(
+                        statusMessage: "Trigger must start with ; / : ! @ # \\ and be 2–24 non-space characters.",
+                        isError: true
+                    )
+                    return
+                }
+                if engine.snippetStore.snippets.contains(where: { $0.trigger == trigger }) {
+                    self.refreshProUI(
+                        statusMessage: "A snippet for \(trigger) already exists.",
+                        isError: true
+                    )
+                    return
+                }
+                let snippet = TextSnippet(trigger: trigger, title: title.isEmpty ? trigger : title, body: rawBody)
+                if engine.snippetStore.addOrUpdateSnippet(snippet) {
+                    self.proUI.newSnippetTrigger = ""
+                    self.proUI.newSnippetTitle = ""
+                    self.proUI.newSnippetBody = ""
+                    self.refreshProUI(statusMessage: "Saved snippet \(trigger).")
+                    self.pushSyncInBackgroundIfEnabled()
+                } else {
+                    self.refreshProUI(statusMessage: "Could not save snippet.", isError: true)
+                }
+            },
+            setSnippetEnabled: { [weak self] id, isEnabled in
+                guard let self, let engine = self.engine else { return }
+                guard engine.snippetStore.toggleSnippet(id: id, isEnabled: isEnabled) else {
+                    self.refreshProUI(statusMessage: "Failed updating snippet state.", isError: true)
+                    return
+                }
+                self.refreshProUI()
+                self.pushSyncInBackgroundIfEnabled()
+            },
+            deleteSnippet: { [weak self] id in
+                guard let self, let engine = self.engine else { return }
+                guard engine.snippetStore.deleteSnippet(id: id) else {
+                    self.refreshProUI(statusMessage: "Failed deleting snippet.", isError: true)
+                    return
+                }
+                self.refreshProUI(statusMessage: "Deleted snippet.")
+                self.pushSyncInBackgroundIfEnabled()
+            },
+            applyProfilePreset: { [weak self] preset in
+                guard let self, let engine = self.engine else { return }
+                let mapped: AppProfilePreset = switch preset {
+                case .coding: .engineeringChat
+                case .prose: .formalDocs
+                case .bilingual: .casualChat
+                }
+                guard let target = self.displayedProfileTarget else {
+                    self.refreshProUI(
+                        statusMessage: "Switch to another app briefly so WordTail detects the target app first.",
+                        isError: true
+                    )
+                    return
+                }
+                guard engine.appProfileStore.applyPreset(mapped, toBundleID: target.bundleID, displayName: target.name) else {
+                    self.refreshProUI(statusMessage: "Failed saving profile for \(target.name).", isError: true)
+                    return
+                }
+                engine.syncCompleterProState()
+                self.refreshProUI(statusMessage: "Applied \(mapped.title) profile to \(target.name).")
+                self.pushSyncInBackgroundIfEnabled()
+            },
+            deleteProfile: { [weak self] bundleID in
+                guard let self, let engine = self.engine else { return }
+                guard engine.appProfileStore.delete(bundleID: bundleID) else {
+                    self.refreshProUI(statusMessage: "Failed restoring global settings for \(bundleID).", isError: true)
+                    return
+                }
+                engine.syncCompleterProState()
+                self.refreshProUI(statusMessage: "Restored global settings for \(bundleID).")
+                self.pushSyncInBackgroundIfEnabled()
+            },
+            exportPoster: { [weak self] aspect, colorScheme in
+                Task { @MainActor [weak self] in
+                    guard let self, let engine = self.engine else { return }
+                    guard engine.isStudioFeatureUnlocked(.wrappedAndReports) else {
+                        self.refreshProUI(statusMessage: "Activate Pro or start a trial to export posters.", isError: true)
+                        return
+                    }
+                    let panel = NSSavePanel()
+                    panel.allowedContentTypes = [.png]
+                    let ratioTag = aspect == .portrait3x4 ? "3x4" : "16x9"
+                    let themeTag = colorScheme == .dark ? "Dark" : "Light"
+                    panel.nameFieldStringValue = "WordTail-Wrapped-\(ratioTag)-\(themeTag).png"
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    guard let data = WrappedPosterView.renderPNG(
+                        summary: self.proUI.wrappedSummary,
+                        aspect: aspect,
+                        colorScheme: colorScheme
+                    ) else {
+                        self.refreshProUI(statusMessage: "Failed rendering Wrapped PNG.", isError: true)
+                        return
+                    }
+                    do {
+                        try data.write(to: url, options: .atomic)
+                        self.refreshProUI(statusMessage: "Saved poster to \(url.lastPathComponent).")
+                    } catch {
+                        self.refreshProUI(statusMessage: "Export failed: \(error.localizedDescription)", isError: true)
+                    }
+                }
+            },
+            exportCSV: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, let engine = self.engine else { return }
+                    guard engine.isStudioFeatureUnlocked(.wrappedAndReports) else {
+                        self.refreshProUI(statusMessage: "Activate Pro or start a trial to export CSV.", isError: true)
+                        return
+                    }
+                    let panel = NSSavePanel()
+                    panel.allowedContentTypes = [.commaSeparatedText]
+                    panel.nameFieldStringValue = "WordTail-Typing-Stats.csv"
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    let reportSnap = engine.keyStatsStore.allTimeReportSnapshot(deviceScope: .allDevices)
+                    let data = TypingReportExporter.csv(dailyPoints: reportSnap.dailyTrend, appSummaries: reportSnap.topApps)
+                    do {
+                        try data.write(to: url, options: .atomic)
+                        self.refreshProUI(statusMessage: "Saved CSV to \(url.lastPathComponent).")
+                    } catch {
+                        self.refreshProUI(statusMessage: "Export failed: \(error.localizedDescription)", isError: true)
+                    }
+                }
+            },
+            exportMarkdown: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, let engine = self.engine else { return }
+                    guard engine.isStudioFeatureUnlocked(.wrappedAndReports) else {
+                        self.refreshProUI(statusMessage: "Activate Pro or start a trial to export Markdown.", isError: true)
+                        return
+                    }
+                    let panel = NSSavePanel()
+                    panel.allowedContentTypes = [.plainText]
+                    panel.nameFieldStringValue = "WordTail-Typing-Wrapped.md"
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    let reportSnap = engine.keyStatsStore.allTimeReportSnapshot(deviceScope: .allDevices)
+                    let freshInsights = engine.insightsSnapshot()
+                    let summary = TypingReportExporter.summarize(keyStats: reportSnap, insights: freshInsights)
+                    let markdown = TypingReportExporter.markdownReport(
+                        summary: summary,
+                        dailyPoints: reportSnap.dailyTrend
+                    )
+                    do {
+                        try Data(markdown.utf8).write(to: url, options: .atomic)
+                        self.refreshProUI(statusMessage: "Saved Markdown to \(url.lastPathComponent).")
+                    } catch {
+                        self.refreshProUI(statusMessage: "Export failed: \(error.localizedDescription)", isError: true)
+                    }
+                }
+            }
+        )
+    }
+
+    private func exportPackPanel(packID: String?) {
+        Task { @MainActor [weak self] in
+            guard let self, let engine = self.engine else { return }
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [UTType(filenameExtension: "wordtailpack") ?? .json, .json]
+            let targetCustom: CustomDomainPack? = packID.flatMap { id in
+                engine.domainPackStore.customPacks.first(where: { $0.id == id })
+            } ?? engine.domainPackStore.customPacks.first
+            panel.nameFieldStringValue = "\(targetCustom?.id ?? "custom-domain-pack").wordtailpack"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                let data: Data
+                let note: String
+                if let targetCustom {
+                    data = try engine.domainPackStore.exportCustomPackJSON(id: targetCustom.id)
+                    note = "Exported \"\(targetCustom.name)\" to \(url.lastPathComponent)."
+                } else {
+                    let sample = CustomDomainPack(
+                        id: "custom-team-pack",
+                        name: "Custom Team Vocabulary",
+                        words: Array((DomainLexiconPack.builtInPacks.first?.words ?? ["algorithm", "telemetry"]).prefix(20))
+                    )
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    data = try encoder.encode(sample)
+                    note = "Exported starter template \(url.lastPathComponent)."
+                }
+                try data.write(to: url, options: .atomic)
+                self.refreshProUI(statusMessage: note)
+            } catch {
+                self.refreshProUI(statusMessage: "Export failed: \(error.localizedDescription)", isError: true)
+            }
+        }
+    }
+
+    private static func summarizeWritingProfile(_ profile: AppWritingProfile) -> String {
+        var parts: [String] = []
+        if let cap = profile.autoCapitalizeSentences {
+            parts.append(cap ? "Auto-Cap On" : "Auto-Cap Off")
+        }
+        if let fix = profile.autoCorrectOnSpace {
+            parts.append(fix ? "Space-Fix On" : "Space-Fix Off")
+        }
+        if let phrase = profile.enablePhrasePrediction {
+            parts.append(phrase ? "Phrases On" : "Phrases Off")
+        }
+        if let bi = profile.bilingualSpacingOverride {
+            parts.append(bi ? "PanGu On" : "PanGu Off")
+        }
+        if let packs = profile.enabledDomainPackIDs, !packs.isEmpty {
+            parts.append("\(packs.count) Pack(s)")
+        }
+        return parts.isEmpty ? "Inherits Global Rules" : parts.joined(separator: " · ")
+    }
+
+    private static func makeEmptyProUIState(
+        bilingualCompletion: Bool,
+        bilingualSpacing: Bool,
+        wrappedSummary: TypingWrappedSummary = TypingReportExporter.summarize(
+            keyStats: KeyStatsAggregateSnapshot(),
+            insights: TypingInsightsSnapshot()
+        )
+    ) -> WordTailProUIState {
+        WordTailProUIState(
+            entitlementState: .free,
+            hasUsedTrial: false,
+            statusMessage: nil,
+            isErrorStatus: false,
+            licenseKeyDraft: "",
+            packs: [],
+            snippets: [],
+            newSnippetTrigger: "",
+            newSnippetTitle: "",
+            newSnippetBody: "",
+            profiles: [],
+            bilingualCompletionEnabled: bilingualCompletion,
+            bilingualSpacingEnabled: bilingualSpacing,
+            wrappedSummary: wrappedSummary,
+            posterAspect: .portrait3x4,
+            posterColorScheme: .dark
+        )
+    }
+
+    private static func placeholderProCallbacks() -> ProSettingsCallbacks {
+        ProSettingsCallbacks(
+            activateLicense: { _ in },
+            startTrial: {},
+            deactivateLicense: {},
+            setPackEnabled: { _, _ in },
+            importPack: {},
+            exportPacks: {},
+            exportCustomPack: { _ in },
+            addSnippet: { _, _, _ in },
+            setSnippetEnabled: { _, _ in },
+            deleteSnippet: { _ in },
+            applyProfilePreset: { _ in },
+            deleteProfile: { _ in },
+            exportPoster: { _, _ in },
+            exportCSV: {},
+            exportMarkdown: {}
+        )
     }
 
     func pushSyncInBackgroundIfEnabled() {

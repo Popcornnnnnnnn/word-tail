@@ -1124,12 +1124,32 @@ public final class KeyStatsStore {
         }
     }
 
+    public func allTimeReportSnapshot(
+        deviceScope: StatsDeviceScope = .allDevices
+    ) -> KeyStatsAggregateSnapshot {
+        let nowDate = nowProvider()
+        return queue.sync {
+            let includedKeys = filteredDayKeysLocked(for: .allTime, scope: deviceScope, referenceDate: nowDate)
+            return buildSnapshotLocked(
+                includedKeys: includedKeys,
+                explicitTrendKeys: nil,
+                range: .allTime,
+                deviceScope: deviceScope,
+                referenceDate: nowDate,
+                maxApps: nil,
+                uncappedDailyTrend: true
+            )
+        }
+    }
+
     private func buildSnapshotLocked(
         includedKeys: [String],
         explicitTrendKeys: [String]?,
         range: StatsTimeRange,
         deviceScope: StatsDeviceScope,
-        referenceDate nowDate: Date
+        referenceDate nowDate: Date,
+        maxApps: Int? = 200,
+        uncappedDailyTrend: Bool = false
     ) -> KeyStatsAggregateSnapshot {
         let df = Self.dayKeyFormatter()
         let cal = Calendar.current
@@ -1247,7 +1267,7 @@ public final class KeyStatsStore {
             .prefix(15)
             .map { RankedCountItem(label: KeyCodeMapper.prettyKeyLabel($0.key), count: $0.value) }
 
-        let topAppItems = mergedApps.values
+        let sortedApps = mergedApps.values
             .filter { $0.keyPresses > 0 || $0.totalClicks > 0 || $0.scrollDistancePx > 0 }
             .sorted {
                 let lScore = $0.keyPresses + $0.totalClicks
@@ -1255,7 +1275,8 @@ public final class KeyStatsStore {
                 if lScore != rScore { return lScore > rScore }
                 return $0.displayName < $1.displayName
             }
-            .prefix(200)
+        let limitedApps = maxApps.map { Array(sortedApps.prefix($0)) } ?? sortedApps
+        let topAppItems = limitedApps
             .map {
                 AppActivitySummary(
                     bundleID: $0.bundleID,
@@ -1296,7 +1317,9 @@ public final class KeyStatsStore {
             case .days30:
                 trendKeys = Self.recentDayKeys(count: 30, referenceDate: nowDate).reversed()
             case .allTime:
-                if let first = firstActiveKey {
+                if uncappedDailyTrend {
+                    trendKeys = includedKeys.sorted()
+                } else if let first = firstActiveKey {
                     trendKeys = Self.chronologicalDayKeys(from: first, to: todayKey, maxDays: 1095)
                 } else {
                     trendKeys = [todayKey]

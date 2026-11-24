@@ -7,9 +7,14 @@ public struct CompletionMatch: Equatable {
     public let suffix: String
     public let previousWord: String?
     public let replacementDeleteCount: Int
+    public let isSnippet: Bool
+    public let cursorBackSteps: Int
+    public let needsLeadingSpace: Bool
+    public let snippetID: String?
+    public let snippetUpdatedAt: TimeInterval?
 
     public var isTypoCorrection: Bool {
-        replacementDeleteCount > 0
+        replacementDeleteCount > 0 && !isSnippet
     }
 
     public init(
@@ -17,13 +22,23 @@ public struct CompletionMatch: Equatable {
         fullWord: String,
         suffix: String,
         previousWord: String? = nil,
-        replacementDeleteCount: Int = 0
+        replacementDeleteCount: Int = 0,
+        isSnippet: Bool = false,
+        cursorBackSteps: Int = 0,
+        needsLeadingSpace: Bool = false,
+        snippetID: String? = nil,
+        snippetUpdatedAt: TimeInterval? = nil
     ) {
         self.prefix = prefix
         self.fullWord = fullWord
         self.suffix = suffix
         self.previousWord = previousWord
         self.replacementDeleteCount = replacementDeleteCount
+        self.isSnippet = isSnippet
+        self.cursorBackSteps = cursorBackSteps
+        self.needsLeadingSpace = needsLeadingSpace
+        self.snippetID = snippetID
+        self.snippetUpdatedAt = snippetUpdatedAt
     }
 
     public static func == (lhs: CompletionMatch, rhs: CompletionMatch) -> Bool {
@@ -31,6 +46,11 @@ public struct CompletionMatch: Equatable {
             && lhs.fullWord == rhs.fullWord
             && lhs.suffix == rhs.suffix
             && lhs.replacementDeleteCount == rhs.replacementDeleteCount
+            && lhs.isSnippet == rhs.isSnippet
+            && lhs.cursorBackSteps == rhs.cursorBackSteps
+            && lhs.needsLeadingSpace == rhs.needsLeadingSpace
+            && lhs.snippetID == rhs.snippetID
+            && lhs.snippetUpdatedAt == rhs.snippetUpdatedAt
     }
 }
 
@@ -90,6 +110,13 @@ public final class WordCompleter {
     public var enableTechLexicon: Bool
     public var enableInlineTypoFix: Bool
     public var enablePhrasePrediction: Bool
+    public var domainLexiconProvider: ((_ lowercasedPrefix: String, _ bundleID: String?) -> [String])?
+    public var snippetMatcher: ((_ textBeforeCursor: String, _ bundleID: String?) -> SnippetMatch?)?
+    public var bilingualCompletionEnabled: Bool = false
+    public var bilingualCompletionProvider: (() -> Bool)?
+    public var bilingualSpacingProvider: ((_ bundleID: String?) -> Bool)?
+    public var inlineTypoFixProvider: ((_ bundleID: String?) -> Bool)?
+    public var phrasePredictionProvider: ((_ bundleID: String?) -> Bool)?
 
     public init(
         spellCompleter: SpellCompleting = SystemSpellCompleter(),
@@ -163,6 +190,30 @@ public final class WordCompleter {
         let line = String(rawLastLine.suffix(80))
         guard !line.isEmpty else { return [] }
 
+        let effectiveCharAfter = charAfterCursor ?? textAfterCursorOnLine?.first
+        if let hit = snippetMatcher?(line, bundleID),
+           effectiveCharAfter == nil || Self.allowedTrailingChars.contains(effectiveCharAfter!) {
+            let cleanTitle = hit.snippet.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallbackPreview = hit.expandedText
+                .replacingOccurrences(of: "\n", with: " ↵ ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayLabel = cleanTitle.isEmpty ? String(fallbackPreview.prefix(40)) : cleanTitle
+            return [
+                CompletionMatch(
+                    prefix: hit.trigger,
+                    fullWord: displayLabel,
+                    suffix: hit.expandedText,
+                    previousWord: nil,
+                    replacementDeleteCount: hit.deleteCount,
+                    isSnippet: true,
+                    cursorBackSteps: hit.cursorBackSteps,
+                    needsLeadingSpace: false,
+                    snippetID: hit.snippet.id,
+                    snippetUpdatedAt: hit.snippet.updatedAt
+                )
+            ]
+        }
+
         let chars = Array(line)
         var wordStart = chars.count
         while wordStart > 0 {
@@ -177,27 +228,31 @@ public final class WordCompleter {
         }
 
         // Ignore URLs, paths, emails, flags, domains, and snake_case identifiers.
+        let allowBilingual = bilingualCompletionProvider?() ?? bilingualCompletionEnabled
         if wordStart > 0 {
             let boundary = chars[wordStart - 1]
-            if !Self.allowedLeadingBoundaryChars.contains(boundary) {
+            if !BilingualSpacingGuard.shouldAllowLeadingBoundary(boundary, bilingualEnabled: allowBilingual) {
                 return []
             }
         }
 
+        let allowPhrasePrediction = phrasePredictionProvider?(bundleID) ?? enablePhrasePrediction
+        let allowInlineTypoFix = inlineTypoFixProvider?(bundleID) ?? enableInlineTypoFix
         let prefix = String(chars[wordStart..<chars.count])
         let letterCount = prefix.filter(Self.isASCIILetter).count
-        let effectiveCharAfter = charAfterCursor ?? textAfterCursorOnLine?.first
 
         // Case 1: Cursor sits immediately after a single Space ("as far |" or "one more |") -> Conservative Phrase Prediction!
         if prefix.isEmpty {
-            guard enablePhrasePrediction,
+            guard allowPhrasePrediction,
                   let predictor = phrasePredictor,
                   chars.last == " ",
                   chars.count >= 4,
                   chars[chars.count - 2] != " " else {
                 return []
             }
-            if let after = effectiveCharAfter, !Self.allowedTrailingChars.contains(after) {
+            if let after = effectiveCharAfter,
+               !Self.allowedTrailingChars.contains(after),
+               !BilingualSpacingGuard.shouldAllowTrailingBoundary(after, bilingualEnabled: allowBilingual) {
                 guard Self.isASCIILetter(after),
                       let afterLine = textAfterCursorOnLine,
                       Self.isInsertingBeforeSeparateWord(prefix: "", afterSlice: afterLine) else {
@@ -213,7 +268,9 @@ public final class WordCompleter {
         }
 
         // Case 2: Mid-word — validate trailing boundary first so neither phrase nor word completions fire inside a single word ("kn|ow").
-        if let after = effectiveCharAfter, !Self.allowedTrailingChars.contains(after) {
+        if let after = effectiveCharAfter,
+           !Self.allowedTrailingChars.contains(after),
+           !BilingualSpacingGuard.shouldAllowTrailingBoundary(after, bilingualEnabled: allowBilingual) {
             // Allow mid-sentence insertion directly against the start of an existing word ("just al|behind" or "to kn|the")
             // ONLY when `trailingWord` is a complete standalone word AND `prefix + trailingWord` is NOT a single valid word!
             guard Self.isASCIILetter(after),
@@ -224,11 +281,11 @@ public final class WordCompleter {
         }
 
         // Check conservative multi-word phrase continuation first (even on 1st letter like "as far a")!
-        let precedingSentenceWords = enablePhrasePrediction
+        let precedingSentenceWords = allowPhrasePrediction
             ? Self.extractPrecedingSentenceWords(chars: chars, beforeIndex: wordStart, maxWords: 3)
             : []
         let phraseMatches: [CompletionMatch]
-        if enablePhrasePrediction,
+        if allowPhrasePrediction,
            let predictor = phrasePredictor,
            precedingSentenceWords.count >= 2 {
             phraseMatches = predictor.predictMidWord(
@@ -251,6 +308,12 @@ public final class WordCompleter {
             return Array(phraseMatches.prefix(limit))
         }
 
+        let needsLeadingSpace = wordStart > 0
+            ? BilingualSpacingGuard.needsLeadingSpace(
+                beforeWordStartBoundary: chars[wordStart - 1],
+                bilingualSpacingEnabled: bilingualSpacingProvider?(bundleID) ?? false
+            )
+            : false
         let prevWord = Self.extractImmediatePreviousWord(chars: chars, beforeIndex: wordStart)
 
         let nsLine = line as NSString
@@ -271,11 +334,12 @@ public final class WordCompleter {
         let techCandidates = enableTechLexicon
             ? TechLexicon.matching(lowercasedPrefix: lowerPrefix)
             : []
+        let domainCandidates = Array((domainLexiconProvider?(lowerPrefix, bundleID) ?? []).prefix(60))
 
-        // Order: user contextual/pinned words -> macOS grammar-ranked completions -> curated Tech/AI lexicon fallback.
+        // Order: user contextual/pinned words -> macOS grammar-ranked completions -> curated Tech/AI & Pro domain packs.
         var seen = Set<String>()
         var combined: [String] = []
-        for raw in historyCandidates + systemCandidates + techCandidates {
+        for raw in historyCandidates + systemCandidates + techCandidates + domainCandidates {
             guard let adapted = adaptCandidate(raw, toPrefix: prefix, previousWord: prevWord, bundleID: bundleID) else {
                 continue
             }
@@ -286,7 +350,7 @@ public final class WordCompleter {
         }
 
         // Surface explicit custom shorthand / graduated learned rules at #1 whenever their exact trigger is typed!
-        if enableInlineTypoFix,
+        if allowInlineTypoFix,
            let customFix = adaptiveStore?.customOrLearnedReplacement(for: lowerPrefix) {
             let adaptedCustom = ObviousTypoCorrector.adaptCase(of: customFix, toTyped: prefix)
             let diff = ObviousTypoCorrector.minimalDiff(from: prefix, to: adaptedCustom)
@@ -296,19 +360,21 @@ public final class WordCompleter {
                     fullWord: adaptedCustom,
                     suffix: diff.insertText,
                     previousWord: prevWord,
-                    replacementDeleteCount: diff.deleteCount
+                    replacementDeleteCount: diff.deleteCount,
+                    needsLeadingSpace: needsLeadingSpace
                 )
                 if combined.isEmpty {
                     return [customMatch]
                 }
-                let rankedRest = combined.enumerated().sorted { lhs, rhs in
-                    let lScore = contextualPriority(for: lhs.element, previousWord: prevWord, bundleID: bundleID)
-                    let rScore = contextualPriority(for: rhs.element, previousWord: prevWord, bundleID: bundleID)
-                    if lScore != rScore { return lScore > rScore }
-                    return lhs.offset < rhs.offset
-                }
-                let restMatches = rankedRest.prefix(max(0, limit - 1)).map { entry in
-                    CompletionMatch(prefix: prefix, fullWord: entry.element, suffix: String(entry.element.dropFirst(prefix.count)), previousWord: prevWord)
+                let rankedRest = rankedCandidates(combined, previousWord: prevWord, bundleID: bundleID)
+                let restMatches = rankedRest.prefix(max(0, limit - 1)).map { full in
+                    CompletionMatch(
+                        prefix: prefix,
+                        fullWord: full,
+                        suffix: String(full.dropFirst(prefix.count)),
+                        previousWord: prevWord,
+                        needsLeadingSpace: needsLeadingSpace
+                    )
                 }
                 return [customMatch] + restMatches
             }
@@ -316,7 +382,7 @@ public final class WordCompleter {
 
         if combined.isEmpty {
             // Fallback: Inline Typo Correction (`→ word` on Tab) when no valid prefix completions exist!
-            if enableInlineTypoFix,
+            if allowInlineTypoFix,
                let corrected = ObviousTypoCorrector.inlineTabCorrection(
                    forPrefix: prefix,
                    adaptiveStore: adaptiveStore,
@@ -332,7 +398,8 @@ public final class WordCompleter {
                         fullWord: corrected,
                         suffix: diff.insertText,
                         previousWord: prevWord,
-                        replacementDeleteCount: diff.deleteCount
+                        replacementDeleteCount: diff.deleteCount,
+                        needsLeadingSpace: needsLeadingSpace
                     )
                 ]
             }
@@ -340,19 +407,17 @@ public final class WordCompleter {
         }
 
         // Contextual ranking: custom pinned -> personal bigrams -> per-app vocabulary -> typo-trap rescue -> global accepts -> system grammar order.
-        let ranked = combined.enumerated().sorted { lhs, rhs in
-            let lScore = contextualPriority(for: lhs.element, previousWord: prevWord, bundleID: bundleID)
-            let rScore = contextualPriority(for: rhs.element, previousWord: prevWord, bundleID: bundleID)
-            if lScore != rScore {
-                return lScore > rScore
-            }
-            return lhs.offset < rhs.offset
-        }
+        let ranked = rankedCandidates(combined, previousWord: prevWord, bundleID: bundleID)
 
-        let singleWordMatches = ranked.prefix(limit).map { entry in
-            let full = entry.element
+        let singleWordMatches = ranked.prefix(limit).map { full in
             let suffix = String(full.dropFirst(prefix.count))
-            return CompletionMatch(prefix: prefix, fullWord: full, suffix: suffix, previousWord: prevWord)
+            return CompletionMatch(
+                prefix: prefix,
+                fullWord: full,
+                suffix: suffix,
+                previousWord: prevWord,
+                needsLeadingSpace: needsLeadingSpace
+            )
         }
 
         if phraseMatches.isEmpty {
@@ -368,6 +433,22 @@ public final class WordCompleter {
             }
         }
         return mergedOut
+    }
+
+    private func rankedCandidates(_ candidates: [String], previousWord: String?, bundleID: String?) -> [String] {
+        let scored = candidates.enumerated().map { entry in
+            (
+                index: entry.offset,
+                word: entry.element,
+                score: contextualPriority(for: entry.element, previousWord: previousWord, bundleID: bundleID)
+            )
+        }
+        return scored.sorted { lhs, rhs in
+            if lhs.score != rhs.score {
+                return lhs.score > rhs.score
+            }
+            return lhs.index < rhs.index
+        }.map(\.word)
     }
 
     private func contextualPriority(for word: String, previousWord: String?, bundleID: String?) -> Int {

@@ -16,6 +16,19 @@ struct CaretSnapshot {
     let font: NSFont
     let rawAXRect: CGRect
     let primaryScreenHeight: CGFloat
+    let focusedElement: AXUIElement?
+    let caretLocation: Int?
+}
+
+struct VerifiedSnippetDestination {
+    let element: AXUIElement
+    let caretLocation: Int?
+}
+
+enum AXSnippetReplaceOutcome {
+    case applied
+    case unattempted
+    case uncertain
 }
 
 final class AXCaretContext {
@@ -251,7 +264,9 @@ final class AXCaretContext {
                     placement: placement,
                     font: font,
                     rawAXRect: axRect,
-                    primaryScreenHeight: primaryHeight
+                    primaryScreenHeight: primaryHeight,
+                    focusedElement: element,
+                    caretLocation: selectedRange.location
                 )
             }
         }
@@ -798,8 +813,166 @@ final class AXCaretContext {
             placement: placement,
             font: font,
             rawAXRect: axRect,
-            primaryScreenHeight: primaryHeight
+            primaryScreenHeight: primaryHeight,
+            focusedElement: element,
+            caretLocation: nil
         )
+    }
+
+    func verifyDestinationStillMatches(
+        snapshot: CaretSnapshot?,
+        expectedBundleID: String?,
+        expectedTrigger: String,
+        expectedCharAfter: Character?,
+        enableChromiumBridge: Bool
+    ) -> VerifiedSnippetDestination? {
+        guard AXIsProcessTrusted(),
+              let snapshot,
+              let expectedElem = snapshot.focusedElement,
+              let app = effectiveFocusedApplication(),
+              app.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            return nil
+        }
+        if let expectedBundleID, app.bundleIdentifier != expectedBundleID {
+            return nil
+        }
+        guard let element = resolveFocusedTextElement(app: app, enableChromiumBridge: enableChromiumBridge),
+              CFEqual(element, expectedElem) else {
+            return nil
+        }
+
+        if let expectedLoc = snapshot.caretLocation {
+            guard let curRange = copySelectedRange(element),
+                  curRange.length == 0,
+                  curRange.location == expectedLoc else {
+                return nil
+            }
+            let triggerUTF16Len = (expectedTrigger as NSString).length
+            guard curRange.location >= triggerUTF16Len else { return nil }
+            let actualTrigger: String? = stringForRange(
+                element,
+                location: curRange.location - triggerUTF16Len,
+                length: triggerUTF16Len
+            ) ?? copyStringAttribute(element, attribute: kAXValueAttribute as String).flatMap { fullValue in
+                let ns = fullValue as NSString
+                guard curRange.location <= ns.length else { return nil }
+                return ns.substring(with: NSRange(location: curRange.location - triggerUTF16Len, length: triggerUTF16Len))
+            }
+            guard let actualTrigger, actualTrigger == expectedTrigger else {
+                return nil
+            }
+            if let expectedCharAfter {
+                let actualAfter: Character? = stringForRange(element, location: curRange.location, length: 1)?.first
+                    ?? copyStringAttribute(element, attribute: kAXValueAttribute as String).flatMap { fullValue in
+                        let ns = fullValue as NSString
+                        guard curRange.location < ns.length else { return nil }
+                        return ns.substring(with: NSRange(location: curRange.location, length: 1)).first
+                    }
+                guard actualAfter == expectedCharAfter else {
+                    return nil
+                }
+            }
+            return VerifiedSnippetDestination(element: element, caretLocation: curRange.location)
+        }
+
+        if let selectedRange = copySelectedRange(element), selectedRange.length != 0 {
+            return nil
+        }
+        guard let recheck = capture(
+            targetApp: app,
+            fallbackBuffer: "",
+            enableChromiumBridge: enableChromiumBridge,
+            verticalAdjustment: 0
+        ),
+        !recheck.isFallbackText,
+        let recheckElem = recheck.focusedElement,
+        CFEqual(recheckElem, expectedElem),
+        recheck.textBeforeCursor.hasSuffix(expectedTrigger),
+        recheck.charAfterCursor == expectedCharAfter else {
+            return nil
+        }
+        return VerifiedSnippetDestination(element: element, caretLocation: nil)
+    }
+
+    private func isCaretCollapsedWithIntactTrigger(
+        element: AXUIElement,
+        caretLocation: Int,
+        startLoc: Int,
+        triggerUTF16Count: Int,
+        trigger: String,
+        enableChromiumBridge: Bool
+    ) -> Bool {
+        guard let liveApp = effectiveFocusedApplication(),
+              let liveElem = resolveFocusedTextElement(app: liveApp, enableChromiumBridge: enableChromiumBridge),
+              CFEqual(liveElem, element),
+              let restoredRange = copySelectedRange(element),
+              restoredRange.length == 0,
+              restoredRange.location == caretLocation else {
+            return false
+        }
+        let intactTrigger: String? = stringForRange(
+            element,
+            location: startLoc,
+            length: triggerUTF16Count
+        ) ?? copyStringAttribute(element, attribute: kAXValueAttribute as String).flatMap { fullValue in
+            let ns = fullValue as NSString
+            guard caretLocation <= ns.length else { return nil }
+            return ns.substring(with: NSRange(location: startLoc, length: triggerUTF16Count))
+        }
+        return intactTrigger == trigger
+    }
+
+    func replaceRangeViaAX(
+        element: AXUIElement,
+        caretLocation: Int,
+        trigger: String,
+        replacement: String,
+        cursorBackSteps: Int,
+        enableChromiumBridge: Bool
+    ) -> AXSnippetReplaceOutcome {
+        let triggerUTF16Count = (trigger as NSString).length
+        guard caretLocation >= triggerUTF16Count else { return .unattempted }
+
+        let startLoc = caretLocation - triggerUTF16Count
+        var replaceRange = CFRange(location: startLoc, length: triggerUTF16Count)
+        guard let replaceRangeVal = AXValueCreate(.cfRange, &replaceRange) else {
+            return .unattempted
+        }
+        if AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, replaceRangeVal) != .success {
+            return isCaretCollapsedWithIntactTrigger(
+                element: element,
+                caretLocation: caretLocation,
+                startLoc: startLoc,
+                triggerUTF16Count: triggerUTF16Count,
+                trigger: trigger,
+                enableChromiumBridge: enableChromiumBridge
+            ) ? .unattempted : .uncertain
+        }
+
+        if AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, replacement as CFString) != .success {
+            var restoreRange = CFRange(location: caretLocation, length: 0)
+            guard let restoreVal = AXValueCreate(.cfRange, &restoreRange),
+                  AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, restoreVal) == .success,
+                  isCaretCollapsedWithIntactTrigger(
+                      element: element,
+                      caretLocation: caretLocation,
+                      startLoc: startLoc,
+                      triggerUTF16Count: triggerUTF16Count,
+                      trigger: trigger,
+                      enableChromiumBridge: enableChromiumBridge
+                  ) else {
+                return .uncertain
+            }
+            return .unattempted
+        }
+
+        let targetCharCount = max(0, replacement.count - cursorBackSteps)
+        let finalUTF16Offset = (String(replacement.prefix(targetCharCount)) as NSString).length
+        var finalRange = CFRange(location: startLoc + finalUTF16Offset, length: 0)
+        if let finalVal = AXValueCreate(.cfRange, &finalRange) {
+            _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, finalVal)
+        }
+        return .applied
     }
 
     /// Live lightweight inspection called on `Space` so even 1- or 2-letter sentence starters ("do ", "in ", "we ")

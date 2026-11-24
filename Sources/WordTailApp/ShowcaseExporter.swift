@@ -451,6 +451,74 @@ enum ShowcaseExporter {
             to: outDir.appendingPathComponent("menubar-popover-dark.png")
         )
         NSApp.appearance = NSAppearance(named: .aqua)
+
+        // 7. WordTail Pro settings tab showcase screenshot
+        let proSummary = TypingReportExporter.summarize(
+            keyStats: sampleKeyStats,
+            insights: sampleInsights
+        )
+        let proPacks = DomainLexiconPack.builtInPacks.enumerated().map { idx, pack in
+            ProDomainPackItem(
+                id: pack.id,
+                name: pack.name,
+                tagline: pack.tagline,
+                wordCount: pack.words.count,
+                isEnabled: idx < 2,
+                isCustom: false
+            )
+        }
+        let proSnippets = [
+            ProSnippetItem(id: ";date", trigger: ";date", title: "Date", previewBody: "{date}", appScopeLabel: "All Apps", isEnabled: true, isBuiltIn: true)
+        ]
+        let proProfiles = [
+            ProAppProfileItem(id: "com.openai.codex", bundleID: "com.openai.codex", displayName: "Codex (ChatGPT)", presetTitle: "Engineering Chat", summary: "Auto-Cap Off · Space-Fix Off · 2 Pack(s)"),
+            ProAppProfileItem(id: "com.tencent.xinWeChat", bundleID: "com.tencent.xinWeChat", displayName: "WeChat", presetTitle: "Casual Chat", summary: "Auto-Cap Off · PanGu On")
+        ]
+        let sampleProUI = WordTailProUIState(
+            entitlementState: .free,
+            hasUsedTrial: false,
+            statusMessage: "AI, ML & Quant + Systems & DevOps packs active.",
+            isErrorStatus: false,
+            licenseKeyDraft: "",
+            packs: proPacks,
+            snippets: proSnippets,
+            newSnippetTrigger: ";sig",
+            newSnippetTitle: "Signature",
+            newSnippetBody: "Best, ↵ Popcorn ({date})",
+            profiles: proProfiles,
+            bilingualCompletionEnabled: true,
+            bilingualSpacingEnabled: true,
+            activeProfileTargetName: "Codex (ChatGPT)",
+            wrappedSummary: proSummary,
+            posterAspect: .portrait3x4,
+            posterColorScheme: .dark
+        )
+        let proVM = SettingsViewModel(
+            showcaseSection: .pro,
+            appOffsets: sampleApps,
+            insights: sampleInsights,
+            bigrams: sampleBigrams,
+            vocabulary: sampleVocab,
+            keyStats: sampleKeyStats,
+            showcaseAppIcons: appIconsMap,
+            proUI: sampleProUI
+        )
+        try renderSwiftUIViewToPNG(
+            MacWindowFrameBackdrop(size: windowShotSize) {
+                SettingsView(vm: proVM)
+            },
+            size: windowShotSize,
+            to: outDir.appendingPathComponent("studio-settings-window.png")
+        )
+
+        // 8. Standalone Typing Wrapped 3:4 Dark Poster PNG (1200 x 1600)
+        if let posterData = WrappedPosterView.renderPNG(
+            summary: proSummary,
+            aspect: .portrait3x4,
+            colorScheme: .dark
+        ) {
+            try posterData.write(to: outDir.appendingPathComponent("typing-wrapped-poster.png"), options: .atomic)
+        }
     }
 
     private static func srgbIcon(forBundleID bundleID: String) -> NSImage {
