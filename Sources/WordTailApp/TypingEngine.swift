@@ -798,12 +798,14 @@ final class TypingEngine {
             if app?.bundleIdentifier == Bundle.main.bundleIdentifier {
                 return
             }
+            let nowRoman = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
             self.stateLock.lock()
             self.lastLiveSample = nil
             self.lastObservedBundleID = app?.bundleIdentifier
             self.lastObservedAppName = app?.localizedName
             self.activeBundleID = app?.bundleIdentifier
             self.activeAppName = app?.localizedName
+            self.lastKnownRomanLayout = nowRoman
             self.stateLock.unlock()
             self.habitTracker.resetSessionContext()
             self.phrasePredictor.resetSentenceWindow()
@@ -1617,13 +1619,15 @@ final class TypingEngine {
     private func primeLineContextSnapshot() {
         let targetApp = axContext.effectiveFocusedApplication()
         let frontBundle = targetApp?.bundleIdentifier
-        guard frontBundle != Bundle.main.bundleIdentifier,
-              inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle) else {
-            return
-        }
+        let nowRoman = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
         stateLock.lock()
+        lastKnownRomanLayout = nowRoman
         let fallbackBuf = rollingBuffer
         stateLock.unlock()
+        guard frontBundle != Bundle.main.bundleIdentifier,
+              inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle, cachedRomanLayout: nowRoman) else {
+            return
+        }
         if let snap = axContext.capture(
             targetApp: targetApp,
             fallbackBuffer: fallbackBuf,
@@ -1644,12 +1648,14 @@ final class TypingEngine {
             overlay.hide()
             return
         }
+        let nowRoman = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
         stateLock.lock()
         activeBundleID = frontBundle
         activeAppName = targetApp?.localizedName
+        lastKnownRomanLayout = nowRoman
         let fallbackBuf = rollingBuffer
         stateLock.unlock()
-        guard inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle) else {
+        guard inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle, cachedRomanLayout: nowRoman) else {
             overlay.hide()
             return
         }

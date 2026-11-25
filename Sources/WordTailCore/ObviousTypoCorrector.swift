@@ -1105,7 +1105,7 @@ public enum ObviousTypoCorrector {
         let beforeSecond = String(context.dropLast(secondWordTyped.count))
         let chars = Array(beforeSecond)
         var spaceStart = chars.count
-        while spaceStart > 0 && chars[spaceStart - 1] == " " {
+        while spaceStart > 0 && isHorizontalSpace(chars[spaceStart - 1]) {
             spaceStart -= 1
         }
         let spaceCount = chars.count - spaceStart
@@ -1127,7 +1127,7 @@ public enum ObviousTypoCorrector {
 
         let contextUpToCli = String(chars[0..<spaceStart])
         let beforeCli = String(chars[0..<cliStart])
-        let allowedDocZeroPrefix = CharacterSet(charactersIn: " \t\"'“‘([")
+        let allowedDocZeroPrefix = CharacterSet(charactersIn: " \t\u{00A0}\u{202F}\u{2007}\"'“‘([")
         let cliIsAtDocStart = sliceStartsAtDocumentZero
             && beforeCli.unicodeScalars.allSatisfy { allowedDocZeroPrefix.contains($0) }
 
@@ -1217,7 +1217,7 @@ public enum ObviousTypoCorrector {
         let chars = Array(buffer.dropLast(word.count))
         var i = chars.count
         var sawHorizontalSpace = false
-        while i > 0 && (chars[i - 1] == " " || chars[i - 1] == "\t") {
+        while i > 0 && isHorizontalSpace(chars[i - 1]) {
             sawHorizontalSpace = true
             i -= 1
         }
@@ -1264,12 +1264,26 @@ public enum ObviousTypoCorrector {
         return hasSentenceEndingPunctuation(before: prefix) ? prefix : "\n"
     }
 
+    private static func isHorizontalSpace(_ ch: Character) -> Bool {
+        ch == " " || ch == "\t" || ch == "\u{00A0}" || ch == "\u{202F}" || ch == "\u{2007}"
+    }
+
     /// Normalizes raw Accessibility strings: converts `\u{FFFC}` attachment/block markers into newline boundaries
-    /// (preventing `"All done.\u{FFFC}also"` from collapsing into `"All done.also"`) and strips zero-width joiners.
+    /// (preventing `"All done.\u{FFFC}also"` from collapsing into `"All done.also"`), normalizes non-breaking spaces
+    /// (`\u{00A0}`, `\u{202F}`, `\u{2007}`) to ASCII space, and strips zero-width joiners.
     public static func cleanAccessibilityText(_ raw: String) -> String {
         var out = raw
         if out.contains("\u{FFFC}") {
             out = out.replacingOccurrences(of: "\u{FFFC}", with: "\n")
+        }
+        if out.contains("\u{00A0}") {
+            out = out.replacingOccurrences(of: "\u{00A0}", with: " ")
+        }
+        if out.contains("\u{202F}") {
+            out = out.replacingOccurrences(of: "\u{202F}", with: " ")
+        }
+        if out.contains("\u{2007}") {
+            out = out.replacingOccurrences(of: "\u{2007}", with: " ")
         }
         if out.contains("\u{200B}") {
             out = out.replacingOccurrences(of: "\u{200B}", with: "")
@@ -1374,7 +1388,7 @@ public enum ObviousTypoCorrector {
 
         let chars = Array(linePrefix)
         var idx = 0
-        while idx < chars.count && (chars[idx] == " " || chars[idx] == "\t") {
+        while idx < chars.count && isHorizontalSpace(chars[idx]) {
             idx += 1
         }
         let digitStart = idx
@@ -1391,7 +1405,7 @@ public enum ObviousTypoCorrector {
         }
         idx += 1
         let spaceStart = idx
-        while idx < chars.count && (chars[idx] == " " || chars[idx] == "\t") {
+        while idx < chars.count && isHorizontalSpace(chars[idx]) {
             idx += 1
         }
         return idx == chars.count && idx > spaceStart
@@ -1403,12 +1417,19 @@ public enum ObviousTypoCorrector {
             return false
         }
 
-        // Strip trailing spaces, tabs, newlines, and closing quotes/brackets right after `.`, `!`, `?`
-        let strippedRight = prefixBeforeWord.replacingOccurrences(
-            of: "[ \\t\\r\\n\"'”’)\\]]+$",
-            with: "",
-            options: .regularExpression
-        )
+        // Strip trailing Unicode whitespace (including NBSP `\u{00A0}`) and closing quotes/brackets after `.`, `!`, `?`
+        let closingWrappers: Set<Character> = ["\"", "'", "”", "’", ")", "]"]
+        var endIdx = prefixBeforeWord.endIndex
+        while endIdx > prefixBeforeWord.startIndex {
+            let prevIdx = prefixBeforeWord.index(before: endIdx)
+            let ch = prefixBeforeWord[prevIdx]
+            if ch.isWhitespace || closingWrappers.contains(ch) {
+                endIdx = prevIdx
+            } else {
+                break
+            }
+        }
+        let strippedRight = prefixBeforeWord[..<endIdx]
         guard let punct = strippedRight.last, punct == "." || punct == "!" || punct == "?" else {
             return false
         }
@@ -1825,7 +1846,7 @@ public enum ObviousTypoCorrector {
         guard start < chars.count else { return nil }
         if start > 0 {
             let boundary = chars[start - 1]
-            let allowedLeading: Set<Character> = [" ", "\t", "\n", "\r", "(", "[", "{", "\"", "'", "“", "‘"]
+            let allowedLeading: Set<Character> = [" ", "\t", "\u{00A0}", "\u{202F}", "\u{2007}", "\n", "\r", "(", "[", "{", "\"", "'", "“", "‘"]
             guard allowedLeading.contains(boundary) else { return nil }
         }
         return String(chars[start..<chars.count])

@@ -177,7 +177,8 @@ final class AXCaretContext {
             // Fast O(1) path: read only the 120-char window around the caret via kAXStringForRangeParameterizedAttribute
             // so 50,000-character Notes/Mail/TextEdit drafts never copy the entire document on every keystroke!
             if beforeLen == 0 || probedBefore != nil {
-                if let slice = probedBefore {
+                if let rawSlice = probedBefore {
+                    let slice = ObviousTypoCorrector.cleanAccessibilityText(rawSlice)
                     if slice.contains(where: { $0.isASCII && $0.isLetter }) {
                         textBefore = slice
                         usedFallbackText = false
@@ -210,7 +211,9 @@ final class AXCaretContext {
                 let ns = fullValue as NSString
                 if selectedRange.location <= ns.length {
                     if beforeLen > 0 {
-                        let candidate = ns.substring(with: NSRange(location: windowStart, length: beforeLen))
+                        let candidate = ObviousTypoCorrector.cleanAccessibilityText(
+                            ns.substring(with: NSRange(location: windowStart, length: beforeLen))
+                        )
                         if candidate.contains(where: { $0.isASCII && $0.isLetter }) {
                             textBefore = candidate
                             usedFallbackText = false
@@ -218,7 +221,9 @@ final class AXCaretContext {
                     }
 
                     if windowStart == 0 {
-                        let fullPrefix = ns.substring(with: NSRange(location: 0, length: selectedRange.location))
+                        let fullPrefix = ObviousTypoCorrector.cleanAccessibilityText(
+                            ns.substring(with: NSRange(location: 0, length: selectedRange.location))
+                        )
                         isAtDocumentStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: fullPrefix)
                     }
 
@@ -994,15 +999,20 @@ final class AXCaretContext {
         if let selectedRange = copySelectedRange(element), selectedRange.length == 0 {
             let windowStart = max(0, selectedRange.location - 120)
             let beforeLen = selectedRange.location - windowStart
-            if beforeLen > 0, let slice = stringForRange(element, location: windowStart, length: beforeLen),
-               ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
-                let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
-                return (slice, docStart, windowStart == 0)
+            if beforeLen > 0,
+               let rawSlice = stringForRange(element, location: windowStart, length: beforeLen) {
+                let slice = ObviousTypoCorrector.cleanAccessibilityText(rawSlice)
+                if ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
+                    let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
+                    return (slice, docStart, windowStart == 0)
+                }
             }
             if let fullValue = copyStringAttribute(element, attribute: kAXValueAttribute as String), !fullValue.isEmpty {
                 let ns = fullValue as NSString
                 if selectedRange.location <= ns.length {
-                    let slice = ns.substring(with: NSRange(location: windowStart, length: beforeLen))
+                    let slice = ObviousTypoCorrector.cleanAccessibilityText(
+                        ns.substring(with: NSRange(location: windowStart, length: beforeLen))
+                    )
                     if ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
                         let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
                         return (slice, docStart, windowStart == 0)
@@ -1027,8 +1037,77 @@ final class AXCaretContext {
         return (nil, false, false)
     }
 
+    private func editableRootContainer(for element: AXUIElement) -> AXUIElement {
+        for attr in ["AXHighestEditableAncestor", "AXEditableAncestor"] {
+            var ref: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, attr as CFString, &ref) == .success,
+               let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() {
+                let ancestor = ref as! AXUIElement
+                if !CFEqual(ancestor, element) {
+                    AXUIElementSetMessagingTimeout(ancestor, Self.axIPCDeadlineSeconds)
+                    let role = copyStringAttribute(ancestor, attribute: kAXRoleAttribute as String) ?? ""
+                    if role != "AXWebArea" && role != "AXWindow" && role != "AXApplication" && role != "AXScrollArea" {
+                        return ancestor
+                    }
+                }
+            }
+        }
+        return element
+    }
+
+    private func startMarkerForEditableContainer(_ container: AXUIElement) -> AXTextMarker? {
+        // Prefer `AXTextMarkerRangeForUIElement`: Chromium/Electron `AXStartTextMarker` on `contenteditable` / `AXTextArea`
+        // can span the entire `AXWebArea` document rather than just the focused editable box.
+        var elemRangeRef: CFTypeRef?
+        if AXUIElementCopyParameterizedAttributeValue(
+            container,
+            "AXTextMarkerRangeForUIElement" as CFString,
+            container,
+            &elemRangeRef
+        ) == .success, let elemRangeRef {
+            let elemRange = elemRangeRef as! AXTextMarkerRange
+            return AXTextMarkerRangeCopyStartMarker(elemRange)
+        }
+        var startMarkerRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(container, "AXStartTextMarker" as CFString, &startMarkerRef) == .success,
+           let startMarkerRef {
+            return (startMarkerRef as! AXTextMarker)
+        }
+        return nil
+    }
+
+    private func lengthOfMarkerRange(element: AXUIElement, start: CFTypeRef, end: CFTypeRef) -> Int? {
+        guard let range = makeMarkerRange(element: element, start: start, end: end) else {
+            return nil
+        }
+        var lenRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            "AXLengthForTextMarkerRange" as CFString,
+            range,
+            &lenRef
+        ) == .success, let num = lenRef as? NSNumber else {
+            return nil
+        }
+        return num.intValue
+    }
+
+    private func isMarker(
+        _ marker: CFTypeRef,
+        withinStart start: CFTypeRef,
+        end: CFTypeRef,
+        totalLength: Int,
+        on container: AXUIElement
+    ) -> Bool {
+        guard let left = lengthOfMarkerRange(element: container, start: start, end: marker),
+              let right = lengthOfMarkerRange(element: container, start: marker, end: end) else {
+            return false
+        }
+        return left >= 0 && right >= 0 && left <= totalLength && right <= totalLength && (left + right) == totalLength
+    }
+
     /// Reads up to 120 trailing characters before `endMarker` + exact `isAtDocumentStart` in O(1):
-    /// - Short inputs (`<= 240` chars from `AXStartTextMarker`): copies `[AXStartTextMarker, endMarker]` directly.
+    /// - Short inputs (`<= 240` chars from editable container start): copies `[startMarker, endMarker]` directly.
     /// - Long drafts (`> 240` chars, or `AXWebArea` contenteditable): `isAtDocumentStart` is `false` when `len > 240`,
     ///   and reads only the current logical paragraph (`AXParagraphTextMarkerRangeForTextMarker`, bounded to `<= 2000` chars)
     ///   so soft-wrapped lines keep full sentence context without ever copying large documents!
@@ -1038,27 +1117,34 @@ final class AXCaretContext {
         sentenceBoundaryWord: String? = nil
     ) -> (prefix: String, isAtDocumentStart: Bool, sliceStartsAtDocumentZero: Bool)? {
         let role = copyStringAttribute(element, attribute: kAXRoleAttribute as String) ?? ""
+        let container = editableRootContainer(for: element)
+        let containerRole = CFEqual(container, element)
+            ? role
+            : (copyStringAttribute(container, attribute: kAXRoleAttribute as String) ?? role)
+        let containerStart = startMarkerForEditableContainer(container)
         var confirmedPastDocStart = false
 
-        if role == "AXTextArea" || role == "AXTextField" || role == "AXComboBox" {
-            var startMarkerRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &startMarkerRef) == .success,
-               let startMarkerRef {
-                if CFEqual(startMarkerRef, endMarker) {
+        if role == "AXTextArea" || role == "AXTextField" || role == "AXComboBox"
+            || containerRole == "AXTextArea" || containerRole == "AXTextField" || containerRole == "AXComboBox" {
+            if let startMarker = containerStart {
+                if CFEqual(startMarker, endMarker) {
                     return ("", true, true)
                 }
-                if let fullRange = makeMarkerRange(element: element, start: startMarkerRef, end: endMarker) {
+                if let fullRange = makeMarkerRange(element: container, start: startMarker, end: endMarker) {
                     var lenRef: CFTypeRef?
                     let hasLen = AXUIElementCopyParameterizedAttributeValue(
-                        element,
+                        container,
                         "AXLengthForTextMarkerRange" as CFString,
                         fullRange,
                         &lenRef
                     ) == .success
                     let charLen = (lenRef as? NSNumber)?.intValue ?? 0
+                    if hasLen && charLen == 0 {
+                        return ("", true, true)
+                    }
 
                     if !hasLen || charLen <= 240 {
-                        if let raw = stringForTextMarkerRange(element: element, markerRange: fullRange) {
+                        if let raw = stringForTextMarkerRange(element: container, markerRange: fullRange) {
                             var cleaned = ObviousTypoCorrector.cleanAccessibilityText(raw)
                             if cleaned.count <= 300 {
                                 // When a rich `contenteditable` editor (`<p>All done.</p><p>also</p>`) omits `\n` in `fullRange`
@@ -1111,7 +1197,13 @@ final class AXCaretContext {
                 }
                 if let rawPara = stringForTextMarkerRange(element: element, markerRange: paraPairRange) {
                     let cleaned = ObviousTypoCorrector.cleanAccessibilityText(rawPara)
-                    if let sentenceBoundaryWord,
+                    let paraAtContainerStart: Bool = {
+                        guard let containerStart else { return false }
+                        if CFEqual(containerStart, paraStart) { return true }
+                        return lengthOfMarkerRange(element: container, start: containerStart, end: paraStart) == 0
+                    }()
+                    if !paraAtContainerStart,
+                       let sentenceBoundaryWord,
                        let withPrevious = ObviousTypoCorrector.sentenceContext(
                            forFirstWord: sentenceBoundaryWord,
                            paragraphPrefix: cleaned,
@@ -1122,16 +1214,21 @@ final class AXCaretContext {
                     var docStart = false
                     var startsAtZero = false
                     if !confirmedPastDocStart {
-                        var prevBeforePara: CFTypeRef?
-                        let hasEarlier = AXUIElementCopyParameterizedAttributeValue(
-                            element,
-                            "AXPreviousTextMarkerForTextMarker" as CFString,
-                            paraStart,
-                            &prevBeforePara
-                        ) == .success && prevBeforePara != nil
-                        if !hasEarlier {
+                        if paraAtContainerStart {
                             docStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: cleaned)
                             startsAtZero = (cleaned.count <= 120)
+                        } else if containerStart == nil {
+                            var prevBeforePara: CFTypeRef?
+                            let hasEarlier = AXUIElementCopyParameterizedAttributeValue(
+                                element,
+                                "AXPreviousTextMarkerForTextMarker" as CFString,
+                                paraStart,
+                                &prevBeforePara
+                            ) == .success && prevBeforePara != nil
+                            if !hasEarlier {
+                                docStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: cleaned)
+                                startsAtZero = (cleaned.count <= 120)
+                            }
                         }
                     }
                     return (String(cleaned.suffix(120)), docStart, startsAtZero)
@@ -1199,70 +1296,65 @@ final class AXCaretContext {
     }
 
     private func readTailBeforeParagraph(on container: AXUIElement, before paragraphStart: AXTextMarker) -> String? {
-        var documentStart: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(container, "AXStartTextMarker" as CFString, &documentStart) == .success,
-              let documentStart, !CFEqual(documentStart, paragraphStart) else {
+        guard let documentStart = startMarkerForEditableContainer(container),
+              !CFEqual(documentStart, paragraphStart),
+              let totalBeforePara = lengthOfMarkerRange(element: container, start: documentStart, end: paragraphStart),
+              totalBeforePara > 0 else {
             return nil
         }
 
-        // 1. Prefer reading the preceding paragraph via `AXPreviousTextMarkerForTextMarker` + `AXParagraphTextMarkerRangeForTextMarker`
+        // 1. Prefer reading the preceding paragraph via `AXPreviousTextMarkerForTextMarker` + `AXParagraphTextMarkerRangeForTextMarker`,
+        //    clamping `spanStart` inside `documentStart` so we never walk out of the focused input box into page chrome.
         var prevMarker: CFTypeRef?
         if AXUIElementCopyParameterizedAttributeValue(
             container, "AXPreviousTextMarkerForTextMarker" as CFString, paragraphStart, &prevMarker
-        ) == .success, var probeMarker = prevMarker, !CFEqual(probeMarker, paragraphStart) {
+        ) == .success, var probeMarker = prevMarker, !CFEqual(probeMarker, paragraphStart),
+           isMarker(probeMarker, withinStart: documentStart, end: paragraphStart, totalLength: totalBeforePara, on: container) {
             for _ in 0..<2 {
                 var prevParaRef: CFTypeRef?
                 if AXUIElementCopyParameterizedAttributeValue(
                     container, "AXParagraphTextMarkerRangeForTextMarker" as CFString, probeMarker, &prevParaRef
                 ) == .success, let prevParaRef {
                     let prevParaStart = AXTextMarkerRangeCopyStartMarker(prevParaRef as! AXTextMarkerRange)
-                    if !CFEqual(prevParaStart, paragraphStart),
-                       let spanRange = makeMarkerRange(element: container, start: prevParaStart, end: paragraphStart) {
-                        var lenRef: CFTypeRef?
-                        let lenOK = AXUIElementCopyParameterizedAttributeValue(
-                            container, "AXLengthForTextMarkerRange" as CFString, spanRange, &lenRef
-                        ) == .success
-                        let spanLen = (lenRef as? NSNumber)?.intValue ?? 0
-                        if lenOK && (1...300).contains(spanLen),
-                           let raw = stringForTextMarkerRange(element: container, markerRange: spanRange) {
-                            let cleaned = ObviousTypoCorrector.cleanAccessibilityText(raw)
-                                .trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !cleaned.isEmpty {
-                                return String(cleaned.suffix(120))
-                            }
+                    let spanStart: CFTypeRef = isMarker(
+                        prevParaStart,
+                        withinStart: documentStart,
+                        end: paragraphStart,
+                        totalLength: totalBeforePara,
+                        on: container
+                    ) ? prevParaStart : documentStart
+                    if !CFEqual(spanStart, paragraphStart),
+                       let spanRange = makeMarkerRange(element: container, start: spanStart, end: paragraphStart),
+                       let spanLen = lengthOfMarkerRange(element: container, start: spanStart, end: paragraphStart),
+                       (1...300).contains(spanLen),
+                       let raw = stringForTextMarkerRange(element: container, markerRange: spanRange) {
+                        let cleaned = ObviousTypoCorrector.cleanAccessibilityText(raw)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !cleaned.isEmpty {
+                            return String(cleaned.suffix(120))
                         }
                     }
                 }
                 var earlierRef: CFTypeRef?
                 guard AXUIElementCopyParameterizedAttributeValue(
                     container, "AXPreviousTextMarkerForTextMarker" as CFString, probeMarker, &earlierRef
-                ) == .success, let earlierRef, !CFEqual(earlierRef, probeMarker) else {
+                ) == .success, let earlierRef, !CFEqual(earlierRef, probeMarker),
+                      isMarker(earlierRef, withinStart: documentStart, end: paragraphStart, totalLength: totalBeforePara, on: container) else {
                     break
                 }
                 probeMarker = earlierRef
             }
         }
 
-        // 2. Fallback: step back to previous word start (verifying `previousWord` stays inside `container` via length >= 0,
-        //    avoiding `CFEqual` false negatives caused by WebKit/Blink text-marker affinity metadata!)
+        // 2. Fallback: step back to previous word start, verifying `previousWord` lies strictly within `[documentStart, paragraphStart]`.
         var previousWord: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(
             container, "AXPreviousWordStartTextMarkerForTextMarker" as CFString, paragraphStart, &previousWord
         ) == .success, let previousWord, !CFEqual(previousWord, paragraphStart),
-              let startRange = makeMarkerRange(element: container, start: documentStart, end: previousWord) else {
-            return nil
-        }
-        var prefixLenRef: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-            container, "AXLengthForTextMarkerRange" as CFString, startRange, &prefixLenRef
-        ) == .success, let prefixLen = (prefixLenRef as? NSNumber)?.intValue, prefixLen >= 0,
-              let tailRange = makeMarkerRange(element: container, start: previousWord, end: paragraphStart) else {
-            return nil
-        }
-        var lengthRef: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-            container, "AXLengthForTextMarkerRange" as CFString, tailRange, &lengthRef
-        ) == .success, let length = (lengthRef as? NSNumber)?.intValue, (1...120).contains(length),
+              isMarker(previousWord, withinStart: documentStart, end: paragraphStart, totalLength: totalBeforePara, on: container),
+              let tailRange = makeMarkerRange(element: container, start: previousWord, end: paragraphStart),
+              let length = lengthOfMarkerRange(element: container, start: previousWord, end: paragraphStart),
+              (1...120).contains(length),
               let raw = stringForTextMarkerRange(element: container, markerRange: tailRange) else {
             return nil
         }
@@ -1286,7 +1378,8 @@ final class AXCaretContext {
     /// Returns true ONLY if `fullTextBeforeCursor` contains nothing before the current trailing ASCII word
     /// (except optional leading spaces or opening quotes at index 0—NO newlines, NO earlier words!).
     static func isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: String) -> Bool {
-        let chars = Array(fullTextBeforeCursor)
+        let cleaned = ObviousTypoCorrector.cleanAccessibilityText(fullTextBeforeCursor)
+        let chars = Array(cleaned)
         var wordStart = chars.count
         while wordStart > 0 {
             let ch = chars[wordStart - 1]

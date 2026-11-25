@@ -1989,4 +1989,86 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertFalse(completer.candidates(textBeforeCursor: "as far as ", bundleID: "com.apple.Notes").isEmpty)
         XCTAssertTrue(completer.candidates(textBeforeCursor: "as far as ", bundleID: "com.openai.codex").isEmpty)
     }
+
+    func testNonBreakingSpaceAndPunctuationCapitalization() throws {
+        // 1. cleanAccessibilityText normalizes NBSP / narrow NBSP / figure space to ASCII space
+        XCTAssertEqual(
+            ObviousTypoCorrector.cleanAccessibilityText("seriously?\u{00A0}what\u{202F}are\u{2007}these"),
+            "seriously? what are these"
+        )
+
+        // 2. Document-start word followed by `?` delimiter capitalizes ("seriously?" -> "Seriously?")
+        let firstTarget = try XCTUnwrap(ObviousTypoCorrector.extractPunctuationOrSpaceTarget(
+            rollingBuffer: "seriously",
+            typedDelimiter: "?"
+        ))
+        let firstTransform = ObviousTypoCorrector.evaluateSpaceTransform(
+            forWord: firstTarget.word,
+            lineContextIncludingWord: firstTarget.bufferUpToWord,
+            isAtDocumentStart: true,
+            sliceStartsAtDocumentZero: true,
+            autoCorrectTypos: true,
+            autoCapitalizeSentences: true,
+            adaptiveStore: nil,
+            habitTracker: nil,
+            historyStore: nil,
+            validWordChecker: { $0 == "seriously" }
+        )
+        XCTAssertEqual(firstTransform.map { $0.replacementText + firstTarget.outputDelimiter }, "Seriously?")
+
+        // 3. Raw NBSP after sentence-ending punctuation still capitalizes the following word
+        for rawContext in [
+            "seriously?\u{00A0}what",
+            "done.\u{00A0}what",
+            "wow!\u{00A0}what",
+            "done.\"\u{00A0}what"
+        ] {
+            XCTAssertEqual(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: "what",
+                    lineContextIncludingWord: rawContext,
+                    isAtDocumentStart: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil,
+                    validWordChecker: { $0 == "what" }
+                ),
+                "What",
+                "Expected capitalization for raw NBSP context: \(rawContext.debugDescription)"
+            )
+        }
+
+        // 4. Mid-sentence NBSP stays lowercase
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "what",
+                lineContextIncludingWord: "tell\u{00A0}me\u{00A0}what",
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil,
+                validWordChecker: { $0 == "what" }
+            )
+        )
+
+        // 5. CLI-to-prose promotion with NBSP at document start
+        XCTAssertEqual(
+            ObviousTypoCorrector.evaluateSpaceTransform(
+                forWord: "is",
+                lineContextIncludingWord: "git\u{00A0}is",
+                isAtDocumentStart: false,
+                sliceStartsAtDocumentZero: true,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            SpaceTransformResult(replacedSourceSpan: "git\u{00A0}is", replacementText: "Git\u{00A0}is")
+        )
+    }
 }
