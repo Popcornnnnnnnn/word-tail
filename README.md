@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Popcornnnnnnnn/word-tail/actions"><img src="https://github.com/Popcornnnnnnnn/word-tail/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/Popcornnnnnnnn/word-tail/releases"><img src="https://img.shields.io/github/v/release/Popcornnnnnnnn/word-tail?label=release" alt="Release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
