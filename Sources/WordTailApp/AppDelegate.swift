@@ -93,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 self.updateStatusIcon()
                 self.settingsWindowController?.refreshUpdateAndSyncStatus()
+                self.settingsWindowController?.refreshCalibrationOffsets()
             }
         }
         ensureLoginItemRegisteredOnFirstInstall()
@@ -612,6 +613,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let menuTarget = CalibrationMenuTarget(bundleID: targetApp.bundleID, displayKey: activeDisplayKey)
 
                 let nudgeMenu = NSMenu()
+                let autoLockItem = NSMenuItem(
+                    title: "Live Per-Line Auto-Lock",
+                    action: #selector(toggleLiveVisualBaselineLock),
+                    keyEquivalent: ""
+                )
+                autoLockItem.target = self
+                autoLockItem.state = engine.enableLiveVisualBaselineLock ? .on : .off
+                nudgeMenu.addItem(autoLockItem)
+                nudgeMenu.addItem(.separator())
+
                 let upItem = NSMenuItem(title: "Nudge Higher (+0.10 pt)", action: #selector(nudgeCurrentAppHigher(_:)), keyEquivalent: "")
                 upItem.target = self
                 upItem.representedObject = menuTarget
@@ -755,6 +766,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleAppendSpace() {
         engine.appendSpaceOnAccept.toggle()
+    }
+
+    @objc private func toggleLiveVisualBaselineLock() {
+        let next = !engine.enableLiveVisualBaselineLock
+        engine.enableLiveVisualBaselineLock = next
+        if next && !engine.visualCalibrator.hasScreenCapturePermission {
+            if !engine.visualCalibrator.requestScreenCapturePermission() {
+                engine.visualCalibrator.openScreenRecordingSettings()
+            }
+        }
     }
 
     @objc private func toggleCurrentApp(_ sender: NSMenuItem) {

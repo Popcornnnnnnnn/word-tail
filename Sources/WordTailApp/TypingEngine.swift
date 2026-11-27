@@ -18,6 +18,7 @@ final class TypingEngine {
     let appProfileStore: AppProfileStore
     let snippetStore: SnippetStore
     let verticalOffsetStore: VerticalOffsetStore
+    let visualCalibrator = LiveVisualBaselineCalibrator()
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
     private let overlay = GhostOverlayWindow()
@@ -52,6 +53,9 @@ final class TypingEngine {
     private var activeCandidates: [CompletionMatch] = []
     private var activeCandidateIndex: Int = 0
     private var activeSnapshot: CaretSnapshot?
+    private var activeVisualLineKey: VisualLineKey?
+    private var activeOverlayIsVisuallyLocked: Bool = false
+    private var lastVisualCaretTrack: (bundleID: String, elementHash: UInt, axLineYInt: Int, maxCaretX: CGFloat)?
     private var activeBundleID: String?
     private var activeAppName: String?
 
@@ -73,6 +77,8 @@ final class TypingEngine {
     private var lastTypedTimestamp: CFAbsoluteTime = 0
     private var lastNonFinderObservedApp: CalibrationAppInfo?
     private var calibrationSyncWorkItem: DispatchWorkItem?
+    private var visualScrollGeneration: UInt64 = 0
+    private var overlayRenderGeneration: UInt64 = 0
 
     var onStateChanged: (() -> Void)?
     var onCalibrationChanged: (() -> Void)?
@@ -127,6 +133,70 @@ final class TypingEngine {
         notifyCalibrationChanged()
         scheduleCalibrationSyncPush()
         return CGFloat(updated)
+    }
+
+    var enableLiveVisualBaselineLock: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "WordTailLiveVisualBaselineLock")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WordTailLiveVisualBaselineLock")
+            if !newValue {
+                visualCalibrator.clearLines()
+                repositionVisibleInlineOverlayToManualOffset()
+            } else {
+                stateLock.lock()
+                visualScrollGeneration &+= 1
+                stateLock.unlock()
+                visualCalibrator.invalidateInFlightCaptures()
+            }
+            notifyCalibrationChanged()
+            onStateChanged?()
+        }
+    }
+
+    var isLiveVisualBaselineLockActive: Bool {
+        enableLiveVisualBaselineLock && visualCalibrator.hasScreenCapturePermission
+    }
+
+    func resetVisualBaselineCalibration() {
+        visualCalibrator.resetAllLearnedState()
+        stateLock.lock()
+        visualScrollGeneration &+= 1
+        stateLock.unlock()
+        notifyCalibrationChanged()
+    }
+
+    private func repositionVisibleInlineOverlayToManualOffset() {
+        stateLock.lock()
+        guard overlay.isVisible,
+              var snap = activeSnapshot,
+              !snap.hasTextAfterOnLine else {
+            activeVisualLineKey = nil
+            activeOverlayIsVisuallyLocked = false
+            stateLock.unlock()
+            return
+        }
+        let bundleID = activeBundleID
+        activeVisualLineKey = nil
+        activeOverlayIsVisuallyLocked = false
+        let manualOffset = verticalAdjustment(forBundleID: bundleID, displayKey: snap.displayKey)
+        let manualPlacement = ScreenGeometry.baselinePlacement(
+            forAXCharRect: snap.rawAXRect,
+            primaryScreenHeight: snap.primaryScreenHeight,
+            font: snap.font,
+            verticalAdjustment: manualOffset,
+            lineSpacingBias: snap.lineSpacingBias
+        )
+        snap.placement = manualPlacement
+        activeSnapshot = snap
+        stateLock.unlock()
+
+        overlay.repositionInlineBaseline(
+            to: manualPlacement.baselineY,
+            anchorX: manualPlacement.anchorX,
+            font: snap.font
+        )
     }
 
     private func scheduleCalibrationSyncPush() {
@@ -637,6 +707,12 @@ final class TypingEngine {
             completer.enableTechLexicon = UserDefaults.standard.bool(forKey: "WordTailEnableTechLexicon")
         }
         syncCompleterProState()
+        visualCalibrator.onStatusChanged = { [weak self] in
+            self?.notifyCalibrationChanged()
+        }
+        visualCalibrator.onLineLocked = { [weak self] result in
+            self?.applyLockedBaselineIfCurrent(result)
+        }
         observeWorkspaceNotifications()
     }
 
@@ -880,6 +956,10 @@ final class TypingEngine {
             let nowRoman = InputGuard.isCurrentInputSourceRomanKeyboardLayout()
             self.stateLock.lock()
             self.lastLiveSample = nil
+            self.visualScrollGeneration &+= 1
+            self.activeVisualLineKey = nil
+            self.activeOverlayIsVisuallyLocked = false
+            self.lastVisualCaretTrack = nil
             self.lastObservedBundleID = app?.bundleIdentifier
             self.lastObservedAppName = app?.localizedName
             if let bid = app?.bundleIdentifier, bid != "com.apple.finder" {
@@ -891,6 +971,7 @@ final class TypingEngine {
             self.stateLock.unlock()
             self.habitTracker.resetSessionContext()
             self.phrasePredictor.resetSentenceWindow()
+            self.visualCalibrator.invalidateInFlightCaptures()
             self.dismissOverlay(clearBuffer: true)
             if let app {
                 let bridge = self.enableChromiumBridge
@@ -971,6 +1052,9 @@ final class TypingEngine {
             if NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Bundle.main.bundleIdentifier {
                 let isClick = (type != .scrollWheel)
                 lastLiveSample = nil
+                visualScrollGeneration &+= 1
+                lastVisualCaretTrack = nil
+                visualCalibrator.invalidateInFlightCaptures()
                 dismissOverlay(clearBuffer: isClick)
                 if isClick {
                     DispatchQueue.main.async { [weak self] in
@@ -1013,6 +1097,7 @@ final class TypingEngine {
 
         // Partial 1-word acceptance for multi-word phrases: Option + Right Arrow (`⌥ →`)
         if overlay.isVisible,
+           activeSnapshot != nil,
            let match = overlay.currentMatch,
            !match.isTypoCorrection,
            !match.isSnippet,
@@ -1030,9 +1115,11 @@ final class TypingEngine {
             let acceptedBundle = activeBundleID ?? lastObservedBundleID
             let acceptedAppName = activeAppName ?? lastObservedAppName
 
+            overlayRenderGeneration &+= 1
             overlay.hide()
             activeCandidates.removeAll(keepingCapacity: true)
             activeSnapshot = nil
+            activeVisualLineKey = nil
 
             rollingBuffer.append(acceptedChunk)
             if rollingBuffer.count > 80 {
@@ -1058,12 +1145,15 @@ final class TypingEngine {
         let hasCommandOrCtrlOrOption = flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate)
         if hasCommandOrCtrlOrOption && keyCode != kVK_Delete {
             pendingSpaceUndo = nil
+            visualScrollGeneration &+= 1
+            visualCalibrator.invalidateInFlightCaptures()
             dismissOverlay(clearBuffer: true)
             return Unmanaged.passUnretained(event)
         }
 
         // Tab while ghost text is visible -> swallow Tab and inject suffix, snippet expansion, or minimal-diff typo replacement!
         if keyCode == kVK_Tab, !flags.contains(.maskShift), overlay.isVisible,
+           activeSnapshot != nil,
            let match = overlay.currentMatch {
             pendingSpaceUndo = nil
             suppressedWordOnce = nil
@@ -1082,6 +1172,7 @@ final class TypingEngine {
                 let capturedSnippetID = match.snippetID
                 let capturedSnippetUpdatedAt = match.snippetUpdatedAt
 
+                overlayRenderGeneration &+= 1
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
@@ -1248,6 +1339,7 @@ final class TypingEngine {
 
             let textToInsert = shouldAddSpace ? (rawInsertSuffix + " ") : rawInsertSuffix
 
+            overlayRenderGeneration &+= 1
             overlay.hide()
             activeCandidates.removeAll(keepingCapacity: true)
             activeSnapshot = nil
@@ -1307,6 +1399,7 @@ final class TypingEngine {
         // Esc while ghost text is visible -> swallow Esc and dismiss ghost text only.
         if keyCode == kVK_Escape, overlay.isVisible {
             pendingSpaceUndo = nil
+            overlayRenderGeneration &+= 1
             overlay.hide()
             activeCandidates.removeAll(keepingCapacity: true)
             activeSnapshot = nil
@@ -1318,6 +1411,8 @@ final class TypingEngine {
             if flags.contains(.maskCommand) || flags.contains(.maskAlternate) || flags.contains(.maskControl) {
                 pendingSpaceUndo = nil
                 suppressedWordOnce = nil
+                visualScrollGeneration &+= 1
+                overlayRenderGeneration &+= 1
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
@@ -1376,6 +1471,7 @@ final class TypingEngine {
                 return nil
             }
 
+            overlayRenderGeneration &+= 1
             overlay.hide()
             activeCandidates.removeAll(keepingCapacity: true)
             activeSnapshot = nil
@@ -1400,11 +1496,16 @@ final class TypingEngine {
         if Self.navigationKeyCodes.contains(keyCode) {
             pendingSpaceUndo = nil
             suppressedWordOnce = nil
+            visualScrollGeneration &+= 1
+            lastVisualCaretTrack = nil
+            visualCalibrator.invalidateInFlightCaptures()
             if keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter {
                 debounceWorkItem?.cancel()
+                overlayRenderGeneration &+= 1
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
+                activeVisualLineKey = nil
                 let wordBeforeReturn = ObviousTypoCorrector.extractTrailingStandaloneWord(from: rollingBuffer)
                 rollingBuffer = ObviousTypoCorrector.sentenceContextAfterReturn(rollingBuffer)
                 lastCapturedLineText = nil
@@ -1513,6 +1614,7 @@ final class TypingEngine {
                         historyStore: historyStore
                     ) {
                         debounceWorkItem?.cancel()
+                        overlayRenderGeneration &+= 1
                         overlay.hide()
                         activeCandidates.removeAll(keepingCapacity: true)
                         activeSnapshot = nil
@@ -1631,9 +1733,11 @@ final class TypingEngine {
 
             if let last = typed.last, (last.isLetter && last.isASCII) || last == "'" || last == "’" || shouldTriggerSnippetKey {
                 // Immediately hide the previous character's overlay so a newly typed glyph never renders underneath stale ghost text!
+                overlayRenderGeneration &+= 1
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
+                activeVisualLineKey = nil
                 if rollingBuffer.count == 1 && lastCapturedLineText == nil {
                     DispatchQueue.main.async { [weak self] in
                         self?.primeLineContextSnapshot()
@@ -1641,9 +1745,11 @@ final class TypingEngine {
                 }
                 schedulePredictionQuery()
             } else if typed == " " && effectivePhrasePrediction(bundleID: activeBid) {
+                overlayRenderGeneration &+= 1
                 overlay.hide()
                 activeCandidates.removeAll(keepingCapacity: true)
                 activeSnapshot = nil
+                activeVisualLineKey = nil
                 schedulePredictionQuery()
             } else {
                 dismissOverlay(clearBuffer: false)
@@ -1722,6 +1828,9 @@ final class TypingEngine {
         let targetApp = axContext.effectiveFocusedApplication()
         let frontBundle = targetApp?.bundleIdentifier
         if frontBundle == Bundle.main.bundleIdentifier {
+            stateLock.lock()
+            overlayRenderGeneration &+= 1
+            stateLock.unlock()
             overlay.hide()
             return
         }
@@ -1733,11 +1842,14 @@ final class TypingEngine {
         let fallbackBuf = rollingBuffer
         stateLock.unlock()
         guard inputGuard.shouldAllowPrediction(frontmostBundleID: frontBundle, cachedRomanLayout: nowRoman) else {
+            stateLock.lock()
+            overlayRenderGeneration &+= 1
+            stateLock.unlock()
             overlay.hide()
             return
         }
 
-        guard let snapshot = axContext.capture(
+        guard var snapshot = axContext.capture(
             targetApp: targetApp,
             fallbackBuffer: fallbackBuf,
             enableChromiumBridge: enableChromiumBridge,
@@ -1745,6 +1857,9 @@ final class TypingEngine {
                 self?.verticalAdjustment(forBundleID: frontBundle, displayKey: displayKey) ?? ScreenGeometry.defaultVerticalOffset
             }
         ) else {
+            stateLock.lock()
+            overlayRenderGeneration &+= 1
+            stateLock.unlock()
             overlay.hide()
             if retryCount < 2 {
                 schedulePredictionQuery(delayMs: 18, retryCount: retryCount + 1)
@@ -1754,6 +1869,7 @@ final class TypingEngine {
 
         stateLock.lock()
         let currentBuf = rollingBuffer
+        let currentScrollGen = visualScrollGeneration
         stateLock.unlock()
 
         // Guard against Electron/Chromium async frame lag (e.g. user typed "What", but at t=16ms AX still reports "Wha"
@@ -1764,6 +1880,9 @@ final class TypingEngine {
             rollingBuffer: currentBuf
         )
         if isStaleText || (snapshot.isGlyphWidthZeroOnPrevChar && retryCount < 3) {
+            stateLock.lock()
+            overlayRenderGeneration &+= 1
+            stateLock.unlock()
             overlay.hide()
             if retryCount < 4 {
                 schedulePredictionQuery(delayMs: 18, retryCount: retryCount + 1)
@@ -1776,6 +1895,123 @@ final class TypingEngine {
                     axContext.recordOverlayOutcome("shown=no(staleAX)")
                     return
                 }
+            }
+        }
+
+        // Resolve live per-line visual baseline lock (or learned per-app/display/fontSize prior) when enabled.
+        let visualLockActive = isLiveVisualBaselineLockActive
+        let rawBaselineCocoaY = ScreenGeometry.baselinePlacement(
+            forAXCharRect: snapshot.rawAXRect,
+            primaryScreenHeight: snapshot.primaryScreenHeight,
+            font: snapshot.font,
+            verticalAdjustment: 0,
+            lineSpacingBias: snapshot.lineSpacingBias
+        ).baselineY
+        let fallbackBaselineCocoaY = snapshot.placement.baselineY
+
+        var visualContext: (
+            lineKey: VisualLineKey,
+            priorKey: VisualPriorKey,
+            resolution: VisualBaselineResolution,
+            measurementPredictedCocoaY: CGFloat,
+            targetBundleID: String,
+            targetPID: pid_t,
+            elementHash: UInt,
+            appName: String
+        )?
+        if visualLockActive,
+           let frontBundle,
+           let targetApp,
+           !snapshot.hasTextAfterOnLine,
+           !IsSecureEventInputEnabled() {
+            let displayKey = snapshot.displayKey ?? "default"
+            let elemHash: UInt = snapshot.focusedElement.map { CFHash($0) } ?? 0
+            let lineYInt = Int(snapshot.rawAXRect.origin.y.rounded())
+            let caretX = snapshot.rawAXRect.maxX
+
+            // Detect same-Y soft-wrap auto-scroll (caret jumped left >= 18 pt at the same Y)
+            // even while the previous line's first capture is still in flight.
+            var resolvedScrollGen = currentScrollGen
+            var detectedSoftWrap = false
+            stateLock.lock()
+            if let prev = lastVisualCaretTrack,
+               prev.bundleID == frontBundle,
+               prev.elementHash == elemHash,
+               prev.axLineYInt == lineYInt {
+                if caretX < prev.maxCaretX - 18.0 {
+                    visualScrollGeneration &+= 1
+                    resolvedScrollGen = visualScrollGeneration
+                    lastVisualCaretTrack = (frontBundle, elemHash, lineYInt, caretX)
+                    detectedSoftWrap = true
+                } else if caretX > prev.maxCaretX {
+                    lastVisualCaretTrack = (frontBundle, elemHash, lineYInt, caretX)
+                }
+            } else {
+                lastVisualCaretTrack = (frontBundle, elemHash, lineYInt, caretX)
+            }
+            stateLock.unlock()
+            if detectedSoftWrap {
+                visualCalibrator.invalidateInFlightCaptures()
+            }
+
+            let lineKey = VisualLineKey(
+                bundleID: frontBundle,
+                displayKey: displayKey,
+                elementHash: elemHash,
+                axLineY: snapshot.rawAXRect.origin.y,
+                axHeight: snapshot.rawAXRect.height,
+                fontSize: snapshot.font.pointSize,
+                scrollGeneration: resolvedScrollGen
+            )
+            let priorKey = VisualPriorKey(
+                bundleID: frontBundle,
+                displayKey: displayKey,
+                fontSize: snapshot.font.pointSize
+            )
+            let resolution = visualCalibrator.resolveInitialBaseline(
+                lineKey: lineKey,
+                priorKey: priorKey,
+                rawBaselineCocoaY: rawBaselineCocoaY,
+                fallbackBaselineCocoaY: fallbackBaselineCocoaY,
+                currentCaretX: caretX
+            )
+            snapshot.placement = BaselinePlacement(
+                anchorX: snapshot.placement.anchorX,
+                baselineY: resolution.baselineCocoaY
+            )
+            let measurementAnchor = VisualBaselineAligner.measurementSearchAnchorCocoaY(
+                resolution: resolution,
+                rawBaselineCocoaY: rawBaselineCocoaY,
+                fallbackBaselineCocoaY: fallbackBaselineCocoaY
+            )
+            let appName = targetApp.localizedName ?? SettingsViewModel.appName(forBundleID: frontBundle)
+            visualContext = (
+                lineKey,
+                priorKey,
+                resolution,
+                measurementAnchor,
+                frontBundle,
+                targetApp.processIdentifier,
+                elemHash,
+                appName
+            )
+        }
+
+        let makeVisualPreflight: ((String, pid_t, UInt) -> (@MainActor () -> Bool)) = { [weak self] expectedBundle, expectedPID, expectedElemHash in
+            return { [weak self] in
+                guard let self,
+                      self.isEnabled,
+                      self.enableLiveVisualBaselineLock,
+                      !IsSecureEventInputEnabled(),
+                      self.inputGuard.shouldAllowPrediction(frontmostBundleID: expectedBundle) else {
+                    return false
+                }
+                return self.axContext.isFocusedTargetSafeForVisualCapture(
+                    expectedBundleID: expectedBundle,
+                    expectedPID: expectedPID,
+                    expectedElementHash: expectedElemHash,
+                    enableChromiumBridge: self.enableChromiumBridge
+                )
             }
         }
 
@@ -1801,8 +2037,30 @@ final class TypingEngine {
             lastCapturedDocumentStart = snapshot.isAtDocumentStart
             activeCandidates.removeAll(keepingCapacity: true)
             activeSnapshot = nil
+            activeVisualLineKey = nil
+            activeOverlayIsVisuallyLocked = false
+            overlayRenderGeneration &+= 1
             stateLock.unlock()
             overlay.hide()
+
+            // Proactively lock the current line on the first typed word even before a completion appears,
+            // so the very first ghost suggestion on this line renders pixel-locked on frame 1.
+            if let vCtx = visualContext, !vCtx.resolution.isLineLocked {
+                visualCalibrator.requestLineLockIfNeeded(
+                    lineKey: vCtx.lineKey,
+                    priorKey: vCtx.priorKey,
+                    targetBundleID: vCtx.targetBundleID,
+                    targetPID: vCtx.targetPID,
+                    appName: vCtx.appName,
+                    textBeforeCursor: snapshot.textBeforeCursor,
+                    rawAXRect: snapshot.rawAXRect,
+                    primaryScreenHeight: snapshot.primaryScreenHeight,
+                    rawBaselineCocoaY: rawBaselineCocoaY,
+                    predictedBaselineCocoaY: vCtx.measurementPredictedCocoaY,
+                    font: snapshot.font,
+                    preflightCheck: makeVisualPreflight(vCtx.targetBundleID, vCtx.targetPID, vCtx.elementHash)
+                )
+            }
             return
         }
 
@@ -1812,6 +2070,9 @@ final class TypingEngine {
         activeCandidates = matches
         activeCandidateIndex = 0
         activeSnapshot = snapshot
+        activeVisualLineKey = visualContext?.lineKey
+        activeOverlayIsVisuallyLocked = visualContext?.resolution.isLineLocked ?? false
+        overlayRenderGeneration &+= 1
         let nowTime = CFAbsoluteTimeGetCurrent()
         if let frontBundle {
             let resolvedName = targetApp?.localizedName ?? frontBundle
@@ -1851,9 +2112,10 @@ final class TypingEngine {
         }
 
         axContext.recordOverlayOutcome(String(
-            format: "shown=yes(len=%d,n=%d,x=%.0f,y=%.0f,mid=%d)",
+            format: "shown=yes(len=%d,n=%d,x=%.0f,y=%.0f,mid=%d,vl=%@)",
             first.suffix.count, matches.count, snapshot.placement.anchorX, snapshot.placement.baselineY,
-            snapshot.hasTextAfterOnLine ? 1 : 0
+            snapshot.hasTextAfterOnLine ? 1 : 0,
+            visualContext.map { $0.resolution.isLineLocked ? "hit" : ($0.resolution.usedLearnedPrior ? "prior" : "cold") } ?? "off"
         ))
 
         overlay.show(
@@ -1865,6 +2127,58 @@ final class TypingEngine {
             font: snapshot.font,
             opacity: ghostOpacity
         )
+
+        if let vCtx = visualContext, !vCtx.resolution.isLineLocked {
+            visualCalibrator.requestLineLockIfNeeded(
+                lineKey: vCtx.lineKey,
+                priorKey: vCtx.priorKey,
+                targetBundleID: vCtx.targetBundleID,
+                targetPID: vCtx.targetPID,
+                appName: vCtx.appName,
+                textBeforeCursor: snapshot.textBeforeCursor,
+                rawAXRect: snapshot.rawAXRect,
+                primaryScreenHeight: snapshot.primaryScreenHeight,
+                rawBaselineCocoaY: rawBaselineCocoaY,
+                predictedBaselineCocoaY: vCtx.measurementPredictedCocoaY,
+                font: snapshot.font,
+                preflightCheck: makeVisualPreflight(vCtx.targetBundleID, vCtx.targetPID, vCtx.elementHash)
+            )
+        }
+    }
+
+    private func applyLockedBaselineIfCurrent(_ result: VisualLineLockResult) {
+        stateLock.lock()
+        guard isEnabled,
+              enableLiveVisualBaselineLock,
+              overlay.isVisible,
+              var snap = activeSnapshot,
+              activeVisualLineKey == result.lineKey,
+              !snap.hasTextAfterOnLine else {
+            stateLock.unlock()
+            return
+        }
+        let deltaFromDisplayed = abs(result.lockedBaselineCocoaY - snap.placement.baselineY)
+        snap.placement = BaselinePlacement(
+            anchorX: snap.placement.anchorX,
+            baselineY: result.lockedBaselineCocoaY
+        )
+        activeSnapshot = snap
+        activeOverlayIsVisuallyLocked = true
+        stateLock.unlock()
+
+        axContext.recordOverlayOutcome(String(
+            format: "vlock=%.2f(Δ%+.2f,c=%.2f)",
+            result.lockedBaselineCocoaY,
+            -result.deltaQuartzY,
+            result.confidence
+        ))
+        if deltaFromDisplayed >= 0.06 {
+            overlay.repositionInlineBaseline(
+                to: result.lockedBaselineCocoaY,
+                anchorX: snap.placement.anchorX,
+                font: snap.font
+            )
+        }
     }
 
     func refreshPinnedOverlayIfVisible(
@@ -1873,7 +2187,23 @@ final class TypingEngine {
     ) {
         stateLock.lock()
         let sample = lastLiveSample
+        let preserveLockedOverlay = isLiveVisualBaselineLockActive && overlay.isVisible && activeOverlayIsVisuallyLocked
+        let lockedSnap = activeSnapshot
+        let lockedMatch = overlay.currentMatch
         stateLock.unlock()
+
+        if preserveLockedOverlay, let lockedSnap, let lockedMatch {
+            overlay.show(
+                match: lockedMatch,
+                placement: lockedSnap.placement,
+                rawAXRect: lockedSnap.rawAXRect,
+                primaryScreenHeight: lockedSnap.primaryScreenHeight,
+                hasTextAfterOnLine: lockedSnap.hasTextAfterOnLine,
+                font: lockedSnap.font,
+                opacity: ghostOpacity
+            )
+            return
+        }
         guard let sample else { return }
         if let updatedBundleID, sample.bundleID != updatedBundleID {
             return
@@ -1906,8 +2236,11 @@ final class TypingEngine {
     private func dismissOverlay(clearBuffer: Bool) {
         stateLock.lock()
         debounceWorkItem?.cancel()
+        overlayRenderGeneration &+= 1
         activeCandidates.removeAll(keepingCapacity: true)
         activeSnapshot = nil
+        activeVisualLineKey = nil
+        activeOverlayIsVisuallyLocked = false
         if clearBuffer {
             rollingBuffer.removeAll(keepingCapacity: true)
             lastCapturedLineText = nil

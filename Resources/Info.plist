@@ -26,5 +26,7 @@
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>WordTail optionally reads a small area beside your text cursor in the active app in memory to auto-align inline ghost text to the exact pixel baseline. Nothing is saved or transmitted.</string>
 </dict>
 </plist>

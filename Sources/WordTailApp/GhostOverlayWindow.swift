@@ -319,6 +319,46 @@ final class GhostOverlayWindow {
         panel.orderFrontRegardless()
     }
 
+    /// Repositions an already-visible inline ghost overlay to a newly locked sub-pixel baseline Y
+    /// without altering visibility state, match storage, or floating mid-sentence pills.
+    func repositionInlineBaseline(to baselineY: CGFloat, anchorX: CGFloat, font: NSFont) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.repositionInlineBaseline(to: baselineY, anchorX: anchorX, font: font)
+            }
+            return
+        }
+
+        stateLock.lock()
+        let currentlyVisible = visibleFlag && matchStorage != nil
+        stateLock.unlock()
+        guard currentlyVisible, panel.isVisible else { return }
+
+        switch ghostView.mode {
+        case .floatingPillAbove:
+            return
+        case .inlineSuffix, .inlineTypoFix:
+            break
+        }
+
+        let descenderPad = ceil(max(-font.descender, 4.0)) + 6.0
+        let ascenderPad = ceil(max(font.ascender, 12.0)) + 7.0
+        let height = descenderPad + ascenderPad
+        let width = panel.frame.width
+
+        let exactPanelX = anchorX
+        let exactPanelY = baselineY - descenderPad
+        let intPanelX = floor(exactPanelX)
+        let intPanelY = floor(exactPanelY)
+
+        ghostView.anchorXInView = exactPanelX - intPanelX
+        ghostView.baselineYInView = descenderPad + (exactPanelY - intPanelY)
+
+        let frame = NSRect(x: intPanelX, y: intPanelY, width: width, height: height)
+        ghostView.frame = NSRect(origin: .zero, size: frame.size)
+        panel.setFrame(frame, display: true)
+    }
+
     func hide() {
         stateLock.lock()
         let wasVisible = visibleFlag

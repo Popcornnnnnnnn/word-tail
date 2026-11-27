@@ -12,7 +12,7 @@ struct CaretSnapshot {
     let isFallbackText: Bool
     let isGlyphWidthZeroOnPrevChar: Bool
     let lineSpacingBias: LineSpacingBias
-    let placement: BaselinePlacement
+    var placement: BaselinePlacement
     let font: NSFont
     let rawAXRect: CGRect
     let primaryScreenHeight: CGFloat
@@ -468,6 +468,39 @@ final class AXCaretContext {
         }
         let role = copyStringAttribute(drilled, attribute: kAXRoleAttribute as String) ?? ""
         return ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role)
+    }
+
+    /// Re-verifies immediately before a visual micro-crop that focus still belongs to `expectedBundleID` + `expectedPID`
+    /// and the focused Accessibility element is neither a secure/password field nor active IME composition.
+    func isFocusedTargetSafeForVisualCapture(
+        expectedBundleID: String,
+        expectedPID: pid_t,
+        expectedElementHash: UInt,
+        enableChromiumBridge: Bool
+    ) -> Bool {
+        guard AXIsProcessTrusted(),
+              let app = effectiveFocusedApplication(),
+              app.bundleIdentifier == expectedBundleID,
+              app.processIdentifier == expectedPID,
+              app.bundleIdentifier != Bundle.main.bundleIdentifier,
+              let element = resolveFocusedTextElement(app: app, enableChromiumBridge: enableChromiumBridge) else {
+            return false
+        }
+        if expectedElementHash != 0 && CFHash(element) != expectedElementHash {
+            return false
+        }
+        let elemRole = copyStringAttribute(element, attribute: kAXRoleAttribute as String) ?? ""
+        if elemRole == (kAXSecureTextFieldSubrole as String) || elemRole == "AXSecureTextField" {
+            return false
+        }
+        if let subrole = copyStringAttribute(element, attribute: kAXSubroleAttribute as String),
+           subrole == (kAXSecureTextFieldSubrole as String) {
+            return false
+        }
+        if hasActiveMarkedText(element) {
+            return false
+        }
+        return true
     }
 
     private func focusedElement(forPID pid: pid_t) -> AXUIElement? {

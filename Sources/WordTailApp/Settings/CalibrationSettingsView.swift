@@ -50,8 +50,105 @@ struct CalibrationSettingsView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 LinearSectionHeader(
+                    title: "Automatic Alignment",
+                    subtitle: "Locks ghost text to the rendered pixel baseline on every line — removes Electron & browser vertical jitter."
+                )
+
+                LinearCard {
+                    HStack(spacing: 12) {
+                        let isLiveActive = vm.liveVisualBaselineLock && vm.hasScreenCapturePermission
+                        Image(systemName: "viewfinder")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(isLiveActive ? LinearUI.accent : .secondary)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                (isLiveActive ? LinearUI.accent.opacity(scheme == .dark ? 0.16 : 0.11) : LinearUI.subtleFill(scheme)),
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            )
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Live Per-Line Sub-Pixel Lock")
+                                .font(.system(size: 13, weight: .medium))
+                            Text("Reads a small area beside the cursor in the active app in memory (never saved or sent).")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        LinearSwitch(isOn: $vm.liveVisualBaselineLock)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 52)
+
+                    if vm.liveVisualBaselineLock {
+                        Rectangle()
+                            .fill(LinearUI.hairline(scheme))
+                            .frame(height: 1)
+                            .padding(.leading, 46)
+
+                        if !vm.hasScreenCapturePermission {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(LinearUI.warning)
+                                    .frame(width: 6, height: 6)
+                                    .padding(.leading, 9)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("Screen Recording permission required")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.primary)
+                                    Text("Enable WordTail in Privacy & Security → Screen & System Audio Recording, then relaunch if macOS prompts.")
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                LinearActionButton(title: "Grant Access…", icon: "lock.open") {
+                                    vm.requestScreenCapturePermissionAndOpenSettings()
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                        } else {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(vm.visualLockError == nil ? LinearUI.positive : LinearUI.warning)
+                                    .frame(width: 6, height: 6)
+                                    .padding(.leading, 9)
+
+                                Text(vm.visualLockStatusText)
+                                    .font(.system(size: 11.5))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+
+                                Spacer()
+
+                                if vm.visualLockLockedLines > 0 {
+                                    LinearIconButton(
+                                        symbol: "arrow.counterclockwise",
+                                        helpText: "Reset learned per-app visual priors and line cache"
+                                    ) {
+                                        vm.resetVisualBaselineCalibration()
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                LinearSectionHeader(
                     title: "Global Default",
-                    subtitle: "Used for apps without a custom override below."
+                    subtitle: (vm.liveVisualBaselineLock && vm.hasScreenCapturePermission)
+                        ? "Fallback baseline when Live Per-Line Lock is skipped or unavailable."
+                        : "Used for apps without a custom override below."
                 )
 
                 LinearCard {

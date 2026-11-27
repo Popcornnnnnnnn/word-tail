@@ -37,6 +37,10 @@ final class MenuBarPopoverViewModel: ObservableObject {
     @Published var activeAppDefaultExcluded: Bool = false
     @Published var activeAppUserDisabled: Bool = false
     @Published var activeAppVerticalAdjustment: CGFloat = 0.70
+    @Published var isLiveVisualLockEnabled: Bool = false
+    @Published var isLiveVisualLockActive: Bool = false
+    @Published var isLiveVisualLockPaused: Bool = false
+    @Published var liveVisualLockTooltip: String = ""
 
     @Published var availableRelease: AvailableRelease? = nil
     @Published var isInstallingUpdate: Bool = false
@@ -111,6 +115,26 @@ final class MenuBarPopoverViewModel: ObservableObject {
 
         isEnabled = engine.isEnabled
         hasAccessibility = AXIsProcessTrusted() && engine.isTapActive
+        isLiveVisualLockEnabled = engine.enableLiveVisualBaselineLock
+        let vSnap = engine.visualCalibrator.statusSnapshot()
+        isLiveVisualLockActive = isLiveVisualLockEnabled && vSnap.hasPermission && vSnap.lastError == nil
+        isLiveVisualLockPaused = isLiveVisualLockEnabled && (!vSnap.hasPermission || vSnap.lastError != nil)
+        if isLiveVisualLockEnabled {
+            if !vSnap.hasPermission {
+                liveVisualLockTooltip = "Live Per-Line Lock needs Screen Recording permission. Click to open Calibration."
+            } else if let err = vSnap.lastError, !err.isEmpty {
+                liveVisualLockTooltip = "Live Per-Line Lock paused (\(err)). Manual fallback remains active."
+            } else if vSnap.lockedLineCount > 0, let delta = vSnap.lastDeltaPt {
+                liveVisualLockTooltip = String(
+                    format: "Live Per-Line Lock active (%+.2f pt · %d lines locked). Steppers adjust manual fallback.",
+                    delta, vSnap.lockedLineCount
+                )
+            } else {
+                liveVisualLockTooltip = "Live Per-Line Lock ready — locks on next typed line. Steppers adjust manual fallback."
+            }
+        } else {
+            liveVisualLockTooltip = ""
+        }
 
         if let activeApp, !activeApp.bundleID.isEmpty {
             activeAppName = activeApp.name
@@ -467,8 +491,24 @@ struct MenuBarPopoverView: View {
                         ), activeColor: systemBlue)
                         .help(vm.activeAppUserDisabled ? "Enable WordTail in \(vm.activeAppName)" : "Disable WordTail in \(vm.activeAppName)")
 
+                        if vm.isLiveVisualLockEnabled {
+                            let badgeColor: Color = vm.isLiveVisualLockPaused ? warmOrange : systemBlue
+                            Button {
+                                onClosePopover()
+                                vm.onOpenSettingsSection(.calibration, nil, activeDisplayKey)
+                            } label: {
+                                Image(systemName: vm.isLiveVisualLockPaused ? "exclamationmark.triangle.fill" : "viewfinder")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(badgeColor)
+                                    .frame(width: 19, height: 17)
+                                    .background(badgeColor.opacity(scheme == .dark ? 0.18 : 0.11), in: RoundedRectangle(cornerRadius: 4.5, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .help(vm.liveVisualLockTooltip)
+                        }
+
                         HStack(spacing: 2) {
-                            PopoverStepperGlyphButton(symbol: "minus", help: "Nudge baseline down (-0.05)", accent: systemBlue) {
+                            PopoverStepperGlyphButton(symbol: "minus", help: "Nudge fallback baseline down (-0.05)", accent: systemBlue) {
                                 vm.onAdjustAppBaseline(vm.activeAppBundleID, activeDisplayKey, -0.05)
                             }
                             Text(String(format: "%+.2f", vm.activeAppVerticalAdjustment))
@@ -476,7 +516,7 @@ struct MenuBarPopoverView: View {
                                 .monospacedDigit()
                                 .foregroundStyle(Color.secondary)
                                 .frame(width: 38, alignment: .center)
-                            PopoverStepperGlyphButton(symbol: "plus", help: "Nudge baseline up (+0.05)", accent: systemBlue) {
+                            PopoverStepperGlyphButton(symbol: "plus", help: "Nudge fallback baseline up (+0.05)", accent: systemBlue) {
                                 vm.onAdjustAppBaseline(vm.activeAppBundleID, activeDisplayKey, +0.05)
                             }
                         }

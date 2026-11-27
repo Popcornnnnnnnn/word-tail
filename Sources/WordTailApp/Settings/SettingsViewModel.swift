@@ -76,6 +76,22 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    @Published var liveVisualBaselineLock: Bool {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase else { return }
+            engine?.enableLiveVisualBaselineLock = liveVisualBaselineLock
+            if liveVisualBaselineLock && !(engine?.visualCalibrator.hasScreenCapturePermission ?? false) {
+                requestScreenCapturePermissionAndOpenSettings()
+            } else {
+                refreshCalibrationOffsets(forceReloadList: false)
+            }
+        }
+    }
+    @Published var hasScreenCapturePermission: Bool = false
+    @Published var visualLockStatusText: String = "Off"
+    @Published var visualLockLockedLines: Int = 0
+    @Published var visualLockError: String? = nil
+
     @Published var ghostOpacity: Double {
         didSet {
             guard !isRefreshing, !isStaticShowcase else { return }
@@ -382,6 +398,8 @@ final class SettingsViewModel: ObservableObject {
         self.isStaticShowcase = false
         self.isEnabled = engine.isEnabled
         self.globalOffset = Double(engine.globalVerticalAdjustment)
+        self.liveVisualBaselineLock = engine.enableLiveVisualBaselineLock
+        self.hasScreenCapturePermission = engine.visualCalibrator.hasScreenCapturePermission
         self.ghostOpacity = Double(engine.ghostOpacity)
         self.appendSpaceOnAccept = engine.appendSpaceOnAccept
         self.autoCorrectOnSpace = engine.autoCorrectOnSpace
@@ -451,6 +469,9 @@ final class SettingsViewModel: ObservableObject {
         self.isEnabled = true
         self.isTrusted = true
         self.globalOffset = 0.70
+        self.liveVisualBaselineLock = false
+        self.hasScreenCapturePermission = false
+        self.visualLockStatusText = "Off"
         self.ghostOpacity = 0.38
         self.appendSpaceOnAccept = true
         self.autoCorrectOnSpace = true
@@ -588,6 +609,25 @@ final class SettingsViewModel: ObservableObject {
         let nextGlobal = engine.verticalOffsetStore.globalOffset
         if abs(globalOffset - nextGlobal) > 0.0001 {
             globalOffset = nextGlobal
+        }
+
+        let nextLiveLock = engine.enableLiveVisualBaselineLock
+        if liveVisualBaselineLock != nextLiveLock {
+            liveVisualBaselineLock = nextLiveLock
+        }
+        let vSnap = engine.visualCalibrator.statusSnapshot()
+        if hasScreenCapturePermission != vSnap.hasPermission {
+            hasScreenCapturePermission = vSnap.hasPermission
+        }
+        if visualLockLockedLines != vSnap.lockedLineCount {
+            visualLockLockedLines = vSnap.lockedLineCount
+        }
+        if visualLockError != vSnap.lastError {
+            visualLockError = vSnap.lastError
+        }
+        let nextStatus = Self.formatVisualLockStatus(enabled: nextLiveLock, snapshot: vSnap)
+        if visualLockStatusText != nextStatus {
+            visualLockStatusText = nextStatus
         }
 
         let merged = engine.verticalOffsetStore.mergedAppOffsets(forDisplayKey: selectedDisplayKey)
@@ -910,6 +950,39 @@ final class SettingsViewModel: ObservableObject {
 
     func resetGlobalOffset() {
         globalOffset = VerticalOffsetStore.sanitize(Double(ScreenGeometry.defaultVerticalOffset))
+    }
+
+    func requestScreenCapturePermissionAndOpenSettings() {
+        guard let engine, !isStaticShowcase else { return }
+        let granted = engine.visualCalibrator.requestScreenCapturePermission()
+        if !granted {
+            engine.visualCalibrator.openScreenRecordingSettings()
+        }
+        refreshCalibrationOffsets(forceReloadList: false)
+    }
+
+    func resetVisualBaselineCalibration() {
+        guard let engine, !isStaticShowcase else { return }
+        engine.resetVisualBaselineCalibration()
+        refreshCalibrationOffsets(forceReloadList: false)
+    }
+
+    private static func formatVisualLockStatus(
+        enabled: Bool,
+        snapshot: VisualLockStatusSnapshot
+    ) -> String {
+        guard enabled else { return "Off" }
+        guard snapshot.hasPermission else {
+            return "Screen Recording permission required"
+        }
+        if let err = snapshot.lastError, !err.isEmpty {
+            return "Capture paused — \(err)"
+        }
+        if snapshot.lockedLineCount > 0, let app = snapshot.lastAppName, let delta = snapshot.lastDeltaPt {
+            let linesLabel = snapshot.lockedLineCount == 1 ? "1 line locked" : "\(snapshot.lockedLineCount) lines locked"
+            return String(format: "Active · %@ (%+.2f pt) · %@", app, delta, linesLabel)
+        }
+        return "Ready — locks automatically on the next typed line"
     }
 
     func resetOpacity() {
