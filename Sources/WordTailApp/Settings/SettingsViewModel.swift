@@ -33,6 +33,8 @@ struct AppOffsetItem: Identifiable, Equatable {
     let displayName: String
     let icon: NSImage
     var offset: Double
+    var isDisplaySpecificOverride: Bool = false
+    var hasPerDisplayOverrides: Bool = false
 }
 
 struct RunningAppChoice: Identifiable, Hashable {
@@ -210,6 +212,13 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var appOffsets: [AppOffsetItem] = []
     @Published var availableAppsToAdd: [RunningAppChoice] = []
+    @Published var connectedDisplays: [DisplayDescriptor] = []
+    @Published var selectedDisplayKey: String? = nil {
+        didSet {
+            guard !isRefreshing, !isStaticShowcase, oldValue != selectedDisplayKey else { return }
+            refreshCalibrationOffsets(forceReloadList: true)
+        }
+    }
 
     @Published var minPrefix: Int {
         didSet {
@@ -564,12 +573,24 @@ final class SettingsViewModel: ObservableObject {
     ) {
         guard let engine, !isStaticShowcase else { return }
 
+        var displays = ScreenGeometry.connectedDisplays()
+        let activeDisplayKeys = Set(displays.map(\.key))
+        for savedKey in engine.verticalOffsetStore.allSavedDisplayKeys().sorted() where !activeDisplayKeys.contains(savedKey) {
+            displays.append(DisplayDescriptor(key: savedKey, name: Self.friendlyDisplayName(forKey: savedKey)))
+        }
+        if connectedDisplays != displays {
+            connectedDisplays = displays
+        }
+        if let sel = selectedDisplayKey, !displays.contains(where: { $0.key == sel }) {
+            selectedDisplayKey = nil
+        }
+
         let nextGlobal = engine.verticalOffsetStore.globalOffset
         if abs(globalOffset - nextGlobal) > 0.0001 {
             globalOffset = nextGlobal
         }
 
-        let merged = engine.verticalOffsetStore.mergedAppOffsets()
+        let merged = engine.verticalOffsetStore.mergedAppOffsets(forDisplayKey: selectedDisplayKey)
         if !forceReloadList,
            currentApp == nil,
            Set(appOffsets.map(\.bundleID)) == Set(merged.keys) {
@@ -577,6 +598,16 @@ final class SettingsViewModel: ObservableObject {
                 let bid = appOffsets[idx].bundleID
                 if let nextVal = merged[bid], abs(appOffsets[idx].offset - nextVal) > 0.0001 {
                     appOffsets[idx].offset = nextVal
+                }
+                let isSpecific = selectedDisplayKey.map {
+                    engine.verticalOffsetStore.hasDisplaySpecificOverride(forBundleID: bid, displayKey: $0)
+                } ?? false
+                if appOffsets[idx].isDisplaySpecificOverride != isSpecific {
+                    appOffsets[idx].isDisplaySpecificOverride = isSpecific
+                }
+                let hasAnyDisplay = engine.verticalOffsetStore.hasAnyDisplayOverride(forBundleID: bid)
+                if appOffsets[idx].hasPerDisplayOverrides != hasAnyDisplay {
+                    appOffsets[idx].hasPerDisplayOverrides = hasAnyDisplay
                 }
             }
             return
@@ -589,6 +620,7 @@ final class SettingsViewModel: ObservableObject {
         merged: [String: Double],
         currentApp: (name: String, bundleID: String)?
     ) {
+        guard let engine else { return }
         var runningNames: [String: String] = [:]
         for app in NSWorkspace.shared.runningApplications where Self.isUserFacingRunningApp(app) {
             guard let bid = app.bundleIdentifier,
@@ -610,7 +642,11 @@ final class SettingsViewModel: ObservableObject {
                 bundleID: bid,
                 displayName: Self.friendlyAppTitle(bundleID: bid, rawName: runningNames[bid] ?? Self.appName(forBundleID: bid)),
                 icon: Self.appIcon(forBundleID: bid),
-                offset: val
+                offset: val,
+                isDisplaySpecificOverride: selectedDisplayKey.map {
+                    engine.verticalOffsetStore.hasDisplaySpecificOverride(forBundleID: bid, displayKey: $0)
+                } ?? false,
+                hasPerDisplayOverrides: engine.verticalOffsetStore.hasAnyDisplayOverride(forBundleID: bid)
             )
         }
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
@@ -626,6 +662,16 @@ final class SettingsViewModel: ObservableObject {
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func friendlyDisplayName(forKey key: String) -> String {
+        if key.hasPrefix("builtin") {
+            return "Built-in Display"
+        }
+        if key.hasPrefix("ext:") {
+            return "External Display"
+        }
+        return key
     }
 
     func refreshInsights() {
@@ -823,8 +869,12 @@ final class SettingsViewModel: ObservableObject {
         let sanitized = VerticalOffsetStore.sanitize(newValue)
         if let idx = appOffsets.firstIndex(where: { $0.bundleID == bundleID }) {
             appOffsets[idx].offset = sanitized
+            if selectedDisplayKey != nil {
+                appOffsets[idx].isDisplaySpecificOverride = true
+                appOffsets[idx].hasPerDisplayOverrides = true
+            }
         }
-        engine?.setVerticalAdjustment(CGFloat(sanitized), forBundleID: bundleID)
+        engine?.setVerticalAdjustment(CGFloat(sanitized), forBundleID: bundleID, displayKey: selectedDisplayKey)
     }
 
     func setGlobalOffsetClamped(_ newValue: Double) {
@@ -833,8 +883,8 @@ final class SettingsViewModel: ObservableObject {
 
     func addAppOverride(bundleID: String) {
         guard let engine else { return }
-        let startOffset = Double(engine.verticalAdjustment(forBundleID: bundleID))
-        engine.setVerticalAdjustment(CGFloat(startOffset), forBundleID: bundleID)
+        let startOffset = Double(engine.verticalAdjustment(forBundleID: bundleID, displayKey: selectedDisplayKey))
+        engine.setVerticalAdjustment(CGFloat(startOffset), forBundleID: bundleID, displayKey: selectedDisplayKey)
         refreshCalibrationOffsets(forceReloadList: true)
     }
 
@@ -854,7 +904,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func removeOrResetApp(bundleID: String) {
-        engine?.setVerticalAdjustment(nil, forBundleID: bundleID)
+        engine?.setVerticalAdjustment(nil, forBundleID: bundleID, displayKey: selectedDisplayKey)
         refreshCalibrationOffsets(forceReloadList: true)
     }
 
@@ -1075,6 +1125,7 @@ final class SettingsViewModel: ObservableObject {
         hourlyTrendBuckets = hourly.buckets
         busiestKeyHour = hourly.busiestKeyHour
         busiestClickHour = hourly.busiestClickHour
+        syncCalibrationOffsetsLocked(forceReloadList: false)
         isRefreshing = false
         refreshProUI()
         onStateChange()

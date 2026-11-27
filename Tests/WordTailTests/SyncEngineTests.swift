@@ -185,4 +185,95 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(profilesB.profile(forBundleID: "com.openai.codex")?.preset, .engineeringChat)
         XCTAssertEqual(snippetsB.match(textBeforeCursor: ";sig", bundleID: nil)?.expandedText, "Cheers")
     }
+
+    func testVerticalOffsetsSyncAcrossPeersAndLegacyCompatibility() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("WordTailCalSync-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let suiteA = "WordTailCalSyncA-\(UUID().uuidString)"
+        let suiteB = "WordTailCalSyncB-\(UUID().uuidString)"
+        let defaultsA = try XCTUnwrap(UserDefaults(suiteName: suiteA))
+        let defaultsB = try XCTUnwrap(UserDefaults(suiteName: suiteB))
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteA)
+            defaultsB.removePersistentDomain(forName: suiteB)
+        }
+
+        let syncFolder = root.appendingPathComponent("sync", isDirectory: true)
+        let devicesDir = syncFolder.appendingPathComponent("devices", isDirectory: true)
+        try fm.createDirectory(at: devicesDir, withIntermediateDirectories: true)
+
+        // Legacy v0.9.2 peer envelope without `verticalOffsets` must still decode cleanly.
+        let legacyEnv = DeviceSyncEnvelope(
+            schemaVersion: 1,
+            deviceID: "legacy-v092",
+            deviceModel: "Mac14,15",
+            updatedAt: Date(timeIntervalSince1970: 1_763_540_000),
+            history: .init(),
+            corrections: .init(),
+            phrases: .init(),
+            insights: .init(),
+            keyStatsDays: [:]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let encodedLegacy = try encoder.encode(legacyEnv)
+        var jsonObj = try XCTUnwrap(JSONSerialization.jsonObject(with: encodedLegacy) as? [String: Any])
+        jsonObj.removeValue(forKey: "verticalOffsets")
+        try JSONSerialization.data(withJSONObject: jsonObj)
+            .write(to: devicesDir.appendingPathComponent("legacy-v092.json"))
+
+        let macADir = root.appendingPathComponent("macA", isDirectory: true)
+        let macBDir = root.appendingPathComponent("macB", isDirectory: true)
+        let offsetsA = VerticalOffsetStore(fileURL: macADir.appendingPathComponent("vertical_offsets.json"), defaults: defaultsA)
+        let offsetsB = VerticalOffsetStore(fileURL: macBDir.appendingPathComponent("vertical_offsets.json"), defaults: defaultsB)
+
+        offsetsB.setOffset(0.40, forBundleID: "com.apple.Notes")
+        Thread.sleep(forTimeInterval: 0.01)
+
+        offsetsA.globalOffset = -0.10
+        offsetsA.setOffset(-1.15, forBundleID: "com.google.Chrome")
+        offsetsA.setOffset(-0.20, forBundleID: "com.t3tools.t3code", displayKey: "ext:4c2d-71e9-878270033@2x")
+        offsetsA.setOffset(0.10, forBundleID: "com.apple.Notes")
+        Thread.sleep(forTimeInterval: 0.01)
+        offsetsA.removeOrReset(bundleID: "com.apple.Notes")
+
+        let engineA = SyncEngine(
+            historyStore: UserHistoryStore(fileURL: macADir.appendingPathComponent("accepted.json")),
+            adaptiveStore: AdaptiveCorrectionStore(fileURL: macADir.appendingPathComponent("adaptive.json")),
+            phrasePredictor: PhrasePredictor(fileURL: macADir.appendingPathComponent("phrases.json")),
+            habitTracker: TypingHabitTracker(fileURL: macADir.appendingPathComponent("insights.json")),
+            keyStatsStore: KeyStatsStore(fileURL: macADir.appendingPathComponent("stats.json")),
+            defaults: defaultsA,
+            overrideDeviceID: "mac-a",
+            localCacheURL: macADir.appendingPathComponent("cache.json"),
+            verticalOffsetStore: offsetsA
+        )
+        let engineB = SyncEngine(
+            historyStore: UserHistoryStore(fileURL: macBDir.appendingPathComponent("accepted.json")),
+            adaptiveStore: AdaptiveCorrectionStore(fileURL: macBDir.appendingPathComponent("adaptive.json")),
+            phrasePredictor: PhrasePredictor(fileURL: macBDir.appendingPathComponent("phrases.json")),
+            habitTracker: TypingHabitTracker(fileURL: macBDir.appendingPathComponent("insights.json")),
+            keyStatsStore: KeyStatsStore(fileURL: macBDir.appendingPathComponent("stats.json")),
+            defaults: defaultsB,
+            overrideDeviceID: "mac-b",
+            localCacheURL: macBDir.appendingPathComponent("cache.json"),
+            verticalOffsetStore: offsetsB
+        )
+
+        XCTAssertEqual(engineA.enableSync(folderURL: syncFolder).syncedPeerCount, 1)
+        XCTAssertEqual(engineB.enableSync(folderURL: syncFolder).syncedPeerCount, 2)
+
+        XCTAssertEqual(offsetsB.globalOffset, -0.10, accuracy: 1e-9)
+        XCTAssertEqual(offsetsB.effectiveOffset(forBundleID: "com.google.Chrome"), -1.15, accuracy: 1e-9)
+        XCTAssertEqual(
+            offsetsB.effectiveOffset(forBundleID: "com.t3tools.t3code", displayKey: "ext:4c2d-71e9-878270033@2x"),
+            -0.20,
+            accuracy: 1e-9
+        )
+        XCTAssertNil(offsetsB.savedPerAppOffsets()["com.apple.Notes"])
+        XCTAssertEqual(offsetsB.effectiveOffset(forBundleID: "com.apple.Notes"), -0.10, accuracy: 1e-9)
+    }
 }

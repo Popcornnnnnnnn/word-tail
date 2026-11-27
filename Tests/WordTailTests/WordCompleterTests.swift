@@ -214,6 +214,46 @@ final class WordCompleterTests: XCTestCase {
         XCTAssertGreaterThan(pTight.baselineY, 1080 - 200 - font.ascender)
     }
 
+    func testScreenGeometrySymmetricBaselineInvariantUnderCSSLineHeightAndSmoothFontEstimate() {
+        let font = NSFont.systemFont(ofSize: 14)
+        let primaryH: CGFloat = 1080
+        let centerCocoaY: CGFloat = 500
+
+        var baselines: [CGFloat] = []
+        for height in [CGFloat(18.0), CGFloat(21.0), CGFloat(26.0)] {
+            let axTopCocoa = centerCocoaY + height * 0.5
+            let axOriginY = primaryH - axTopCocoa
+            let rect = CGRect(x: 300, y: axOriginY, width: 9, height: height)
+            let placement = ScreenGeometry.baselinePlacement(
+                forAXCharRect: rect,
+                primaryScreenHeight: primaryH,
+                font: font,
+                lineSpacingBias: .symmetric
+            )
+            baselines.append(placement.baselineY)
+        }
+        XCTAssertEqual(baselines[0], baselines[1], accuracy: 0.01)
+        XCTAssertEqual(baselines[1], baselines[2], accuracy: 0.01)
+
+        XCTAssertEqual(ScreenGeometry.estimatedFontSize(forLineHeight: 16.5), 13.25, accuracy: 1e-9)
+        XCTAssertEqual(ScreenGeometry.estimatedFontSize(forLineHeight: 17.5), 14.0, accuracy: 1e-9)
+    }
+
+    func testExtractAXFontSkipsLeadingAttachments() {
+        let attr = NSMutableAttributedString(string: "\u{FFFC}W")
+        attr.addAttribute(
+            NSAttributedString.Key("AXFont"),
+            value: ["AXFontSize": NSNumber(value: 14.0), "AXFontName": ".AppleSystemUIFont"],
+            range: NSRange(location: 1, length: 1)
+        )
+        let extracted = ScreenGeometry.extractAXFont(from: attr)
+        XCTAssertNotNil(extracted)
+        XCTAssertEqual(extracted?.pointSize ?? 0, 14.0, accuracy: 0.01)
+
+        XCTAssertNil(ScreenGeometry.extractAXFont(from: NSAttributedString(string: "")))
+        XCTAssertNil(ScreenGeometry.extractAXFont(from: NSAttributedString(string: "\u{FFFC}")))
+    }
+
     func testPersonalBigramsAndSentenceBoundaryIsolation() {
         let history = makeTempHistory()
         let mock = MockSpellCompleter { _, _ in ["really", "recent", "request", "reason"] }

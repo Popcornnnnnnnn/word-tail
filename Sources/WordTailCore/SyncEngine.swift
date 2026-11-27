@@ -15,6 +15,7 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
     public var domainPacks: DomainPackStore.SyncShard?
     public var appProfiles: AppProfileStore.SyncShard?
     public var snippets: SnippetStore.SyncShard?
+    public var verticalOffsets: VerticalOffsetStore.SyncShard?
 
     public init(
         schemaVersion: Int = 1,
@@ -29,7 +30,8 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
         keyStatsDays: [String: DailyKeyStatsRecord],
         domainPacks: DomainPackStore.SyncShard? = nil,
         appProfiles: AppProfileStore.SyncShard? = nil,
-        snippets: SnippetStore.SyncShard? = nil
+        snippets: SnippetStore.SyncShard? = nil,
+        verticalOffsets: VerticalOffsetStore.SyncShard? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.deviceID = deviceID
@@ -44,6 +46,7 @@ public struct DeviceSyncEnvelope: Codable, Equatable, Sendable {
         self.domainPacks = domainPacks
         self.appProfiles = appProfiles
         self.snippets = snippets
+        self.verticalOffsets = verticalOffsets
     }
 }
 
@@ -93,8 +96,7 @@ public struct SyncStatusSnapshot: Equatable, Sendable {
 /// Conflict-free multi-device sync coordinator using per-device JSON shards in iCloud Drive or any synced folder.
 ///
 /// Each Mac writes ONLY its own local delta shard (`devices/<deviceID>.json`), while merging all peer shards
-/// in memory and applying Last-Write-Wins tombstones for custom words, rules, mutes, and phrases.
-/// Per-app display calibration offsets stay strictly local to each Mac.
+/// in memory and applying Last-Write-Wins tombstones for custom words, rules, mutes, phrases, and calibration offsets.
 public final class SyncEngine {
     public static let enabledDefaultsKey = "WordTailSyncEnabled"
     public static let folderPathDefaultsKey = "WordTailSyncFolderPath"
@@ -113,6 +115,7 @@ public final class SyncEngine {
     private let domainPackStore: DomainPackStore?
     private let appProfileStore: AppProfileStore?
     private let snippetStore: SnippetStore?
+    private let verticalOffsetStore: VerticalOffsetStore?
     private let defaults: UserDefaults
     private let localCacheURL: URL
     private let queue = DispatchQueue(label: "app.wordtail.macos.sync", qos: .utility)
@@ -137,7 +140,8 @@ public final class SyncEngine {
         snippetStore: SnippetStore? = nil,
         defaults: UserDefaults = .standard,
         overrideDeviceID: String? = nil,
-        localCacheURL: URL? = nil
+        localCacheURL: URL? = nil,
+        verticalOffsetStore: VerticalOffsetStore? = nil
     ) {
         self.historyStore = historyStore
         self.adaptiveStore = adaptiveStore
@@ -147,6 +151,7 @@ public final class SyncEngine {
         self.domainPackStore = domainPackStore
         self.appProfileStore = appProfileStore
         self.snippetStore = snippetStore
+        self.verticalOffsetStore = verticalOffsetStore
         self.defaults = defaults
         self.deviceModel = Self.hardwareModelIdentifier()
 
@@ -344,7 +349,8 @@ public final class SyncEngine {
             keyStatsDays: keyStatsStore.exportLocalDaysShard(),
             domainPacks: domainPackStore?.exportSyncShard(),
             appProfiles: appProfileStore?.exportLocalShard(),
-            snippets: snippetStore?.exportLocalShard()
+            snippets: snippetStore?.exportLocalShard(),
+            verticalOffsets: verticalOffsetStore?.exportLocalShard()
         )
 
         let encoder = JSONEncoder()
@@ -373,6 +379,7 @@ public final class SyncEngine {
         var domainPackShards: [String: DomainPackStore.SyncShard] = [:]
         var appProfileShards: [String: AppProfileStore.SyncShard] = [:]
         var snippetShards: [String: SnippetStore.SyncShard] = [:]
+        var verticalOffsetShards: [String: VerticalOffsetStore.SyncShard] = [:]
         var claimedLegacyIDs = Set<String>()
 
         for (peerID, env) in envelopes where peerID != deviceID {
@@ -389,6 +396,9 @@ public final class SyncEngine {
             }
             if let snippets = env.snippets {
                 snippetShards[peerID] = snippets
+            }
+            if let verticalOffsets = env.verticalOffsets {
+                verticalOffsetShards[peerID] = verticalOffsets
             }
             if let legacyID = env.legacyKeyStatsDeviceID, !legacyID.isEmpty {
                 claimedLegacyIDs.insert(legacyID)
@@ -409,6 +419,9 @@ public final class SyncEngine {
         }
         if !snippetShards.isEmpty, let snippetStore {
             allProSaved = snippetStore.applyRemoteShards(snippetShards) && allProSaved
+        }
+        if !verticalOffsetShards.isEmpty, let verticalOffsetStore {
+            allProSaved = verticalOffsetStore.applyRemoteShards(verticalOffsetShards) && allProSaved
         }
         return allProSaved
     }

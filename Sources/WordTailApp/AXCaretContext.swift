@@ -18,6 +18,8 @@ struct CaretSnapshot {
     let primaryScreenHeight: CGFloat
     let focusedElement: AXUIElement?
     let caretLocation: Int?
+    let displayKey: String?
+    let displayName: String?
 }
 
 struct VerifiedSnippetDestination {
@@ -41,6 +43,7 @@ final class AXCaretContext {
     private var chromiumEnhancedPIDs = Set<pid_t>()
     private var bundleChromiumCache: [String: Bool] = [:]
     private var helperPIDCache: [pid_t: (pids: [pid_t], timestamp: CFAbsoluteTime)] = [:]
+    private var cachedElementFonts: [UInt: (font: NSFont, rectHeight: CGFloat, timestamp: CFAbsoluteTime)] = [:]
     private var _lastDebugSummary: String = "No keystroke captured yet"
 
     var lastDebugSummary: String {
@@ -109,7 +112,8 @@ final class AXCaretContext {
         targetApp: NSRunningApplication? = nil,
         fallbackBuffer: String,
         enableChromiumBridge: Bool,
-        verticalAdjustment: CGFloat = ScreenGeometry.defaultVerticalOffset
+        verticalAdjustment: CGFloat = ScreenGeometry.defaultVerticalOffset,
+        verticalAdjustmentProvider: ((String?) -> CGFloat)? = nil
     ) -> CaretSnapshot? {
         guard AXIsProcessTrusted() else { return nil }
         guard let app = targetApp ?? effectiveFocusedApplication() else { return nil }
@@ -157,7 +161,7 @@ final class AXCaretContext {
         let appBundleID = app.bundleIdentifier ?? ""
         let isChromium = isChromiumBackedApp(app: app, bundleID: appBundleID)
         let isWebKit = isWebKitTextElement(element, isChromium: isChromium)
-        let spacingBias: LineSpacingBias = isWebKit ? .topAdded : .bottomAdded
+        let spacingBias: LineSpacingBias = isWebKit ? .topAdded : (isChromium ? .symmetric : .bottomAdded)
 
         // Path 1: Standard character-range AX API (NSTextView, NSTextField, standard inputs).
         if let selectedRange = copySelectedRange(element) {
@@ -243,18 +247,20 @@ final class AXCaretContext {
                    caretLocation: selectedRange.location,
                    isWebKit: isWebKit
                ) {
+                let display = ScreenGeometry.displayDescriptor(forAXRect: axRect, primaryScreenHeight: primaryHeight)
+                let resolvedOffset = verticalAdjustmentProvider?(display?.key) ?? verticalAdjustment
                 let placement = ScreenGeometry.baselinePlacement(
                     forAXCharRect: axRect,
                     primaryScreenHeight: primaryHeight,
                     font: font,
-                    verticalAdjustment: verticalAdjustment,
+                    verticalAdjustment: resolvedOffset,
                     lineSpacingBias: spacingBias
                 )
                 let endsWithLetter = textBefore.last.map { $0.isASCII && $0.isLetter } ?? false
                 recordStatus(String(
                     format: "app=%@ pid=%d->%d role=%@ path=range bias=%@ rect=(%.1fx%.1f) font=%.1f mid=%d doc0=%d",
                     app.bundleIdentifier ?? "?", app.processIdentifier, ownerPID, elemRole,
-                    isWebKit ? "top" : "bot",
+                    Self.biasLabel(spacingBias),
                     axRect.width, axRect.height, font.pointSize, hasTextAfterOnLine ? 1 : 0, isAtDocumentStart ? 1 : 0
                 ))
                 return CaretSnapshot(
@@ -271,7 +277,9 @@ final class AXCaretContext {
                     rawAXRect: axRect,
                     primaryScreenHeight: primaryHeight,
                     focusedElement: element,
-                    caretLocation: selectedRange.location
+                    caretLocation: selectedRange.location,
+                    displayKey: display?.key,
+                    displayName: display?.name
                 )
             }
         }
@@ -282,12 +290,13 @@ final class AXCaretContext {
             fallbackBuffer: fallbackBuffer,
             primaryHeight: primaryHeight,
             verticalAdjustment: verticalAdjustment,
+            verticalAdjustmentProvider: verticalAdjustmentProvider,
             lineSpacingBias: spacingBias
         ) {
             recordStatus(String(
                 format: "app=%@ pid=%d->%d role=%@ path=marker bias=%@ rect=(%.1fx%.1f) font=%.1f after=%@",
                 app.bundleIdentifier ?? "?", app.processIdentifier, ownerPID, elemRole,
-                isWebKit ? "top" : "bot",
+                Self.biasLabel(spacingBias),
                 markerSnapshot.rawAXRect.width, markerSnapshot.rawAXRect.height,
                 markerSnapshot.font.pointSize,
                 markerSnapshot.charAfterCursor.map { $0.isWhitespace ? "ws" : ($0.isLetter ? "letter" : "punct") } ?? "nil"
@@ -449,6 +458,18 @@ final class AXCaretContext {
         return focusedElement(forPID: app.processIdentifier)
     }
 
+    func hasFocusedEditableTextElement(forPID pid: pid_t) -> Bool {
+        guard AXIsProcessTrusted(), let el = focusedElement(forPID: pid) else {
+            return false
+        }
+        let drilled = drillFocusedChildIfNeeded(el)
+        if isUsableFocusedElement(drilled) {
+            return true
+        }
+        let role = copyStringAttribute(drilled, attribute: kAXRoleAttribute as String) ?? ""
+        return ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"].contains(role)
+    }
+
     private func focusedElement(forPID pid: pid_t) -> AXUIElement? {
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(axApp, Self.axIPCDeadlineSeconds)
@@ -553,6 +574,42 @@ final class AXCaretContext {
         return nil
     }
 
+    private func resolveStableFont(element: AXUIElement, axFont: NSFont?, fontBoxHeight: CGFloat) -> NSFont {
+        let key = CFHash(element)
+        let now = CFAbsoluteTimeGetCurrent()
+        if let axFont {
+            stateLock.lock()
+            if cachedElementFonts.count >= 64, cachedElementFonts[key] == nil {
+                if let oldestKey = cachedElementFonts.min(by: { $0.value.timestamp < $1.value.timestamp })?.key {
+                    cachedElementFonts.removeValue(forKey: oldestKey)
+                }
+            }
+            cachedElementFonts[key] = (font: axFont, rectHeight: fontBoxHeight, timestamp: now)
+            stateLock.unlock()
+            return axFont
+        }
+
+        stateLock.lock()
+        let cached = cachedElementFonts[key]
+        stateLock.unlock()
+        if let cached,
+           now - cached.timestamp <= 30.0,
+           abs(cached.rectHeight - fontBoxHeight) <= 2.5 {
+            return cached.font
+        }
+
+        let estimatedSize = ScreenGeometry.estimatedFontSize(forLineHeight: fontBoxHeight)
+        return NSFont.systemFont(ofSize: estimatedSize)
+    }
+
+    private static func biasLabel(_ bias: LineSpacingBias) -> String {
+        switch bias {
+        case .bottomAdded: return "bot"
+        case .topAdded: return "top"
+        case .symmetric: return "sym"
+        }
+    }
+
     private func characterRectAndFont(element: AXUIElement, caretLocation: Int, isWebKit: Bool) -> (CGRect, NSFont, Bool)? {
         let prevCandidate = caretLocation > 0 ? boundsForRange(element, location: caretLocation - 1, length: 1) : nil
         let caretCandidate = boundsForRange(element, location: caretLocation, length: 0)
@@ -560,20 +617,17 @@ final class AXCaretContext {
             return nil
         }
 
-        if caretLocation > 0, let axFont = fontForRange(element, location: caretLocation - 1, length: 1) {
-            return (rect, axFont, prevCharZeroWidth)
-        }
-
+        let axFont = caretLocation > 0 ? fontForRange(element, location: caretLocation - 1, length: 1) : nil
         var fontBoxHeight = rect.height
-        if isWebKit && rect.height > 20 && caretLocation > 0,
+        if axFont == nil && isWebKit && rect.height > 20 && caretLocation > 0,
            let line1Rect = boundsForRange(element, location: 0, length: 1),
            Self.isValidCaretRect(line1Rect),
            (10.0...(rect.height - 1.0)).contains(line1Rect.height) {
             fontBoxHeight = line1Rect.height
         }
 
-        let estimatedSize = ScreenGeometry.estimatedFontSize(forLineHeight: fontBoxHeight)
-        return (rect, NSFont.systemFont(ofSize: estimatedSize), prevCharZeroWidth)
+        let font = resolveStableFont(element: element, axFont: axFont, fontBoxHeight: fontBoxHeight)
+        return (rect, font, prevCharZeroWidth)
     }
 
     private func stringForRange(_ element: AXUIElement, location: Int, length: Int) -> String? {
@@ -647,6 +701,7 @@ final class AXCaretContext {
         fallbackBuffer: String,
         primaryHeight: CGFloat,
         verticalAdjustment: CGFloat,
+        verticalAdjustmentProvider: ((String?) -> CGFloat)? = nil,
         lineSpacingBias: LineSpacingBias
     ) -> CaretSnapshot? {
         var markerRangeRef: CFTypeRef?
@@ -797,12 +852,14 @@ final class AXCaretContext {
 
         guard !textBefore.isEmpty else { return nil }
 
-        let font = resolvedFont ?? NSFont.systemFont(ofSize: ScreenGeometry.estimatedFontSize(forLineHeight: axRect.height))
+        let font = resolveStableFont(element: element, axFont: resolvedFont, fontBoxHeight: axRect.height)
+        let display = ScreenGeometry.displayDescriptor(forAXRect: axRect, primaryScreenHeight: primaryHeight)
+        let resolvedOffset = verticalAdjustmentProvider?(display?.key) ?? verticalAdjustment
         let placement = ScreenGeometry.baselinePlacement(
             forAXCharRect: axRect,
             primaryScreenHeight: primaryHeight,
             font: font,
-            verticalAdjustment: verticalAdjustment,
+            verticalAdjustment: resolvedOffset,
             lineSpacingBias: lineSpacingBias
         )
         let endsWithLetter = textBefore.last.map { $0.isASCII && $0.isLetter } ?? false
@@ -820,7 +877,9 @@ final class AXCaretContext {
             rawAXRect: axRect,
             primaryScreenHeight: primaryHeight,
             focusedElement: element,
-            caretLocation: nil
+            caretLocation: nil,
+            displayKey: display?.key,
+            displayName: display?.name
         )
     }
 
@@ -1446,23 +1505,7 @@ final class AXCaretContext {
     }
 
     private func extractFont(from attrStr: NSAttributedString) -> NSFont? {
-        guard attrStr.length > 0 else { return nil }
-        let attrs = attrStr.attributes(at: 0, effectiveRange: nil)
-        if let nsFont = attrs[.font] as? NSFont {
-            return nsFont
-        }
-        if let fontDict = attrs[NSAttributedString.Key("AXFont")] as? [String: Any],
-           let num = fontDict["AXFontSize"] as? NSNumber {
-            let size = CGFloat(num.doubleValue)
-            guard size >= 9, size <= 36 else { return nil }
-            if let name = fontDict["AXFontName"] as? String,
-               !name.hasPrefix("."),
-               let namedFont = NSFont(name: name, size: size) {
-                return namedFont
-            }
-            return NSFont.systemFont(ofSize: size)
-        }
-        return nil
+        ScreenGeometry.extractAXFont(from: attrStr)
     }
 
     private func copyStringAttribute(_ element: AXUIElement, attribute: String) -> String? {

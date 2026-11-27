@@ -580,7 +580,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         spaceItem.state = engine.appendSpaceOnAccept ? .on : .off
         menu.addItem(spaceItem)
 
-        if let targetApp = currentTargetApp() {
+        if let target = currentCalibrationTarget() {
+            let targetApp = (name: target.name, bundleID: target.bundleID)
             let isDefaultExcluded = InputGuard.defaultExcludedBundleIDs.contains(targetApp.bundleID)
             if isDefaultExcluded {
                 let excludedItem = NSMenuItem(
@@ -605,16 +606,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 appToggle.image = icon
                 menu.addItem(appToggle)
 
-                let curOffset = engine.verticalAdjustment(forBundleID: targetApp.bundleID)
+                let multiDisplay = ScreenGeometry.connectedDisplays().count > 1
+                let activeDisplayKey = multiDisplay ? target.displayKey : nil
+                let curOffset = engine.verticalAdjustment(forBundleID: targetApp.bundleID, displayKey: activeDisplayKey)
+                let menuTarget = CalibrationMenuTarget(bundleID: targetApp.bundleID, displayKey: activeDisplayKey)
+
                 let nudgeMenu = NSMenu()
                 let upItem = NSMenuItem(title: "Nudge Higher (+0.10 pt)", action: #selector(nudgeCurrentAppHigher(_:)), keyEquivalent: "")
                 upItem.target = self
-                upItem.representedObject = targetApp.bundleID
+                upItem.representedObject = menuTarget
                 nudgeMenu.addItem(upItem)
 
                 let downItem = NSMenuItem(title: "Nudge Lower (-0.10 pt)", action: #selector(nudgeCurrentAppLower(_:)), keyEquivalent: "")
                 downItem.target = self
-                downItem.representedObject = targetApp.bundleID
+                downItem.representedObject = menuTarget
                 nudgeMenu.addItem(downItem)
 
                 nudgeMenu.addItem(.separator())
@@ -622,8 +627,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 openAppSettings.target = self
                 nudgeMenu.addItem(openAppSettings)
 
+                let heightTitle: String
+                if multiDisplay, let dName = target.displayName, !dName.isEmpty {
+                    heightTitle = String(format: "Height in %@ (%@): %+.2f pt", targetApp.name, dName, curOffset)
+                } else {
+                    heightTitle = String(format: "Height in %@: %+.2f pt", targetApp.name, curOffset)
+                }
                 let heightItem = NSMenuItem(
-                    title: String(format: "Height in %@: %+.2f pt", targetApp.name, curOffset),
+                    title: heightTitle,
                     action: nil,
                     keyEquivalent: ""
                 )
@@ -693,26 +704,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private final class CalibrationMenuTarget: NSObject {
+        let bundleID: String
+        let displayKey: String?
+
+        init(bundleID: String, displayKey: String?) {
+            self.bundleID = bundleID
+            self.displayKey = displayKey
+        }
+    }
+
     private func runBackgroundSyncPass() {
         guard engine.syncEngine.statusSnapshot().isEnabled else { return }
         engine.syncEngine.syncAsync { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.updateStatusIcon()
                 self?.settingsWindowController?.refreshUpdateAndSyncStatus()
+                self?.settingsWindowController?.refreshCalibrationOffsets()
+                self?.popoverController?.refreshIfShown()
             }
         }
     }
 
+    private func currentCalibrationTarget() -> CalibrationAppInfo? {
+        if let target = engine.calibrationTargetApp() {
+            return target
+        }
+        if let last = lastObservedApp {
+            return CalibrationAppInfo(name: last.name, bundleID: last.bundleID)
+        }
+        return nil
+    }
+
     private func currentTargetApp() -> (name: String, bundleID: String)? {
-        if let focused = engine.effectiveFocusedTargetApp() {
-            return focused
-        }
-        if let front = NSWorkspace.shared.frontmostApplication,
-           let bundleID = front.bundleIdentifier,
-           bundleID != Bundle.main.bundleIdentifier {
-            return (front.localizedName ?? bundleID, bundleID)
-        }
-        return lastObservedApp
+        guard let target = currentCalibrationTarget() else { return nil }
+        return (target.name, target.bundleID)
     }
 
     @objc private func requestPermissionsClicked() {
@@ -737,13 +763,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func nudgeCurrentAppHigher(_ sender: NSMenuItem) {
-        guard let bundleID = sender.representedObject as? String else { return }
-        engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: 0.10)
+        if let target = sender.representedObject as? CalibrationMenuTarget {
+            engine.nudgeVerticalAdjustment(forBundleID: target.bundleID, delta: 0.10, displayKey: target.displayKey)
+        } else if let bundleID = sender.representedObject as? String {
+            engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: 0.10)
+        }
     }
 
     @objc private func nudgeCurrentAppLower(_ sender: NSMenuItem) {
-        guard let bundleID = sender.representedObject as? String else { return }
-        engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: -0.10)
+        if let target = sender.representedObject as? CalibrationMenuTarget {
+            engine.nudgeVerticalAdjustment(forBundleID: target.bundleID, delta: -0.10, displayKey: target.displayKey)
+        } else if let bundleID = sender.representedObject as? String {
+            engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: -0.10)
+        }
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
@@ -768,7 +800,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             engine: engine,
             inputGuard: inputGuard,
             autoUpdater: autoUpdater,
-            activeAppProvider: { [weak self] in self?.currentTargetApp() },
+            activeAppProvider: { [weak self] in self?.currentCalibrationTarget() },
             onToggleEnabled: { [weak self] in
                 self?.toggleEnabled()
             },
@@ -781,12 +813,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.updateStatusIcon()
                 self.popoverController?.refreshIfShown()
             },
-            onAdjustAppBaseline: { [weak self] bundleID, delta in
+            onAdjustAppBaseline: { [weak self] bundleID, displayKey, delta in
                 guard let self else { return }
-                self.engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: Double(delta))
+                self.engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: Double(delta), displayKey: displayKey)
             },
-            onOpenSettingsSection: { [weak self] section, range in
-                self?.presentMainWindow(section: section, keyStatsRange: range)
+            onOpenSettingsSection: { [weak self] section, range, displayKey in
+                self?.presentMainWindow(section: section, keyStatsRange: range, selectDisplayKey: displayKey)
             },
             onReviewUpdate: { [weak self] in
                 self?.autoUpdater.reviewAvailableUpdate()
@@ -815,7 +847,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoUpdater.reviewAvailableUpdate()
     }
 
-    private func presentMainWindow(section: SettingsSection?, keyStatsRange: StatsTimeRange? = nil) {
+    private func presentMainWindow(
+        section: SettingsSection?,
+        keyStatsRange: StatsTimeRange? = nil,
+        selectDisplayKey: String? = nil
+    ) {
         let target = currentTargetApp()
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
@@ -825,7 +861,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 onStateChange: { [weak self] in self?.updateStatusIcon() }
             )
         }
-        settingsWindowController?.present(for: target, selectSection: section, keyStatsRange: keyStatsRange)
+        settingsWindowController?.present(
+            for: target,
+            selectSection: section,
+            keyStatsRange: keyStatsRange,
+            selectDisplayKey: selectDisplayKey
+        )
     }
 
     @objc private func quitClicked() {

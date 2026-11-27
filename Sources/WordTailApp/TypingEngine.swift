@@ -57,6 +57,10 @@ final class TypingEngine {
 
     private struct PinnedLiveSample {
         let bundleID: String
+        let appName: String
+        let displayKey: String?
+        let displayName: String?
+        let capturedAt: CFAbsoluteTime
         let match: CompletionMatch
         let hasTextAfterOnLine: Bool
         let lineSpacingBias: LineSpacingBias
@@ -65,6 +69,10 @@ final class TypingEngine {
         let font: NSFont
     }
     private var lastLiveSample: PinnedLiveSample?
+    private var lastTypedTarget: CalibrationAppInfo?
+    private var lastTypedTimestamp: CFAbsoluteTime = 0
+    private var lastNonFinderObservedApp: CalibrationAppInfo?
+    private var calibrationSyncWorkItem: DispatchWorkItem?
 
     var onStateChanged: (() -> Void)?
     var onCalibrationChanged: (() -> Void)?
@@ -93,29 +101,46 @@ final class TypingEngine {
             verticalOffsetStore.globalOffset = Double(newValue)
             refreshPinnedOverlayIfVisible()
             notifyCalibrationChanged()
+            scheduleCalibrationSyncPush()
         }
     }
 
-    func customVerticalAdjustment(forBundleID bundleID: String) -> CGFloat? {
-        verticalOffsetStore.customOffset(forBundleID: bundleID).map { CGFloat($0) }
+    func customVerticalAdjustment(forBundleID bundleID: String, displayKey: String? = nil) -> CGFloat? {
+        verticalOffsetStore.customOffset(forBundleID: bundleID, displayKey: displayKey).map { CGFloat($0) }
     }
 
-    func verticalAdjustment(forBundleID bundleID: String?) -> CGFloat {
-        CGFloat(verticalOffsetStore.effectiveOffset(forBundleID: bundleID))
+    func verticalAdjustment(forBundleID bundleID: String?, displayKey: String? = nil) -> CGFloat {
+        CGFloat(verticalOffsetStore.effectiveOffset(forBundleID: bundleID, displayKey: displayKey))
     }
 
-    func setVerticalAdjustment(_ value: CGFloat?, forBundleID bundleID: String) {
-        verticalOffsetStore.setOffset(value.map(Double.init), forBundleID: bundleID)
-        refreshPinnedOverlayIfVisible()
+    func setVerticalAdjustment(_ value: CGFloat?, forBundleID bundleID: String, displayKey: String? = nil) {
+        verticalOffsetStore.setOffset(value.map(Double.init), forBundleID: bundleID, displayKey: displayKey)
+        refreshPinnedOverlayIfVisible(forBundleID: bundleID, displayKey: displayKey)
         notifyCalibrationChanged()
+        scheduleCalibrationSyncPush()
     }
 
     @discardableResult
-    func nudgeVerticalAdjustment(forBundleID bundleID: String, delta: Double) -> CGFloat {
-        let updated = verticalOffsetStore.nudge(forBundleID: bundleID, delta: delta)
-        refreshPinnedOverlayIfVisible()
+    func nudgeVerticalAdjustment(forBundleID bundleID: String, delta: Double, displayKey: String? = nil) -> CGFloat {
+        let updated = verticalOffsetStore.nudge(forBundleID: bundleID, delta: delta, displayKey: displayKey)
+        refreshPinnedOverlayIfVisible(forBundleID: bundleID, displayKey: displayKey)
         notifyCalibrationChanged()
+        scheduleCalibrationSyncPush()
         return CGFloat(updated)
+    }
+
+    private func scheduleCalibrationSyncPush() {
+        guard syncEngine.statusSnapshot().isEnabled else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.calibrationSyncWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, self.syncEngine.statusSnapshot().isEnabled else { return }
+                self.syncEngine.syncAsync()
+            }
+            self.calibrationSyncWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
+        }
     }
 
     private func notifyCalibrationChanged() {
@@ -423,6 +448,45 @@ final class TypingEngine {
         return (name: app.localizedName ?? bundleID, bundleID: bundleID)
     }
 
+    func calibrationTargetApp() -> CalibrationAppInfo? {
+        let selfBundle = Bundle.main.bundleIdentifier ?? ""
+        let focused = axContext.effectiveFocusedApplication()
+        let front = NSWorkspace.shared.frontmostApplication
+
+        let focusedInfo: CalibrationAppInfo? = focused.flatMap { app in
+            guard let bid = app.bundleIdentifier, !bid.isEmpty else { return nil }
+            return CalibrationAppInfo(name: app.localizedName ?? bid, bundleID: bid)
+        }
+        let frontInfo: CalibrationAppInfo? = front.flatMap { app in
+            guard let bid = app.bundleIdentifier, !bid.isEmpty else { return nil }
+            return CalibrationAppInfo(name: app.localizedName ?? bid, bundleID: bid)
+        }
+
+        let focusedEditable: Bool
+        if let focused, focused.bundleIdentifier == "com.apple.finder" {
+            focusedEditable = axContext.hasFocusedEditableTextElement(forPID: focused.processIdentifier)
+        } else if (focusedInfo == nil || focusedInfo?.bundleID == selfBundle),
+                  let front, front.bundleIdentifier == "com.apple.finder" {
+            focusedEditable = axContext.hasFocusedEditableTextElement(forPID: front.processIdentifier)
+        } else {
+            focusedEditable = true
+        }
+
+        stateLock.lock()
+        let recentTyped = (CFAbsoluteTimeGetCurrent() - lastTypedTimestamp <= 60.0) ? lastTypedTarget : nil
+        let nonFinder = lastNonFinderObservedApp
+        stateLock.unlock()
+
+        return VerticalOffsetStore.resolveCalibrationTarget(
+            focusedApp: focusedInfo,
+            focusedElementIsEditableText: focusedEditable,
+            frontmostApp: frontInfo,
+            recentTypedApp: recentTyped,
+            lastNonFinderApp: nonFinder,
+            selfBundleID: selfBundle
+        )
+    }
+
     var bilingualCompletionEnabled: Bool {
         get {
             if UserDefaults.standard.object(forKey: "WordTailProBilingualCompletion") == nil {
@@ -540,7 +604,8 @@ final class TypingEngine {
             keyStatsStore: keyStatsStore,
             domainPackStore: domainPackStore,
             appProfileStore: appProfileStore,
-            snippetStore: snippetStore
+            snippetStore: snippetStore,
+            verticalOffsetStore: verticalOffsetStore
         )
         self.inputGuard = inputGuard
         completer.habitTracker = habitTracker
@@ -556,6 +621,9 @@ final class TypingEngine {
            front.bundleIdentifier != Bundle.main.bundleIdentifier {
             self.lastObservedBundleID = front.bundleIdentifier
             self.lastObservedAppName = front.localizedName
+            if let bid = front.bundleIdentifier, bid != "com.apple.finder" {
+                self.lastNonFinderObservedApp = CalibrationAppInfo(name: front.localizedName ?? bid, bundleID: bid)
+            }
         }
         if UserDefaults.standard.object(forKey: "WordTailMinPrefix") != nil {
             completer.minimumPrefixLength = max(2, UserDefaults.standard.integer(forKey: "WordTailMinPrefix"))
@@ -814,6 +882,9 @@ final class TypingEngine {
             self.lastLiveSample = nil
             self.lastObservedBundleID = app?.bundleIdentifier
             self.lastObservedAppName = app?.localizedName
+            if let bid = app?.bundleIdentifier, bid != "com.apple.finder" {
+                self.lastNonFinderObservedApp = CalibrationAppInfo(name: app?.localizedName ?? bid, bundleID: bid)
+            }
             self.activeBundleID = app?.bundleIdentifier
             self.activeAppName = app?.localizedName
             self.lastKnownRomanLayout = nowRoman
@@ -1636,7 +1707,9 @@ final class TypingEngine {
             targetApp: targetApp,
             fallbackBuffer: fallbackBuf,
             enableChromiumBridge: enableChromiumBridge,
-            verticalAdjustment: verticalAdjustment(forBundleID: frontBundle)
+            verticalAdjustmentProvider: { [weak self] displayKey in
+                self?.verticalAdjustment(forBundleID: frontBundle, displayKey: displayKey) ?? ScreenGeometry.defaultVerticalOffset
+            }
         ) {
             stateLock.lock()
             lastCapturedLineText = snap.textBeforeCursor
@@ -1668,7 +1741,9 @@ final class TypingEngine {
             targetApp: targetApp,
             fallbackBuffer: fallbackBuf,
             enableChromiumBridge: enableChromiumBridge,
-            verticalAdjustment: verticalAdjustment(forBundleID: frontBundle)
+            verticalAdjustmentProvider: { [weak self] displayKey in
+                self?.verticalAdjustment(forBundleID: frontBundle, displayKey: displayKey) ?? ScreenGeometry.defaultVerticalOffset
+            }
         ) else {
             overlay.hide()
             if retryCount < 2 {
@@ -1737,9 +1812,30 @@ final class TypingEngine {
         activeCandidates = matches
         activeCandidateIndex = 0
         activeSnapshot = snapshot
+        let nowTime = CFAbsoluteTimeGetCurrent()
         if let frontBundle {
+            let resolvedName = targetApp?.localizedName ?? frontBundle
+            lastTypedTarget = CalibrationAppInfo(
+                name: resolvedName,
+                bundleID: frontBundle,
+                displayKey: snapshot.displayKey,
+                displayName: snapshot.displayName
+            )
+            lastTypedTimestamp = nowTime
+            if frontBundle != "com.apple.finder" {
+                lastNonFinderObservedApp = CalibrationAppInfo(
+                    name: resolvedName,
+                    bundleID: frontBundle,
+                    displayKey: snapshot.displayKey,
+                    displayName: snapshot.displayName
+                )
+            }
             lastLiveSample = PinnedLiveSample(
                 bundleID: frontBundle,
+                appName: resolvedName,
+                displayKey: snapshot.displayKey,
+                displayName: snapshot.displayName,
+                capturedAt: nowTime,
                 match: first,
                 hasTextAfterOnLine: snapshot.hasTextAfterOnLine,
                 lineSpacingBias: snapshot.lineSpacingBias,
@@ -1771,12 +1867,24 @@ final class TypingEngine {
         )
     }
 
-    func refreshPinnedOverlayIfVisible() {
+    func refreshPinnedOverlayIfVisible(
+        forBundleID updatedBundleID: String? = nil,
+        displayKey updatedDisplayKey: String? = nil
+    ) {
         stateLock.lock()
         let sample = lastLiveSample
         stateLock.unlock()
         guard let sample else { return }
-        let offset = verticalAdjustment(forBundleID: sample.bundleID)
+        if let updatedBundleID, sample.bundleID != updatedBundleID {
+            return
+        }
+        if let updatedDisplayKey, let sampleDisplayKey = sample.displayKey, sampleDisplayKey != updatedDisplayKey {
+            return
+        }
+        guard overlay.isVisible || (CFAbsoluteTimeGetCurrent() - sample.capturedAt <= 120.0) else {
+            return
+        }
+        let offset = verticalAdjustment(forBundleID: sample.bundleID, displayKey: sample.displayKey)
         let placement = ScreenGeometry.baselinePlacement(
             forAXCharRect: sample.rawAXRect,
             primaryScreenHeight: sample.primaryScreenHeight,

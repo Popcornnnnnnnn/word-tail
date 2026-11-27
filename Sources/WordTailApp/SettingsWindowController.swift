@@ -248,8 +248,12 @@ final class SettingsWindowController: NSWindowController {
     func present(
         for currentApp: (name: String, bundleID: String)?,
         selectSection: SettingsSection? = nil,
-        keyStatsRange: StatsTimeRange? = nil
+        keyStatsRange: StatsTimeRange? = nil,
+        selectDisplayKey: String? = nil
     ) {
+        if let selectDisplayKey {
+            viewModel.selectedDisplayKey = selectDisplayKey
+        }
         viewModel.refresh(currentApp: currentApp)
         if let selectSection {
             viewModel.selectedSection = selectSection

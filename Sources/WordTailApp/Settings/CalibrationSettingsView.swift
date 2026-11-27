@@ -130,6 +130,26 @@ struct CalibrationSettingsView: View {
                 }
 
                 LinearCard {
+                    if vm.connectedDisplays.count > 1 || vm.selectedDisplayKey != nil {
+                        HStack(spacing: 8) {
+                            Text("Display")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            LinearSegmentedChoices(
+                                options: [(label: "All Displays", value: Optional<String>.none)]
+                                    + vm.connectedDisplays.map { (label: $0.name, value: Optional($0.key)) },
+                                selection: $vm.selectedDisplayKey
+                            )
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+
+                        Rectangle()
+                            .fill(LinearUI.hairline(scheme))
+                            .frame(height: 1)
+                    }
+
                     ForEach(Array(vm.appOffsets.enumerated()), id: \.element.id) { idx, item in
                         if idx > 0 {
                             Rectangle()
@@ -147,6 +167,22 @@ struct CalibrationSettingsView: View {
                                 .font(.system(size: 13, weight: .medium))
                                 .lineLimit(1)
 
+                            if vm.selectedDisplayKey != nil {
+                                Text(item.isDisplaySpecificOverride ? "Display" : "Inherited")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(item.isDisplaySpecificOverride ? LinearUI.accent : .secondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(LinearUI.subtleFill(scheme), in: Capsule())
+                            } else if item.hasPerDisplayOverrides {
+                                Text("Per-display")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(LinearUI.subtleFill(scheme), in: Capsule())
+                            }
+
                             Spacer()
 
                             LinearSlider(
@@ -163,12 +199,23 @@ struct CalibrationSettingsView: View {
                                 onChange: { vm.updateOffset(for: item.bundleID, to: $0) }
                             )
 
-                            let isBuiltIn = ScreenGeometry.builtInAppVerticalOffsets[item.bundleID] != nil
-                            LinearIconButton(
-                                symbol: isBuiltIn ? "arrow.counterclockwise" : "xmark",
-                                helpText: isBuiltIn ? "Reset default" : "Remove override"
-                            ) {
-                                vm.removeOrResetApp(bundleID: item.bundleID)
+                            if vm.selectedDisplayKey != nil {
+                                LinearIconButton(
+                                    symbol: "arrow.counterclockwise",
+                                    helpText: item.isDisplaySpecificOverride ? "Reset to All Displays" : "Inherits All Displays"
+                                ) {
+                                    vm.removeOrResetApp(bundleID: item.bundleID)
+                                }
+                                .disabled(!item.isDisplaySpecificOverride)
+                                .opacity(item.isDisplaySpecificOverride ? 1.0 : 0.35)
+                            } else {
+                                let isBuiltIn = ScreenGeometry.builtInAppVerticalOffsets[item.bundleID] != nil
+                                LinearIconButton(
+                                    symbol: isBuiltIn ? "arrow.counterclockwise" : "xmark",
+                                    helpText: isBuiltIn ? "Reset default" : "Remove override"
+                                ) {
+                                    vm.removeOrResetApp(bundleID: item.bundleID)
+                                }
                             }
                         }
                         .padding(.horizontal, 12)

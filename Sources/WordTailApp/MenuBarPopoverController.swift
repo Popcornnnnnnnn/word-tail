@@ -31,6 +31,8 @@ final class MenuBarPopoverViewModel: ObservableObject {
 
     @Published var activeAppName: String = ""
     @Published var activeAppBundleID: String = ""
+    @Published var activeAppDisplayKey: String? = nil
+    @Published var activeAppDisplayName: String? = nil
     @Published var activeAppIcon: NSImage = NSImage()
     @Published var activeAppDefaultExcluded: Bool = false
     @Published var activeAppUserDisabled: Bool = false
@@ -57,8 +59,8 @@ final class MenuBarPopoverViewModel: ObservableObject {
     var onToggleEnabled: () -> Void = {}
     var onGrantAccessibility: () -> Void = {}
     var onToggleAppDisabled: (String) -> Void = { _ in }
-    var onAdjustAppBaseline: (String, CGFloat) -> Void = { _, _ in }
-    var onOpenSettingsSection: (SettingsSection?, StatsTimeRange?) -> Void = { _, _ in }
+    var onAdjustAppBaseline: (String, String?, CGFloat) -> Void = { _, _, _ in }
+    var onOpenSettingsSection: (SettingsSection?, StatsTimeRange?, String?) -> Void = { _, _, _ in }
     var onReviewUpdate: () -> Void = {}
     var onQuit: () -> Void = {}
 
@@ -100,7 +102,7 @@ final class MenuBarPopoverViewModel: ObservableObject {
         return vm
     }
 
-    func refresh(activeApp: (name: String, bundleID: String)?) {
+    func refresh(activeApp: CalibrationAppInfo?) {
         guard !isStaticShowcase, let engine else { return }
 
         today = engine.keyStatsStore.snapshot(for: .today, deviceScope: .allDevices)
@@ -113,13 +115,20 @@ final class MenuBarPopoverViewModel: ObservableObject {
         if let activeApp, !activeApp.bundleID.isEmpty {
             activeAppName = activeApp.name
             activeAppBundleID = activeApp.bundleID
+            activeAppDisplayKey = activeApp.displayKey
+            activeAppDisplayName = activeApp.displayName
             activeAppIcon = SettingsViewModel.appIcon(forBundleID: activeApp.bundleID)
             activeAppDefaultExcluded = InputGuard.defaultExcludedBundleIDs.contains(activeApp.bundleID)
             activeAppUserDisabled = inputGuard?.userDisabledBundleIDs.contains(activeApp.bundleID) ?? false
-            activeAppVerticalAdjustment = engine.verticalAdjustment(forBundleID: activeApp.bundleID)
+            activeAppVerticalAdjustment = engine.verticalAdjustment(
+                forBundleID: activeApp.bundleID,
+                displayKey: activeApp.displayKey
+            )
         } else {
             activeAppName = ""
             activeAppBundleID = ""
+            activeAppDisplayKey = nil
+            activeAppDisplayName = nil
             activeAppIcon = NSImage()
             activeAppDefaultExcluded = false
             activeAppUserDisabled = false
@@ -144,8 +153,8 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
     private let popover: NSPopover
     private let hostingController: NSHostingController<MenuBarPopoverView>
     private let viewModel: MenuBarPopoverViewModel
-    private let activeAppProvider: () -> (name: String, bundleID: String)?
-    private var pinnedActiveApp: (name: String, bundleID: String)?
+    private let activeAppProvider: () -> CalibrationAppInfo?
+    private var pinnedActiveApp: CalibrationAppInfo?
     private var liveRefreshTimer: Timer?
     private var lastClosedUptime: TimeInterval = 0
 
@@ -153,12 +162,12 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
         engine: TypingEngine,
         inputGuard: InputGuard,
         autoUpdater: AutoUpdateManager,
-        activeAppProvider: @escaping () -> (name: String, bundleID: String)?,
+        activeAppProvider: @escaping () -> CalibrationAppInfo?,
         onToggleEnabled: @escaping () -> Void,
         onGrantAccessibility: @escaping () -> Void,
         onToggleAppDisabled: @escaping (String) -> Void,
-        onAdjustAppBaseline: @escaping (String, CGFloat) -> Void,
-        onOpenSettingsSection: @escaping (SettingsSection?, StatsTimeRange?) -> Void,
+        onAdjustAppBaseline: @escaping (String, String?, CGFloat) -> Void,
+        onOpenSettingsSection: @escaping (SettingsSection?, StatsTimeRange?, String?) -> Void,
         onReviewUpdate: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
@@ -397,11 +406,14 @@ struct MenuBarPopoverView: View {
     // MARK: - Whisper-Quiet Active-App Strip
 
     private var activeAppBar: some View {
-        HStack(spacing: 8) {
+        let multiDisplay = ScreenGeometry.connectedDisplays().count > 1
+        let activeDisplayKey = multiDisplay ? vm.activeAppDisplayKey : nil
+
+        return HStack(spacing: 8) {
             if !vm.activeAppBundleID.isEmpty {
                 Button {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.calibration, nil)
+                    vm.onOpenSettingsSection(.calibration, nil, activeDisplayKey)
                 } label: {
                     HStack(spacing: 6) {
                         Image(nsImage: vm.activeAppIcon)
@@ -414,12 +426,21 @@ struct MenuBarPopoverView: View {
                             .foregroundStyle(hoveredAppRow ? systemBlue : Color.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                        if multiDisplay, let displayName = vm.activeAppDisplayName, !displayName.isEmpty {
+                            Text("· \(displayName)")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Color.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .onHover { hoveredAppRow = $0 }
-                .help("Open Calibration & Per-App Settings")
+                .help(multiDisplay && vm.activeAppDisplayName != nil
+                    ? "Open Calibration for \(vm.activeAppName) on \(vm.activeAppDisplayName!)"
+                    : "Open Calibration & Per-App Settings")
             } else {
                 HStack(spacing: 5) {
                     Image(systemName: "macwindow")
@@ -448,7 +469,7 @@ struct MenuBarPopoverView: View {
 
                         HStack(spacing: 2) {
                             PopoverStepperGlyphButton(symbol: "minus", help: "Nudge baseline down (-0.05)", accent: systemBlue) {
-                                vm.onAdjustAppBaseline(vm.activeAppBundleID, -0.05)
+                                vm.onAdjustAppBaseline(vm.activeAppBundleID, activeDisplayKey, -0.05)
                             }
                             Text(String(format: "%+.2f", vm.activeAppVerticalAdjustment))
                                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
@@ -456,7 +477,7 @@ struct MenuBarPopoverView: View {
                                 .foregroundStyle(Color.secondary)
                                 .frame(width: 38, alignment: .center)
                             PopoverStepperGlyphButton(symbol: "plus", help: "Nudge baseline up (+0.05)", accent: systemBlue) {
-                                vm.onAdjustAppBaseline(vm.activeAppBundleID, +0.05)
+                                vm.onAdjustAppBaseline(vm.activeAppBundleID, activeDisplayKey, +0.05)
                             }
                         }
                     }
@@ -579,7 +600,7 @@ struct MenuBarPopoverView: View {
                 Spacer()
                 PopoverGlassPillButton(title: "Heatmap") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.keyStats, nil)
+                    vm.onOpenSettingsSection(.keyStats, nil, nil)
                 }
             }
 
@@ -664,7 +685,7 @@ struct MenuBarPopoverView: View {
                 Spacer()
                 PopoverGlassPillButton(title: "Hourly Trends") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.keyStats, .today)
+                    vm.onOpenSettingsSection(.keyStats, .today, nil)
                 }
             }
 
@@ -725,15 +746,15 @@ struct MenuBarPopoverView: View {
             HStack(spacing: 8) {
                 PopoverBareIconButton(symbol: "gearshape", help: "Preferences") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.preferences, nil)
+                    vm.onOpenSettingsSection(.preferences, nil, nil)
                 }
                 PopoverBareIconButton(symbol: "square.grid.2x2", help: "App Statistics") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.appStats, .allTime)
+                    vm.onOpenSettingsSection(.appStats, .allTime, nil)
                 }
                 PopoverBareIconButton(symbol: "chart.bar.fill", help: "All-Time Stats") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.keyStats, .allTime)
+                    vm.onOpenSettingsSection(.keyStats, .allTime, nil)
                 }
 
                 Spacer(minLength: 4)
