@@ -11,14 +11,14 @@ Checks two TLA+ models covering WordTail's highest-risk stateful subsystems:
 
 ## Coverage & Sync Record
 
-- `sync_commit`: `323f39f`
+- `sync_commit`: `ae1f994`
 - **Covered files & symbols:**
   - `Sources/WordTailApp/TypingEngine.swift`: `handleCGEvent`, `dismissOverlay`, `evaluateAndRenderPrediction`, `injectBackspaces`, `injectUnicodeString`
-  - `Sources/WordTailApp/GhostOverlayWindow.swift`: `show`, `hide`, `isVisible`
+  - `Sources/WordTailApp/GhostOverlayWindow.swift`: `show`, `hide`, `isVisible`, `repositionInlineBaseline`
   - `Sources/WordTailCore/ObviousTypoCorrector.swift`: `AdaptiveCorrectionStore.isMutedLocked`, `recordUndo`, `addCustomRule`, `removeRuleOrUnmute`
 - **Check for code drift since last sync:**
   ```sh
-  git diff 323f39f..HEAD -- \
+  git diff ae1f994..HEAD -- \
     Sources/WordTailApp/TypingEngine.swift \
     Sources/WordTailApp/GhostOverlayWindow.swift \
     Sources/WordTailCore/ObviousTypoCorrector.swift
@@ -42,11 +42,11 @@ If covered files changed after `sync_commit`, follow the installed `maintain-for
 - **Bounds:** `WordTailTyping` models a single `"teh"` token + 1 cursor move / Tab / Space-fix / Backspace-undo / immediate next-character window; `WordTailMute` models `ruleState`, `undoCount` (`0..2`), `tombstoneDeleted`, and `remoteStaleUndos` for one trigger key.
 - **Out of scope:** Multi-peer iCloud shard merging (`SyncEngine.swift`), AXUIElement caret geometry (`AXCaretContext.swift`, `ScreenGeometry.swift`), completion ranking, and lexicon matching.
 
-## Verified Status at `323f39f`
+## Verified Status at `ae1f994`
 
-- **`WordTailTyping`:** TLC explores **7 states / 15 steps** (6 chart states, 9 arrows). `NoCorruptedEditorText`, `NoStaleTabAccept`, `BufferMatchesEditorWhenIdle`, and `NoDeadlock` all **hold** (`exit 0`).
+- **`WordTailTyping`:** TLC explores **7 states / 15 steps** (6 chart states, 9 arrows). `NoCorruptedEditorText`, `NoStaleTabAccept`, `BufferMatchesEditorWhenIdle`, and `NoDeadlock` all **hold** (`exit 0`). Re-verified after Live Per-Line Sub-Pixel Lock (`9d4cd6f`, `cbb4759`) and PR #12 (`ae1f994`): `Tab` / `⌥ →` acceptance additionally guards on `activeSnapshot != nil` and `GhostOverlayWindow.repositionInlineBaseline` never alters visibility or match state.
   - *Mutation proof:* Reverting `PressSpaceFix` to queue `pendingInject = "space_fix"` asynchronously fails `NoCorruptedEditorText` in 4 steps (`exit 1`).
-- **`WordTailMute`:** TLC explores **16 states / 42 steps** (10 chart states, 26 arrows). `TwoUndosAlwaysMute`, `TombstoneBlocksStaleRemoteMute`, and `NoDeadlock` all **hold** (`exit 0`).
+- **`WordTailMute`:** TLC explores **16 states / 42 steps** (10 chart states, 26 arrows). `TwoUndosAlwaysMute`, `TombstoneBlocksStaleRemoteMute`, and `NoDeadlock` all **hold** (`exit 0`). No `AdaptiveCorrectionStore` mute/tombstone logic changed since `323f39f`.
   - *Mutation proof:* Reverting `RecordUndo` / `isMutedLocked` so `isDeleted` blocks local re-muting fails `TwoUndosAlwaysMute` in 4 steps (`exit 1`).
 - **History:** Baseline async-dispatch and tombstone bugs discovered at `52c182b` (plus the shadowed `⌥⌫`/`⌘⌫` modifier check) were fixed in `323f39f` with `Tests/WordTailTests/AdaptiveMuteRegressionTests.swift`.
 
