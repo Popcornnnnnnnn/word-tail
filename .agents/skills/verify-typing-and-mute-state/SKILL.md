@@ -6,19 +6,19 @@ description: Formally verify WordTail TypingEngine overlay/HID injection concurr
 # Verify WordTail Typing and Undo-Mute State Machines
 
 Checks two TLA+ models covering WordTail's highest-risk stateful subsystems:
-1. `formal/WordTailTyping.tla` — synchronous `CGEventTap` decisions racing with `DispatchQueue.main.async` overlay dismissals and HID key injection.
+1. `formal/WordTailTyping.tla` — synchronous `CGEventTap` overlay dismissal and `tapPostEvent(proxy)` HID key injection.
 2. `formal/WordTailMute.tla` — `AdaptiveCorrectionStore` undo counting, custom rule overrides, and `isDeleted` sync tombstones.
 
 ## Coverage & Sync Record
 
-- `sync_commit`: `52c182b`
+- `sync_commit`: `323f39f`
 - **Covered files & symbols:**
   - `Sources/WordTailApp/TypingEngine.swift`: `handleCGEvent`, `dismissOverlay`, `evaluateAndRenderPrediction`, `injectBackspaces`, `injectUnicodeString`
   - `Sources/WordTailApp/GhostOverlayWindow.swift`: `show`, `hide`, `isVisible`
   - `Sources/WordTailCore/ObviousTypoCorrector.swift`: `AdaptiveCorrectionStore.isMutedLocked`, `recordUndo`, `addCustomRule`, `removeRuleOrUnmute`
 - **Check for code drift since last sync:**
   ```sh
-  git diff 52c182b..HEAD -- \
+  git diff 323f39f..HEAD -- \
     Sources/WordTailApp/TypingEngine.swift \
     Sources/WordTailApp/GhostOverlayWindow.swift \
     Sources/WordTailCore/ObviousTypoCorrector.swift
@@ -30,21 +30,27 @@ If covered files changed after `sync_commit`, follow the installed `maintain-for
 
 ### `WordTailTyping`
 1. **`BufferMatchesEditorWhenIdle`:** When no async dismiss or HID injection is queued and the cursor has not moved, `rollingBuffer` matches the editor text.
-2. **`NoCorruptedEditorText`:** Queued HID backspaces and Unicode string insertions never arrive out of order after subsequent keystrokes or stale overlay state.
+2. **`NoCorruptedEditorText`:** HID backspaces and Unicode string insertions never arrive out of order after subsequent keystrokes or stale overlay state.
 3. **`NoStaleTabAccept`:** Pressing `Tab` after a click/arrow/modifier navigation never triggers an injection for the dismissed suggestion.
 
 ### `WordTailMute`
-4. **`TwoUndosAlwaysMute`:** Recording 2 Backspace undos against a non-custom trigger always mutes it.
+4. **`TwoUndosAlwaysMute`:** Recording 2 local Backspace undos against a non-custom trigger always mutes it, even when an `isDeleted` sync tombstone exists.
+5. **`TombstoneBlocksStaleRemoteMute`:** An unmuted or deleted trigger with an `isDeleted` sync tombstone never re-mutes solely from stale remote peer undo counts before 2 fresh local undos occur.
 
 ## Bounds, Assumptions & Out-of-Scope
 
-- **Bounds:** `WordTailTyping` models a single `"teh"` token + 1 cursor move / Tab / Space-fix / immediate next-character window; `WordTailMute` bounds `undoCount` to `0..2` for one trigger key.
+- **Bounds:** `WordTailTyping` models a single `"teh"` token + 1 cursor move / Tab / Space-fix / Backspace-undo / immediate next-character window; `WordTailMute` models `ruleState`, `undoCount` (`0..2`), `tombstoneDeleted`, and `remoteStaleUndos` for one trigger key.
 - **Out of scope:** Multi-peer iCloud shard merging (`SyncEngine.swift`), AXUIElement caret geometry (`AXCaretContext.swift`, `ScreenGeometry.swift`), completion ranking, and lexicon matching.
 
-## Known Baseline Findings at `52c182b`
+## Verified Status at `323f39f`
 
-- **`WordTailTyping` (26 states / 42 transitions):** `NoDeadlock` holds; all 3 async-dispatch invariants break in 4 steps because `handleCGEvent` passes regular keystrokes synchronously while scheduling `dismissOverlay(clearBuffer: true)` and HID injection asynchronously onto `DispatchQueue.main`. Code audit also notes that `TypingEngine.swift:991-998` intercepts `Command`/`Control`/`Option` before `L1252-1278`, shadowing the `⌥⌫`/`⌘⌫` buffer-trimming handler.
-- **`WordTailMute` (9 states / 19 transitions):** `NoDeadlock` holds; `TwoUndosAlwaysMute` breaks in 4 steps (`AddCustomRule` or mute -> `RemoveOrUnmute` -> 2× `RecordUndo`) and is live-reproducible in `WordTailCore`: `removeRuleOrUnmute` writes `syncRecords[key].isDeleted = true`, and `isMutedLocked` returns `false` early on `isDeleted == true` before checking `totalUndos >= muteUndoThreshold`.
+- **`WordTailTyping`:** TLC explores **7 states / 15 steps** (6 chart states, 9 arrows). `NoCorruptedEditorText`, `NoStaleTabAccept`, `BufferMatchesEditorWhenIdle`, and `NoDeadlock` all **hold** (`exit 0`).
+  - *Mutation proof:* Reverting `PressSpaceFix` to queue `pendingInject = "space_fix"` asynchronously fails `NoCorruptedEditorText` in 4 steps (`exit 1`).
+- **`WordTailMute`:** TLC explores **16 states / 42 steps** (10 chart states, 26 arrows). `TwoUndosAlwaysMute`, `TombstoneBlocksStaleRemoteMute`, and `NoDeadlock` all **hold** (`exit 0`).
+  - *Mutation proof:* Reverting `RecordUndo` / `isMutedLocked` so `isDeleted` blocks local re-muting fails `TwoUndosAlwaysMute` in 4 steps (`exit 1`).
+- **History:** Baseline async-dispatch and tombstone bugs discovered at `52c182b` (plus the shadowed `⌥⌫`/`⌘⌫` modifier check) were fixed in `323f39f` with `Tests/WordTailTests/AdaptiveMuteRegressionTests.swift`.
+
+Treat any failure in these invariants or `NoDeadlock` as an immediate release blocker.
 
 ## How to Run
 

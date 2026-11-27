@@ -1,4 +1,4 @@
-export const title = "WordTail TypingEngine and Async HID Injection";
+export const title = "WordTail TypingEngine Synchronous Overlay and HID Injection";
 
 export const colors = {
   idle: "blue",
@@ -66,17 +66,17 @@ export const step = (action, from, to) => {
     case "MoveCursor":
       return "click / arrow / shortcut";
     case "PressTab":
-      return "press Tab";
+      return "press Tab (sync tapPostEvent)";
     case "PressSpaceFix":
-      return "press Space (auto-fix)";
+      return "press Space (sync auto-fix)";
     case "TypeNextChar":
-      return "type next char immediately";
+      return "type next char";
     case "DrainDismiss":
       return "main queue runs dismiss";
     case "DrainInject":
       return "main queue injects HID keys";
     case "PressUndo":
-      return "press Backspace (undo)";
+      return "press Backspace (sync undo)";
     case "Done":
       return null;
     default:

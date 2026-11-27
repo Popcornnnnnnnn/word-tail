@@ -1,14 +1,13 @@
-\* TLA+ specification of WordTail's CGEventTap + DispatchQueue.main.async
-\* ghost overlay dismissal and HID injection pipeline.
+\* TLA+ specification of WordTail's CGEventTap synchronous overlay dismissal
+\* and HID injection pipeline.
 \*
-\* Code mapping:
-\*   - TypeWord / TypeNextChar:     Sources/WordTailApp/TypingEngine.swift (handleCGEvent L1509-1589)
-\*   - ShowGhost:                   Sources/WordTailApp/TypingEngine.swift (evaluateAndRenderPrediction) &
-\*                                  Sources/WordTailApp/GhostOverlayWindow.swift (show)
-\*   - MoveCursor / DrainDismiss:   Sources/WordTailApp/TypingEngine.swift (handleCGEvent L900-914, L991-998, L1358-1363)
-\*   - PressTab / PressSpaceFix:    Sources/WordTailApp/TypingEngine.swift (handleCGEvent L1001-1240, L1379-1499)
-\*   - DrainInject:                 Sources/WordTailApp/TypingEngine.swift (injectBackspaces, injectUnicodeString)
-\*   - PressUndo:                   Sources/WordTailApp/TypingEngine.swift (pendingSpaceUndo L1280-1312)
+\* Code mapping (verified against Sources/WordTailApp/TypingEngine.swift):
+\*   - TypeWord / TypeNextChar: Sources/WordTailApp/TypingEngine.swift (handleCGEvent)
+\*   - ShowGhost:               Sources/WordTailApp/TypingEngine.swift (evaluateAndRenderPrediction) &
+\*                              Sources/WordTailApp/GhostOverlayWindow.swift (show)
+\*   - MoveCursor:              Sources/WordTailApp/TypingEngine.swift (synchronous dismissOverlay on click/nav/shortcut)
+\*   - PressTab / PressSpaceFix / PressUndo:
+\*                              Sources/WordTailApp/TypingEngine.swift (synchronous tapPostEvent(proxy) injection)
 
 ---- MODULE WordTailTyping ----
 EXTENDS Naturals
@@ -59,30 +58,34 @@ MoveCursor ==
     /\ ~cursorMoved
     /\ pendingInject = "none"
     /\ pendingDismiss = "none"
+    \* Synchronous dismissOverlay(clearBuffer: true) inside handleCGEvent before passing the event through.
+    /\ overlay' = "hidden"
+    /\ buf' = "empty"
     /\ cursorMoved' = TRUE
     /\ pendingUndo' = FALSE
-    /\ pendingDismiss' = "clear_buf"
-    /\ UNCHANGED <<editor, buf, overlay, pendingInject, staleInjected, typedAfterMove>>
+    /\ UNCHANGED <<editor, pendingDismiss, pendingInject, staleInjected, typedAfterMove>>
 
 PressTab ==
     /\ overlay = "visible"
     /\ pendingInject = "none"
+    \* Synchronous tapPostEvent(proxy) before swallowing the Tab event.
     /\ overlay' = "hidden"
     /\ buf' = "corrected"
-    /\ pendingInject' = "tab_accept"
+    /\ editor' = IF cursorMoved THEN "corrupted" ELSE "corrected"
     /\ staleInjected' = cursorMoved
-    /\ UNCHANGED <<editor, pendingUndo, pendingDismiss, cursorMoved, typedAfterMove>>
+    /\ UNCHANGED <<pendingUndo, pendingDismiss, pendingInject, cursorMoved, typedAfterMove>>
 
 PressSpaceFix ==
     /\ buf = "word"
     /\ ~cursorMoved
     /\ pendingInject = "none"
     /\ pendingDismiss = "none"
+    \* Synchronous tapPostEvent(proxy) before swallowing the Space/punctuation event.
     /\ overlay' = "hidden"
     /\ buf' = "corrected"
+    /\ editor' = "corrected"
     /\ pendingUndo' = TRUE
-    /\ pendingInject' = "space_fix"
-    /\ UNCHANGED <<editor, pendingDismiss, cursorMoved, staleInjected, typedAfterMove>>
+    /\ UNCHANGED <<pendingDismiss, pendingInject, cursorMoved, staleInjected, typedAfterMove>>
 
 TypeNextChar ==
     \/ /\ pendingInject \in {"space_fix", "tab_accept"}
@@ -100,6 +103,16 @@ TypeNextChar ==
        /\ typedAfterMove' = TRUE
        /\ cursorMoved' = FALSE
        /\ UNCHANGED <<overlay, pendingUndo, pendingDismiss, pendingInject, staleInjected>>
+    \/ /\ pendingDismiss = "none"
+       /\ pendingInject = "none"
+       /\ ~typedAfterMove
+       /\ ((editor = "word" /\ cursorMoved) \/ editor = "corrected")
+       /\ editor' = "word_x"
+       /\ buf' = "word_x"
+       /\ pendingUndo' = FALSE
+       /\ cursorMoved' = FALSE
+       /\ typedAfterMove' = TRUE
+       /\ UNCHANGED <<overlay, pendingDismiss, pendingInject, staleInjected>>
 
 DrainDismiss ==
     /\ pendingDismiss = "clear_buf"
