@@ -2111,4 +2111,288 @@ final class WordCompleterTests: XCTestCase {
             SpaceTransformResult(replacedSourceSpan: "git\u{00A0}is", replacementText: "Git\u{00A0}is")
         )
     }
+
+    func testRichEditorOrderedListFlattenedBoundaryCapitalization() {
+        // 1. Exact screenshot regression (> 120 chars, <= 240 chars): `<p>...suggestions.</p><ol><li>there</li></ol>`
+        //    flattened without `\n` into `"...suggestions.1. there"`
+        let screenshotFlattened = "Yes, the blind points are pretty solid, so whatare you going to do next? You should let other agents to continue optimizing while I've got a few suggestions.1. there"
+        let expectedScreenshotReconciled = "Yes, the blind points are pretty solid, so whatare you going to do next? You should let other agents to continue optimizing while I've got a few suggestions.\n1. there"
+        XCTAssertTrue(
+            ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(
+                inFullSlice: screenshotFlattened,
+                forWord: "there"
+            )
+        )
+        for paraSlice in ["1. there", "there"] {
+            let reconciled = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+                fullSlice: screenshotFlattened,
+                paragraphSlice: paraSlice,
+                firstWord: "there"
+            )
+            XCTAssertEqual(reconciled, expectedScreenshotReconciled, "paraSlice=\(paraSlice)")
+            XCTAssertEqual(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: "there",
+                    lineContextIncludingWord: String(reconciled.suffix(120)),
+                    isAtDocumentStart: false,
+                    sliceStartsAtDocumentZero: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                "There",
+                "Expected capitalization after reconciling screenshot slice with paraSlice=\(paraSlice)"
+            )
+        }
+
+        // 2. Flattened `<ol><li>` variants
+        let flattenedCases: [(full: String, para: String, word: String, expected: String, sliceZero: Bool)] = [
+            ("...suggestions. 1. there", "1. there", "there", "There", false),
+            ("...suggestions. 1. there", "there", "there", "There", false),
+            ("Heading1. there", "1. there", "there", "There", false),
+            ("Heading1. there", "there", "there", "There", false),
+            ("1. First item2. second", "2. second", "second", "Second", false),
+            ("1. First item2. second", "second", "second", "Second", false),
+            ("...suggestions.1.there", "1. there", "there", "There", false),
+            ("...suggestions.1.there", "there", "there", "There", false),
+            ("...suggestions.there", "1. there", "there", "There", false),
+            ("Yes.1) there", "1) there", "there", "There", false),
+            ("Yes.1) there", "there", "there", "There", false),
+            ("...suggestions.1.\u{00A0}there", "1.\u{00A0}there", "there", "There", false)
+        ]
+        for testCase in flattenedCases {
+            let cleanedFull = ObviousTypoCorrector.cleanAccessibilityText(testCase.full)
+            let cleanedPara = ObviousTypoCorrector.cleanAccessibilityText(testCase.para)
+            let reconciled = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+                fullSlice: cleanedFull,
+                paragraphSlice: cleanedPara,
+                firstWord: testCase.word
+            )
+            XCTAssertEqual(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: testCase.word,
+                    lineContextIncludingWord: String(reconciled.suffix(120)),
+                    isAtDocumentStart: false,
+                    sliceStartsAtDocumentZero: testCase.sliceZero,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                testCase.expected,
+                "Expected \(testCase.expected) for full='\(testCase.full)', para='\(testCase.para)'"
+            )
+        }
+
+        // 3. Long-document `sentenceContext(forFirstWord:paragraphPrefix:readPreviousTail:)`
+        for prevTail in ["...suggestions.1.", "...suggestions.\n1."] {
+            let ctx = ObviousTypoCorrector.sentenceContext(
+                forFirstWord: "there",
+                paragraphPrefix: "there",
+                readPreviousTail: { prevTail }
+            )
+            XCTAssertEqual(ctx, "...suggestions.\n1. there")
+            XCTAssertEqual(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: "there",
+                    lineContextIncludingWord: ctx,
+                    isAtDocumentStart: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                "There"
+            )
+        }
+        let midLineTailCtx = ObviousTypoCorrector.sentenceContext(
+            forFirstWord: "there",
+            paragraphPrefix: "there",
+            readPreviousTail: { "Item 1." }
+        )
+        XCTAssertEqual(midLineTailCtx, "Item 1.\nthere")
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "there",
+                lineContextIncludingWord: midLineTailCtx,
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        )
+
+        // 4. Buffer-assisted fallback `sentenceContext(forWord:liveContext:bufferedContext:)`
+        for live in ["...suggestions.1. there", "...suggestions.there", "...suggestions.1.there"] {
+            let recovered = ObviousTypoCorrector.sentenceContext(
+                forWord: "there",
+                liveContext: live,
+                bufferedContext: "...suggestions.\n1. there"
+            )
+            XCTAssertEqual(recovered, "...suggestions.\n1. there", "live='\(live)'")
+            XCTAssertEqual(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: "there",
+                    lineContextIncludingWord: recovered,
+                    isAtDocumentStart: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                "There"
+            )
+        }
+        for live in ["Heading1. there", "Headingthere", "Heading1.there"] {
+            let recovered = ObviousTypoCorrector.sentenceContext(
+                forWord: "there",
+                liveContext: live,
+                bufferedContext: "\n1. there"
+            )
+            XCTAssertEqual(recovered, "\n1. there", "live='\(live)'")
+            XCTAssertEqual(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: "there",
+                    lineContextIncludingWord: recovered,
+                    isAtDocumentStart: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                "There"
+            )
+        }
+
+        // 5. Full pipeline: `<p>Heading</p><ol><li>there</li></ol>` where AX drops marker (`"Headingthere"` / `"there"`)
+        //    reconciles to `"Heading\nthere"` and then `sentenceContext` recovers `"\n1. there"` from rollingBuffer!
+        let headingReconciled = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+            fullSlice: "Headingthere",
+            paragraphSlice: "there",
+            firstWord: "there"
+        )
+        XCTAssertEqual(headingReconciled, "Heading\nthere")
+        let headingRecovered = ObviousTypoCorrector.sentenceContext(
+            forWord: "there",
+            liveContext: headingReconciled,
+            bufferedContext: "\n1. there"
+        )
+        XCTAssertEqual(headingRecovered, "\n1. there")
+        XCTAssertEqual(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "there",
+                lineContextIncludingWord: headingRecovered,
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            ),
+            "There"
+        )
+
+        // 6. False-positive guards & ignored-Return / dotted-token / version-digit regressions
+        let untouchedGuards: [(full: String, para: String, word: String, expectedReconciled: String)] = [
+            ("See item 1. below", "See item 1. below", "below", "See item 1. below"),
+            ("Read chapter 2. now", "Read chapter 2. now", "now", "Read chapter 2. now"),
+            ("3.14 is", "3.14 is", "is", "3.14 is"),
+            ("Item 1.there", "there", "there", "Item 1.\nthere"),
+            ("v1.2.there", "there", "there", "v1.2.\nthere"),
+            ("Use version2.now", "now", "now", "Use version2.\nnow"),
+            ("1.example", "1.example", "example", "1.example"),
+            ("notes.md", "notes.md", "md", "notes.md")
+        ]
+        for guardCase in untouchedGuards {
+            let reconciled = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+                fullSlice: guardCase.full,
+                paragraphSlice: guardCase.para,
+                firstWord: guardCase.word
+            )
+            XCTAssertEqual(reconciled, guardCase.expectedReconciled, "full='\(guardCase.full)'")
+            XCTAssertNil(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: guardCase.word,
+                    lineContextIncludingWord: reconciled,
+                    isAtDocumentStart: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                "Expected NO capitalization for '\(guardCase.full)'"
+            )
+        }
+
+        // Version digit at previous paragraph tail (`"Use version2."`) must NOT be split into `"Use version\n2. now"`
+        let versionTailCtx = ObviousTypoCorrector.sentenceContext(
+            forFirstWord: "now",
+            paragraphPrefix: "now",
+            readPreviousTail: { "Use version2." }
+        )
+        XCTAssertEqual(versionTailCtx, "Use version2.\nnow")
+        XCTAssertNil(
+            ObviousTypoCorrector.spaceReplacement(
+                forWord: "now",
+                lineContextIncludingWord: versionTailCtx,
+                isAtDocumentStart: false,
+                autoCorrectTypos: true,
+                autoCapitalizeSentences: true,
+                adaptiveStore: nil,
+                habitTracker: nil,
+                historyStore: nil
+            )
+        )
+
+        XCTAssertTrue(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "...suggestions.1. there", forWord: "there"))
+        XCTAssertTrue(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "...suggestions. 1. there", forWord: "there"))
+        XCTAssertTrue(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "Heading1. there", forWord: "there"))
+        XCTAssertTrue(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "1. First item2. second", forWord: "second"))
+
+        XCTAssertFalse(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "See item 1. below", forWord: "below"))
+        XCTAssertFalse(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "Read chapter 2. now", forWord: "now"))
+        XCTAssertFalse(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "Yes, the blind", forWord: "blind"))
+        XCTAssertFalse(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "Yes, the blind ", forWord: "there"))
+        XCTAssertFalse(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "Steps:\n1. there", forWord: "there"))
+        XCTAssertFalse(ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(inFullSlice: "1. there", forWord: "there"))
+
+        for ignoredReturnCase in [
+            (word: "below", live: "See item 1. below", buffer: "\n1. below"),
+            (word: "below", live: "See item 1.below", buffer: "\n1. below"),
+            (word: "below", live: "See item. 1. below", buffer: "See item. \n1. below"),
+            (word: "below", live: "See item. 1. below", buffer: "See item.\n1. below"),
+            (word: "below", live: "See item. 1.below", buffer: "See item. \n1. below"),
+            (word: "there", live: "See item there", buffer: "\n1. there"),
+            (word: "below", live: "See item 1. below", buffer: "1. below")
+        ] {
+            let resolved = ObviousTypoCorrector.sentenceContext(
+                forWord: ignoredReturnCase.word,
+                liveContext: ignoredReturnCase.live,
+                bufferedContext: ignoredReturnCase.buffer
+            )
+            XCTAssertEqual(resolved, ignoredReturnCase.live, "live='\(ignoredReturnCase.live)'")
+            XCTAssertNil(
+                ObviousTypoCorrector.spaceReplacement(
+                    forWord: ignoredReturnCase.word,
+                    lineContextIncludingWord: resolved,
+                    isAtDocumentStart: false,
+                    autoCorrectTypos: true,
+                    autoCapitalizeSentences: true,
+                    adaptiveStore: nil,
+                    habitTracker: nil,
+                    historyStore: nil
+                ),
+                "Expected NO capitalization for ignored Return case '\(ignoredReturnCase.live)'"
+            )
+        }
+    }
 }

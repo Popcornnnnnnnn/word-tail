@@ -1297,9 +1297,35 @@ public enum ObviousTypoCorrector {
         return out
     }
 
-    /// Rich `contenteditable` editors (`<p>All done.</p><p>also</p>`) sometimes omit `\n` in `AXStringForTextMarkerRange([docStart, end])`
-    /// (`"All done.also"`), while `AXParagraphTextMarkerRangeForTextMarker` confirms the current `<p>` contains only `"also"`.
-    /// Injects the missing paragraph newline when `paragraphSlice` proves `firstWord` starts a new paragraph.
+    /// Returns true when `fullSlice` may be missing a block/paragraph newline before `word` or before a
+    /// numbered list marker leading into `word` (e.g., `"...suggestions.1. there"`, `"...suggestions.there"`, `"All done.also"`).
+    public static func mayNeedParagraphBoundaryReconciliation(
+        inFullSlice fullSlice: String,
+        forWord word: String?
+    ) -> Bool {
+        guard let word, !word.isEmpty,
+              fullSlice.count > word.count,
+              normalizeApostrophes(fullSlice).lowercased().hasSuffix(normalizeApostrophes(word).lowercased()) else {
+            return false
+        }
+        let before = String(fullSlice.dropLast(word.count))
+        if before.last?.isWhitespace != true {
+            return true
+        }
+        if let split = splitTrailingNumberedListMarker(from: before, requireTrailingSpace: true),
+           !isEmptyOrEndsWithNewlineIgnoringHorizontalSpaces(split.beforeMarker),
+           split.beforeMarker.last?.isWhitespace != true
+            || isTightlyAttachedAfterBlockText(trimTrailingHorizontalSpaces(split.beforeMarker)) {
+            return true
+        }
+        return false
+    }
+
+    /// Rich `contenteditable` editors (`<p>All done.</p><p>also</p>` or `<p>...suggestions.</p><ol><li>there</li></ol>`)
+    /// sometimes omit `\n` in `AXStringForTextMarkerRange([docStart, end])` (`"All done.also"`, `"...suggestions.1. there"`,
+    /// `"...suggestions.1.there"`, `"...suggestions.there"`), while `AXParagraphTextMarkerRangeForTextMarker` confirms the
+    /// current block starts at `firstWord` or at a numbered list item leading into `firstWord`.
+    /// Injects the missing paragraph newline (and normalized list marker when needed).
     public static func reconcileParagraphBoundaryInFullSlice(
         fullSlice: String,
         paragraphSlice: String?,
@@ -1307,16 +1333,52 @@ public enum ObviousTypoCorrector {
     ) -> String {
         guard let firstWord, !firstWord.isEmpty,
               let paragraphSlice,
-              containsOnlyWord(firstWord, in: paragraphSlice),
               normalizeApostrophes(fullSlice).lowercased().hasSuffix(normalizeApostrophes(firstWord).lowercased()),
-              fullSlice.count > firstWord.count else {
+              fullSlice.count >= firstWord.count else {
             return fullSlice
         }
         let before = String(fullSlice.dropLast(firstWord.count))
+        let trailingWord = String(fullSlice.suffix(firstWord.count))
+
+        if let listItem = parseLeadingNumberedListItem(paragraphSlice, expectedWord: firstWord) {
+            if let split = splitTrailingNumberedListMarker(from: before, requireTrailingSpace: false),
+               trimTrailingHorizontalSpaces(split.marker) == listItem.digitsAndPunct {
+                let outMarker = split.marker.last.map(isHorizontalSpace) == true ? split.marker : listItem.normalizedMarker
+                if isEmptyOrEndsWithNewlineIgnoringHorizontalSpaces(split.beforeMarker) {
+                    return split.beforeMarker + outMarker + trailingWord
+                }
+                return split.beforeMarker + "\n" + outMarker + trailingWord
+            }
+            if before.isEmpty || before.last?.isNewline == true {
+                return before + listItem.normalizedMarker + trailingWord
+            }
+            return before + "\n" + listItem.normalizedMarker + trailingWord
+        }
+
+        guard fullSlice.count > firstWord.count,
+              containsOnlyWord(firstWord, in: paragraphSlice) else {
+            return fullSlice
+        }
+        if before.last?.isNewline == true {
+            return fullSlice
+        }
+        if let split = splitTrailingNumberedListMarker(from: before, requireTrailingSpace: true) {
+            if isEmptyOrEndsWithNewlineIgnoringHorizontalSpaces(split.beforeMarker) {
+                return fullSlice
+            }
+            return split.beforeMarker + "\n" + split.marker + trailingWord
+        }
+        if let split = splitTrailingNumberedListMarker(from: before, requireTrailingSpace: false) {
+            if isEmptyOrEndsWithNewlineIgnoringHorizontalSpaces(split.beforeMarker) {
+                return split.beforeMarker + split.marker + " " + trailingWord
+            }
+            if isTightlyAttachedAfterBlockText(split.beforeMarker) {
+                return split.beforeMarker + "\n" + split.marker + " " + trailingWord
+            }
+        }
         guard let lastBefore = before.last, !lastBefore.isWhitespace else {
             return fullSlice
         }
-        let trailingWord = String(fullSlice.suffix(firstWord.count))
         return before + "\n" + trailingWord
     }
 
@@ -1334,23 +1396,223 @@ public enum ObviousTypoCorrector {
         if isStandaloneNumberedListMarker(previousTail) {
             return "\n" + previousTail + " " + paragraphPrefix
         }
+        if let split = splitTrailingNumberedListMarker(from: previousTail, requireTrailingSpace: false) {
+            if isEmptyOrEndsWithNewlineIgnoringHorizontalSpaces(split.beforeMarker) {
+                return split.beforeMarker + split.marker + " " + paragraphPrefix
+            }
+            if isTightlyAttachedAfterBlockText(split.beforeMarker) {
+                return split.beforeMarker + "\n" + split.marker + " " + paragraphPrefix
+            }
+        }
         return previousTail + "\n" + paragraphPrefix
     }
 
-    /// Rich editors can report only the current paragraph (or strip `"1. "` into a native `<ol><li>` list item).
+    /// Rich editors can report only the current paragraph (or strip `"1. "` / `"\n"` around `<ol><li>` list items).
     /// Recover a preceding sentence ending or numbered-list marker when the live context and typed buffer agree on the first word.
     public static func sentenceContext(
         forWord word: String,
         liveContext: String,
         bufferedContext: String
     ) -> String {
-        guard containsOnlyWord(word, in: liveContext),
-              let lastLine = bufferedContext.split(whereSeparator: \.isNewline).last,
-              containsOnlyWordOrNumberedListItem(word, inLine: String(lastLine)),
+        if isWordAtSentenceStart(word: word, inContextBeforeCursor: liveContext) {
+            return liveContext
+        }
+        guard let lastLineSub = bufferedContext.split(whereSeparator: \.isNewline).last else {
+            return liveContext
+        }
+        let lastLine = String(lastLineSub)
+        guard containsOnlyWordOrNumberedListItem(word, inLine: lastLine),
               isWordAtSentenceStart(word: word, inContextBeforeCursor: bufferedContext) else {
             return liveContext
         }
-        return bufferedContext
+        if containsOnlyWord(word, in: liveContext) {
+            return bufferedContext
+        }
+        if bufferedContext.contains(where: \.isNewline),
+           matchesFlattenedParagraphBreak(
+               word: word,
+               lastLine: lastLine,
+               liveContext: liveContext,
+               bufferedContext: bufferedContext
+           ) {
+            return bufferedContext
+        }
+        return liveContext
+    }
+
+    private static func matchesFlattenedParagraphBreak(
+        word: String,
+        lastLine: String,
+        liveContext: String,
+        bufferedContext: String
+    ) -> Bool {
+        guard let lastNL = bufferedContext.lastIndex(where: { $0.isNewline }) else {
+            return false
+        }
+        let liveNorm = normalizeApostrophes(cleanAccessibilityText(liveContext)).lowercased()
+        let wordNorm = normalizeApostrophes(cleanAccessibilityText(word)).lowercased()
+        let lastLineRawNorm = normalizeApostrophes(cleanAccessibilityText(lastLine)).lowercased()
+        let lastLineTrimmed = String(lastLineRawNorm.drop(while: isHorizontalSpace))
+
+        var rawBeforeNL = String(bufferedContext[..<lastNL])
+        while rawBeforeNL.last?.isNewline == true {
+            rawBeforeNL.removeLast()
+        }
+        let beforeNewlineNorm = normalizeApostrophes(cleanAccessibilityText(rawBeforeNL))
+            .lowercased()
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+
+        func matchesBeforePrefix(_ liveBefore: String, bufferedBefore: String) -> Bool {
+            let a = liveBefore
+                .replacingOccurrences(of: "\n", with: "")
+                .replacingOccurrences(of: "\r", with: "")
+            guard !bufferedBefore.isEmpty else { return false }
+            if !a.isEmpty && (a.hasSuffix(bufferedBefore) || bufferedBefore.hasSuffix(a)) {
+                return true
+            }
+            let aTrimmed = trimTrailingHorizontalSpaces(a)
+            let bTrimmed = trimTrailingHorizontalSpaces(bufferedBefore)
+            guard !aTrimmed.isEmpty && !bTrimmed.isEmpty else { return false }
+            return aTrimmed.hasSuffix(bTrimmed) || bTrimmed.hasSuffix(aTrimmed)
+        }
+
+        let listItem = parseLeadingNumberedListItem(lastLine, expectedWord: word)
+        let isBufferNumberedListLine = (listItem != nil)
+        let tightListSuffix = listItem.map { $0.digitsAndPunct.lowercased() + wordNorm }
+
+        // 1. AX preserved `"1. there"` (or current line) but dropped `\n` before it (`"...suggestions.1. there"`).
+        if liveNorm.hasSuffix(lastLineTrimmed) {
+            let liveBefore = String(liveNorm.dropLast(lastLineTrimmed.count))
+            if !liveBefore.isEmpty,
+               liveBefore.last?.isWhitespace != true,
+               matchesBeforePrefix(liveBefore, bufferedBefore: beforeNewlineNorm)
+                || (beforeNewlineNorm.isEmpty && isBufferNumberedListLine) {
+                return true
+            }
+        }
+
+        // 2. AX dropped `"1. "` into `<ol><li>` (leaving `"Heading\nthere"`), or dropped both `\n` and `"1. "` (`"...suggestions.there"`, `"Headingthere"`).
+        //    Skip when `liveNorm` ends with a spaceless marker (`"1.there"`), which belongs to check 3 so `"See item 1.below"` isn't misread.
+        if liveNorm.hasSuffix(wordNorm),
+           tightListSuffix.map({ !liveNorm.hasSuffix($0) }) ?? true {
+            let liveBefore = String(liveNorm.dropLast(wordNorm.count))
+            let isGluedWithoutWhitespace = (liveBefore.last?.isWhitespace != true)
+            let isAtNewLineBoundary = isEmptyOrEndsWithNewlineIgnoringHorizontalSpaces(liveBefore)
+            if (isGluedWithoutWhitespace
+                && (matchesBeforePrefix(liveBefore, bufferedBefore: beforeNewlineNorm)
+                    || (beforeNewlineNorm.isEmpty && isBufferNumberedListLine && !liveBefore.isEmpty)))
+                || (isBufferNumberedListLine
+                    && !liveBefore.isEmpty
+                    && isAtNewLineBoundary
+                    && (beforeNewlineNorm.isEmpty || matchesBeforePrefix(liveBefore, bufferedBefore: beforeNewlineNorm))) {
+                return true
+            }
+        }
+
+        // 3. AX kept `"1."` without space and dropped `\n` (`"...suggestions.1.there"`).
+        if let tightListSuffix, liveNorm.hasSuffix(tightListSuffix) {
+            let liveBefore = String(liveNorm.dropLast(tightListSuffix.count))
+            if !liveBefore.isEmpty,
+               liveBefore.last?.isWhitespace != true,
+               matchesBeforePrefix(liveBefore, bufferedBefore: beforeNewlineNorm)
+                || beforeNewlineNorm.isEmpty {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func splitTrailingNumberedListMarker(
+        from prefix: String,
+        requireTrailingSpace: Bool
+    ) -> (beforeMarker: String, marker: String)? {
+        let chars = Array(prefix)
+        var idx = chars.count
+        while idx > 0 && isHorizontalSpace(chars[idx - 1]) {
+            idx -= 1
+        }
+        if requireTrailingSpace && idx == chars.count {
+            return nil
+        }
+        guard idx > 0, chars[idx - 1] == "." || chars[idx - 1] == ")" else {
+            return nil
+        }
+        let punctIdx = idx - 1
+        var digitStart = punctIdx
+        while digitStart > 0 && chars[digitStart - 1].isASCII && chars[digitStart - 1].isNumber {
+            digitStart -= 1
+        }
+        let digitCount = punctIdx - digitStart
+        guard digitCount >= 1 && digitCount <= 4 else {
+            return nil
+        }
+        return (
+            beforeMarker: String(chars[0..<digitStart]),
+            marker: String(chars[digitStart..<chars.count])
+        )
+    }
+
+    private static func parseLeadingNumberedListItem(
+        _ text: String,
+        expectedWord: String
+    ) -> (digitsAndPunct: String, normalizedMarker: String)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let chars = Array(trimmed)
+        var idx = 0
+        while idx < chars.count && chars[idx].isASCII && chars[idx].isNumber {
+            idx += 1
+        }
+        guard idx >= 1 && idx <= 4, idx < chars.count else {
+            return nil
+        }
+        let punct = chars[idx]
+        guard punct == "." || punct == ")" else {
+            return nil
+        }
+        idx += 1
+        let digitsAndPunct = String(chars[0..<idx])
+        let spaceStart = idx
+        while idx < chars.count && isHorizontalSpace(chars[idx]) {
+            idx += 1
+        }
+        guard idx > spaceStart else {
+            return nil
+        }
+        let remainder = String(chars[idx..<chars.count])
+        guard normalizeApostrophes(remainder).lowercased() == normalizeApostrophes(expectedWord).lowercased() else {
+            return nil
+        }
+        return (digitsAndPunct: digitsAndPunct, normalizedMarker: digitsAndPunct + " ")
+    }
+
+    private static func trimTrailingHorizontalSpaces(_ text: String) -> String {
+        var out = text
+        while let last = out.last, isHorizontalSpace(last) {
+            out.removeLast()
+        }
+        return out
+    }
+
+    private static func isEmptyOrEndsWithNewlineIgnoringHorizontalSpaces(_ text: String) -> Bool {
+        let trimmed = trimTrailingHorizontalSpaces(text)
+        return trimmed.isEmpty || trimmed.last?.isNewline == true
+    }
+
+    private static func isTightlyAttachedAfterBlockText(_ beforeMarker: String) -> Bool {
+        guard let last = beforeMarker.last,
+              !last.isWhitespace,
+              !last.isLetter,
+              !last.isNumber else {
+            return false
+        }
+        if last == "." {
+            if let charBeforeDot = beforeMarker.dropLast().last, charBeforeDot.isASCII && charBeforeDot.isNumber {
+                return false
+            }
+        }
+        return true
     }
 
     private static func containsOnlyWord(_ word: String, in text: String) -> Bool {
