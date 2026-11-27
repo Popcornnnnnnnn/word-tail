@@ -17,6 +17,7 @@ final class TypingEngine {
     let domainPackStore: DomainPackStore
     let appProfileStore: AppProfileStore
     let snippetStore: SnippetStore
+    let verticalOffsetStore: VerticalOffsetStore
     private let inputGuard: InputGuard
     private let axContext = AXCaretContext()
     private let overlay = GhostOverlayWindow()
@@ -66,6 +67,7 @@ final class TypingEngine {
     private var lastLiveSample: PinnedLiveSample?
 
     var onStateChanged: (() -> Void)?
+    var onCalibrationChanged: (() -> Void)?
 
     var isEnabled: Bool {
         get {
@@ -83,49 +85,47 @@ final class TypingEngine {
         }
     }
 
-    private let globalOffsetKey = "WordTailGlobalVerticalOffset"
-    private let perAppOffsetKey = "WordTailPerAppVerticalOffsets"
-
     var globalVerticalAdjustment: CGFloat {
         get {
-            if UserDefaults.standard.object(forKey: globalOffsetKey) == nil {
-                return ScreenGeometry.defaultVerticalOffset
-            }
-            return CGFloat(UserDefaults.standard.double(forKey: globalOffsetKey))
+            CGFloat(verticalOffsetStore.globalOffset)
         }
         set {
-            UserDefaults.standard.set(Double(newValue), forKey: globalOffsetKey)
+            verticalOffsetStore.globalOffset = Double(newValue)
             refreshPinnedOverlayIfVisible()
+            notifyCalibrationChanged()
         }
     }
 
     func customVerticalAdjustment(forBundleID bundleID: String) -> CGFloat? {
-        if let dict = UserDefaults.standard.dictionary(forKey: perAppOffsetKey) as? [String: Double],
-           let val = dict[bundleID] {
-            return CGFloat(val)
-        }
-        if let builtIn = ScreenGeometry.builtInAppVerticalOffsets[bundleID] {
-            return builtIn
-        }
-        return nil
+        verticalOffsetStore.customOffset(forBundleID: bundleID).map { CGFloat($0) }
     }
 
     func verticalAdjustment(forBundleID bundleID: String?) -> CGFloat {
-        if let bundleID, let custom = customVerticalAdjustment(forBundleID: bundleID) {
-            return custom
-        }
-        return globalVerticalAdjustment
+        CGFloat(verticalOffsetStore.effectiveOffset(forBundleID: bundleID))
     }
 
     func setVerticalAdjustment(_ value: CGFloat?, forBundleID bundleID: String) {
-        var dict = (UserDefaults.standard.dictionary(forKey: perAppOffsetKey) as? [String: Double]) ?? [:]
-        if let value {
-            dict[bundleID] = Double(value)
-        } else {
-            dict.removeValue(forKey: bundleID)
-        }
-        UserDefaults.standard.set(dict, forKey: perAppOffsetKey)
+        verticalOffsetStore.setOffset(value.map(Double.init), forBundleID: bundleID)
         refreshPinnedOverlayIfVisible()
+        notifyCalibrationChanged()
+    }
+
+    @discardableResult
+    func nudgeVerticalAdjustment(forBundleID bundleID: String, delta: Double) -> CGFloat {
+        let updated = verticalOffsetStore.nudge(forBundleID: bundleID, delta: delta)
+        refreshPinnedOverlayIfVisible()
+        notifyCalibrationChanged()
+        return CGFloat(updated)
+    }
+
+    private func notifyCalibrationChanged() {
+        if Thread.isMainThread {
+            onCalibrationChanged?()
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.onCalibrationChanged?()
+            }
+        }
     }
 
     var minimumPrefixLength: Int {
@@ -414,6 +414,15 @@ final class TypingEngine {
         return (name: name, bundleID: bid)
     }
 
+    func effectiveFocusedTargetApp() -> (name: String, bundleID: String)? {
+        guard let app = axContext.effectiveFocusedApplication(),
+              let bundleID = app.bundleIdentifier,
+              bundleID != Bundle.main.bundleIdentifier else {
+            return nil
+        }
+        return (name: app.localizedName ?? bundleID, bundleID: bundleID)
+    }
+
     var bilingualCompletionEnabled: Bool {
         get {
             if UserDefaults.standard.object(forKey: "WordTailProBilingualCompletion") == nil {
@@ -509,7 +518,8 @@ final class TypingEngine {
         licenseManager: LicenseManager = LicenseManager(),
         domainPackStore: DomainPackStore = DomainPackStore(),
         appProfileStore: AppProfileStore = AppProfileStore(),
-        snippetStore: SnippetStore = SnippetStore()
+        snippetStore: SnippetStore = SnippetStore(),
+        verticalOffsetStore: VerticalOffsetStore = VerticalOffsetStore()
     ) {
         self.completer = completer
         self.historyStore = historyStore
@@ -521,6 +531,7 @@ final class TypingEngine {
         self.domainPackStore = domainPackStore
         self.appProfileStore = appProfileStore
         self.snippetStore = snippetStore
+        self.verticalOffsetStore = verticalOffsetStore
         self.syncEngine = SyncEngine(
             historyStore: historyStore,
             adaptiveStore: adaptiveStore,

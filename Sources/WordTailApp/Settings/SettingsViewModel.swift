@@ -491,7 +491,6 @@ final class SettingsViewModel: ObservableObject {
 
         isEnabled = engine.isEnabled
         isTrusted = AXIsProcessTrusted() && engine.isTapActive
-        globalOffset = Double(engine.globalVerticalAdjustment)
         ghostOpacity = Double(engine.ghostOpacity)
         appendSpaceOnAccept = engine.appendSpaceOnAccept
         autoCorrectOnSpace = engine.autoCorrectOnSpace
@@ -546,6 +545,48 @@ final class SettingsViewModel: ObservableObject {
             }
         }
 
+        syncCalibrationOffsetsLocked(forceReloadList: true, currentApp: currentApp)
+        refreshProUI()
+    }
+
+    func refreshCalibrationOffsets(forceReloadList: Bool = false) {
+        guard !isStaticShowcase, !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        syncCalibrationOffsetsLocked(forceReloadList: forceReloadList)
+    }
+
+    private func syncCalibrationOffsetsLocked(
+        forceReloadList: Bool,
+        currentApp: (name: String, bundleID: String)? = nil
+    ) {
+        guard let engine, !isStaticShowcase else { return }
+
+        let nextGlobal = engine.verticalOffsetStore.globalOffset
+        if abs(globalOffset - nextGlobal) > 0.0001 {
+            globalOffset = nextGlobal
+        }
+
+        let merged = engine.verticalOffsetStore.mergedAppOffsets()
+        if !forceReloadList,
+           currentApp == nil,
+           Set(appOffsets.map(\.bundleID)) == Set(merged.keys) {
+            for idx in appOffsets.indices {
+                let bid = appOffsets[idx].bundleID
+                if let nextVal = merged[bid], abs(appOffsets[idx].offset - nextVal) > 0.0001 {
+                    appOffsets[idx].offset = nextVal
+                }
+            }
+            return
+        }
+
+        reloadCalibrationAppsLocked(merged: merged, currentApp: currentApp)
+    }
+
+    private func reloadCalibrationAppsLocked(
+        merged: [String: Double],
+        currentApp: (name: String, bundleID: String)?
+    ) {
         var runningNames: [String: String] = [:]
         for app in NSWorkspace.shared.runningApplications where Self.isUserFacingRunningApp(app) {
             guard let bid = app.bundleIdentifier,
@@ -562,15 +603,6 @@ final class SettingsViewModel: ObservableObject {
             lastTargetApp = currentApp
         }
 
-        let savedDict = (UserDefaults.standard.dictionary(forKey: "WordTailPerAppVerticalOffsets") as? [String: Double]) ?? [:]
-        var merged: [String: Double] = [:]
-        for (bid, val) in ScreenGeometry.builtInAppVerticalOffsets {
-            merged[bid] = Double(val)
-        }
-        for (bid, val) in savedDict {
-            merged[bid] = val
-        }
-
         appOffsets = merged.map { bid, val in
             AppOffsetItem(
                 bundleID: bid,
@@ -580,8 +612,6 @@ final class SettingsViewModel: ObservableObject {
             )
         }
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-
-        refreshProUI()
 
         let existingIDs = Set(appOffsets.map(\.bundleID))
         availableAppsToAdd = runningNames
@@ -788,22 +818,22 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func updateOffset(for bundleID: String, to newValue: Double) {
-        let clamped = min(max((newValue * 20).rounded() / 20.0, -5.0), 5.0)
+        let sanitized = VerticalOffsetStore.sanitize(newValue)
         if let idx = appOffsets.firstIndex(where: { $0.bundleID == bundleID }) {
-            appOffsets[idx].offset = clamped
+            appOffsets[idx].offset = sanitized
         }
-        engine?.setVerticalAdjustment(CGFloat(clamped), forBundleID: bundleID)
+        engine?.setVerticalAdjustment(CGFloat(sanitized), forBundleID: bundleID)
     }
 
     func setGlobalOffsetClamped(_ newValue: Double) {
-        globalOffset = min(max((newValue * 20).rounded() / 20.0, -5.0), 5.0)
+        globalOffset = VerticalOffsetStore.sanitize(newValue)
     }
 
     func addAppOverride(bundleID: String) {
         guard let engine else { return }
         let startOffset = Double(engine.verticalAdjustment(forBundleID: bundleID))
         engine.setVerticalAdjustment(CGFloat(startOffset), forBundleID: bundleID)
-        refresh(currentApp: nil)
+        refreshCalibrationOffsets(forceReloadList: true)
     }
 
     func chooseApplicationFromDisk() {
@@ -822,17 +852,12 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func removeOrResetApp(bundleID: String) {
-        if let builtIn = ScreenGeometry.builtInAppVerticalOffsets[bundleID] {
-            updateOffset(for: bundleID, to: Double(builtIn))
-        } else {
-            engine?.setVerticalAdjustment(nil, forBundleID: bundleID)
-            appOffsets.removeAll { $0.bundleID == bundleID }
-            refresh(currentApp: nil)
-        }
+        engine?.setVerticalAdjustment(nil, forBundleID: bundleID)
+        refreshCalibrationOffsets(forceReloadList: true)
     }
 
     func resetGlobalOffset() {
-        globalOffset = Double(ScreenGeometry.defaultVerticalOffset)
+        globalOffset = VerticalOffsetStore.sanitize(Double(ScreenGeometry.defaultVerticalOffset))
     }
 
     func resetOpacity() {
@@ -1005,6 +1030,7 @@ final class SettingsViewModel: ObservableObject {
             isInstallingUpdate = autoUpdater.isInstalling
             updateStatusText = autoUpdater.statusMessage
         }
+        syncCalibrationOffsetsLocked(forceReloadList: false)
         refreshProUI()
     }
 

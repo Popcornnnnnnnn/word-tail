@@ -67,7 +67,7 @@ struct CalibrationSettingsView: View {
 
                         Spacer()
 
-                        LinearSlider(value: $vm.globalOffset, range: -4.0...4.0)
+                        LinearSlider(value: $vm.globalOffset, range: VerticalOffsetStore.sliderRange)
                             .frame(width: 118)
 
                         LinearOffsetStepper(
@@ -154,7 +154,7 @@ struct CalibrationSettingsView: View {
                                     get: { item.offset },
                                     set: { vm.updateOffset(for: item.bundleID, to: $0) }
                                 ),
-                                range: -4.0...4.0
+                                range: VerticalOffsetStore.sliderRange
                             )
                             .frame(width: 118)
 

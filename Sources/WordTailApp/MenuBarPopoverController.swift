@@ -145,6 +145,7 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
     private let hostingController: NSHostingController<MenuBarPopoverView>
     private let viewModel: MenuBarPopoverViewModel
     private let activeAppProvider: () -> (name: String, bundleID: String)?
+    private var pinnedActiveApp: (name: String, bundleID: String)?
     private var liveRefreshTimer: Timer?
     private var lastClosedUptime: TimeInterval = 0
 
@@ -204,7 +205,9 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
         if ProcessInfo.processInfo.systemUptime - lastClosedUptime < 0.08 {
             return
         }
-        viewModel.refresh(activeApp: activeAppProvider())
+        let initialApp = activeAppProvider()
+        pinnedActiveApp = initialApp
+        viewModel.refresh(activeApp: initialApp)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
     }
@@ -217,16 +220,20 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
 
     func refreshIfShown() {
         guard popover.isShown else { return }
-        viewModel.refresh(activeApp: activeAppProvider())
+        viewModel.refresh(activeApp: pinnedActiveApp ?? activeAppProvider())
     }
 
     func popoverWillShow(_ notification: Notification) {
-        viewModel.refresh(activeApp: activeAppProvider())
+        if pinnedActiveApp == nil {
+            pinnedActiveApp = activeAppProvider()
+        }
+        viewModel.refresh(activeApp: pinnedActiveApp)
         startLiveRefreshTimer()
     }
 
     func popoverDidClose(_ notification: Notification) {
         lastClosedUptime = ProcessInfo.processInfo.systemUptime
+        pinnedActiveApp = nil
         stopLiveRefreshTimer()
     }
 

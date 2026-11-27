@@ -134,6 +134,10 @@ struct LinearSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     var showZeroTick: Bool = true
+    var step: Double = 0.05
+
+    @State private var isDragging: Bool = false
+    @State private var dragRejected: Bool = false
 
     var body: some View {
         GeometryReader { geo in
@@ -177,16 +181,37 @@ struct LinearSlider: View {
                             .stroke(Color.black.opacity(scheme == .dark ? 0.35 : 0.18), lineWidth: 1)
                     )
                     .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
+                    .scaleEffect(isDragging ? 1.12 : 1.0)
                     .offset(x: thumbX - 6)
             }
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 3)
                     .onChanged { drag in
+                        if dragRejected { return }
+                        if !isDragging {
+                            let dx = abs(drag.translation.width)
+                            let dy = abs(drag.translation.height)
+                            if dy > dx * 1.2 {
+                                dragRejected = true
+                                return
+                            }
+                            isDragging = true
+                        }
                         let frac = min(max(drag.location.x / w, 0), 1)
                         let raw = range.lowerBound + frac * span
-                        value = (raw * 20).rounded() / 20.0
+                        let snapped = step > 0 ? (raw / step).rounded() * step : raw
+                        let clamped = min(max(snapped, range.lowerBound), range.upperBound)
+                        let cleaned = (clamped * 100.0).rounded() / 100.0
+                        let next = cleaned == 0 ? 0.0 : cleaned
+                        if abs(value - next) > 1e-6 {
+                            value = next
+                        }
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                        dragRejected = false
                     }
             )
         }

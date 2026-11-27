@@ -61,7 +61,9 @@ struct SettingsView: View {
                         symbol: section.symbol,
                         isSelected: vm.selectedSection == section
                     ) {
-                        if section == .insights {
+                        if section == .calibration {
+                            vm.refreshCalibrationOffsets()
+                        } else if section == .insights {
                             vm.refreshInsights()
                         } else if section == .keyStats || section == .appStats {
                             vm.refreshKeyStats()
@@ -263,5 +265,9 @@ final class SettingsWindowController: NSWindowController {
 
     func refreshUpdateAndSyncStatus() {
         viewModel.refreshUpdateAndSyncStatus()
+    }
+
+    func refreshCalibrationOffsets() {
+        viewModel.refreshCalibrationOffsets()
     }
 }

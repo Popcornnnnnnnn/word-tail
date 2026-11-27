@@ -243,7 +243,7 @@ struct PreferencesSettingsView: View {
                         Text("Ghost Text Opacity")
                             .font(.system(size: 13, weight: .medium))
                         Spacer()
-                        LinearSlider(value: $vm.ghostOpacity, range: 0.18...0.68, showZeroTick: false)
+                        LinearSlider(value: $vm.ghostOpacity, range: 0.18...0.68, showZeroTick: false, step: 0.01)
                             .frame(width: 150)
                         Text("\(Int((vm.ghostOpacity * 100).rounded()))%")
                             .font(.system(size: 11.5, weight: .medium, design: .monospaced))

@@ -54,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.settingsWindowController?.refreshUpdateAndSyncStatus()
             self?.popoverController?.refreshIfShown()
         }
+        engine.onCalibrationChanged = { [weak self] in
+            self?.settingsWindowController?.refreshCalibrationOffsets()
+            self?.popoverController?.refreshIfShown()
+        }
         autoUpdater.onBeforeTerminateForUpdate = { [weak self] in
             self?.engine.flushAllTelemetry()
         }
@@ -680,6 +684,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func currentTargetApp() -> (name: String, bundleID: String)? {
+        if let focused = engine.effectiveFocusedTargetApp() {
+            return focused
+        }
         if let front = NSWorkspace.shared.frontmostApplication,
            let bundleID = front.bundleIdentifier,
            bundleID != Bundle.main.bundleIdentifier {
@@ -711,14 +718,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func nudgeCurrentAppHigher(_ sender: NSMenuItem) {
         guard let bundleID = sender.representedObject as? String else { return }
-        let cur = engine.verticalAdjustment(forBundleID: bundleID)
-        engine.setVerticalAdjustment(cur + 0.10, forBundleID: bundleID)
+        engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: 0.10)
     }
 
     @objc private func nudgeCurrentAppLower(_ sender: NSMenuItem) {
         guard let bundleID = sender.representedObject as? String else { return }
-        let cur = engine.verticalAdjustment(forBundleID: bundleID)
-        engine.setVerticalAdjustment(cur - 0.10, forBundleID: bundleID)
+        engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: -0.10)
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
@@ -758,11 +763,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             onAdjustAppBaseline: { [weak self] bundleID, delta in
                 guard let self else { return }
-                let current = self.engine.verticalAdjustment(forBundleID: bundleID)
-                let next = ((current + delta) * 100.0).rounded() / 100.0
-                let clamped = max(-2.0, min(2.0, next))
-                self.engine.setVerticalAdjustment(clamped, forBundleID: bundleID)
-                self.popoverController?.refreshIfShown()
+                self.engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: Double(delta))
             },
             onOpenSettingsSection: { [weak self] section, range in
                 self?.presentMainWindow(section: section, keyStatsRange: range)
