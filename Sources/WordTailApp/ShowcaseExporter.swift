@@ -70,33 +70,6 @@ enum ShowcaseExporter {
             BigramHabitEntry(previousWord: "command", word: "line", count: 6)
         ]
 
-        let sampleApps: [AppOffsetItem] = [
-            AppOffsetItem(
-                bundleID: "com.openai.codex",
-                displayName: "Codex (ChatGPT)",
-                icon: srgbIcon(forBundleID: "com.openai.codex"),
-                offset: 0.70
-            ),
-            AppOffsetItem(
-                bundleID: "com.google.Chrome",
-                displayName: "Google Chrome",
-                icon: srgbIcon(forBundleID: "com.google.Chrome"),
-                offset: 0.55
-            ),
-            AppOffsetItem(
-                bundleID: "com.apple.Notes",
-                displayName: "Notes",
-                icon: srgbIcon(forBundleID: "com.apple.Notes"),
-                offset: 0.70
-            ),
-            AppOffsetItem(
-                bundleID: "com.raycast.macos",
-                displayName: "Raycast",
-                icon: srgbIcon(forBundleID: "com.raycast.macos"),
-                offset: 0.50
-            )
-        ]
-
         let sampleVocab: [VocabularyEntry] = [
             VocabularyEntry(word: "TypeScript", count: 19, isCustom: true),
             VocabularyEntry(word: "idempotent", count: 14, isCustom: false),
@@ -228,7 +201,6 @@ enum ShowcaseExporter {
         // 2. KeyStats & Keyboard Heatmap window screenshot
         let keyStatsVM = SettingsViewModel(
             showcaseSection: .keyStats,
-            appOffsets: sampleApps,
             insights: sampleInsights,
             bigrams: sampleBigrams,
             vocabulary: sampleVocab,
@@ -247,7 +219,6 @@ enum ShowcaseExporter {
         // 3. Insights window screenshot
         let insightsVM = SettingsViewModel(
             showcaseSection: .insights,
-            appOffsets: sampleApps,
             insights: sampleInsights,
             bigrams: sampleBigrams,
             vocabulary: sampleVocab,
@@ -262,25 +233,7 @@ enum ShowcaseExporter {
             to: outDir.appendingPathComponent("insights-window.png")
         )
 
-        // 4. Calibration window screenshot
-        let calibrationVM = SettingsViewModel(
-            showcaseSection: .calibration,
-            appOffsets: sampleApps,
-            insights: sampleInsights,
-            bigrams: sampleBigrams,
-            vocabulary: sampleVocab,
-            keyStats: sampleKeyStats,
-            showcaseAppIcons: appIconsMap
-        )
-        try renderSwiftUIViewToPNG(
-            MacWindowFrameBackdrop(size: windowShotSize) {
-                SettingsView(vm: calibrationVM)
-            },
-            size: windowShotSize,
-            to: outDir.appendingPathComponent("calibration-window.png")
-        )
-
-        // 5. Full-page App Statistics window screenshot
+        // 4. Full-page App Statistics window screenshot
         let sampleAllTimeAppStats = KeyStatsAggregateSnapshot(
             range: .allTime,
             deviceScope: .allDevices,
@@ -309,7 +262,6 @@ enum ShowcaseExporter {
         )
         let appStatsVM = SettingsViewModel(
             showcaseSection: .appStats,
-            appOffsets: sampleApps,
             insights: sampleInsights,
             bigrams: sampleBigrams,
             vocabulary: sampleVocab,
@@ -327,7 +279,6 @@ enum ShowcaseExporter {
         // 5b. Preferences window screenshot
         let preferencesVM = SettingsViewModel(
             showcaseSection: .preferences,
-            appOffsets: sampleApps,
             insights: sampleInsights,
             bigrams: sampleBigrams,
             vocabulary: sampleVocab,
@@ -495,7 +446,6 @@ enum ShowcaseExporter {
         )
         let proVM = SettingsViewModel(
             showcaseSection: .pro,
-            appOffsets: sampleApps,
             insights: sampleInsights,
             bigrams: sampleBigrams,
             vocabulary: sampleVocab,

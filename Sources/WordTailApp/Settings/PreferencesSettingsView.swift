@@ -10,6 +10,110 @@ struct PreferencesSettingsView: View {
                 .font(.system(size: 16, weight: .semibold))
 
             VStack(alignment: .leading, spacing: 8) {
+                LinearSectionHeader(title: "Alignment & Appearance")
+
+                LinearCard {
+                    HStack(spacing: 0) {
+                        Text("PREVIEW")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .tracking(0.8)
+                            .foregroundStyle(.tertiary)
+                            .padding(.trailing, 12)
+
+                        Text("I major in computer science and I kn")
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(.primary)
+
+                        Rectangle()
+                            .fill(LinearUI.accent)
+                            .frame(width: 1.5, height: 15)
+
+                        Text(vm.appendSpaceOnAccept ? "ow␣" : "ow")
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(Color.primary.opacity(vm.ghostOpacity))
+
+                        Spacer()
+
+                        LinearKbd(label: "⇥ Tab")
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 40)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack(spacing: 10) {
+                        let isAlignedReady = vm.hasScreenCapturePermission && vm.visualLockError == nil
+                        Image(systemName: "viewfinder")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(isAlignedReady ? LinearUI.accent : LinearUI.warning)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                (isAlignedReady ? LinearUI.accent : LinearUI.warning).opacity(scheme == .dark ? 0.16 : 0.11),
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            )
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Automatic Sub-Pixel Baseline Lock")
+                                .font(.system(size: 13, weight: .medium))
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(isAlignedReady ? LinearUI.positive : LinearUI.warning)
+                                    .frame(width: 5.5, height: 5.5)
+                                Text(vm.visualLockStatusText)
+                                    .font(.system(size: 11))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                        }
+
+                        Spacer()
+
+                        if !vm.hasScreenCapturePermission {
+                            LinearActionButton(title: "Grant Access…", icon: "lock.open") {
+                                vm.requestScreenCapturePermissionAndOpenSettings()
+                            }
+                        } else if vm.visualLockLockedLines > 0 {
+                            LinearIconButton(
+                                symbol: "arrow.counterclockwise",
+                                helpText: "Clear learned per-app visual priors and line cache"
+                            ) {
+                                vm.resetVisualBaselineCalibration()
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+
+                    Rectangle()
+                        .fill(LinearUI.hairline(scheme))
+                        .frame(height: 1)
+                        .padding(.leading, 14)
+
+                    HStack(spacing: 12) {
+                        Text("Ghost Text Opacity")
+                            .font(.system(size: 13, weight: .medium))
+                        Spacer()
+                        LinearSlider(value: $vm.ghostOpacity, range: 0.18...0.68, showZeroTick: false, step: 0.01)
+                            .frame(width: 150)
+                        Text("\(Int((vm.ghostOpacity * 100).rounded()))%")
+                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .trailing)
+                        LinearIconButton(symbol: "arrow.counterclockwise", helpText: "Reset opacity (38%)") {
+                            vm.resetOpacity()
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 46)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
                 LinearSectionHeader(title: "Multi-Device Sync & Updates")
 
                 LinearCard {
@@ -236,31 +340,9 @@ struct PreferencesSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                LinearSectionHeader(title: "Appearance & Shortcuts")
+                LinearSectionHeader(title: "Shortcuts & Menu Bar")
 
                 LinearCard {
-                    HStack(spacing: 12) {
-                        Text("Ghost Text Opacity")
-                            .font(.system(size: 13, weight: .medium))
-                        Spacer()
-                        LinearSlider(value: $vm.ghostOpacity, range: 0.18...0.68, showZeroTick: false, step: 0.01)
-                            .frame(width: 150)
-                        Text("\(Int((vm.ghostOpacity * 100).rounded()))%")
-                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 42, alignment: .trailing)
-                        LinearIconButton(symbol: "arrow.counterclockwise", helpText: "Reset opacity (38%)") {
-                            vm.resetOpacity()
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .frame(height: 46)
-
-                    Rectangle()
-                        .fill(LinearUI.hairline(scheme))
-                        .frame(height: 1)
-                        .padding(.leading, 14)
-
                     HStack {
                         Text("Accept 1 Word of Multi-Word Phrase")
                             .font(.system(size: 12.5))

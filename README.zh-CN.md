@@ -31,7 +31,7 @@
 - **零 LLM，约 3 ms 延迟：** 结合 macOS 语法感知的 `NSSpellChecker`、精选 **180+ 计算机/AI/量化词库**、**个人二元词组（bigram）**、**分应用词汇表**以及**易错词自动救援**。
 - **专为双语与技术写作者打造：** 一旦切换到非拉丁输入法（中文拼音、鼠须管 Rime、豆包输入法、日文、韩文）、光标停留在密码框（`SecureEventInput` / `AXSecureTextField`），或在 IDE 与终端中编辑代码文件，WordTail 会保持 **100% 静默**。
 - **内置 KeyStats 与输入洞察（100% 本地，零遥测）：** 提供完整的硬件与输入习惯工作台——今日/7 天/30 天/累计击键数、峰值 KPS/CPS、左右手平衡、拉丁与中日韩输入占比、鼠标移动距离（换算马拉松里程）、滚轮距离（换算珠峰高度）、65 键 MacBook ANSI 物理键盘热力图、14 周活跃日历、分应用统计、高频快捷键、节省击键数、爆发 WPM 与个人易错词陷阱——还支持 JSON 导出与 `KeyStats` 备份导入。
-- **无冲突多设备同步与签名一键更新：** 可选通过 **iCloud Drive** 或任意共享文件夹（Dropbox、Syncthing），利用按设备分片的 CRDT 机制在多台 Mac 间同步自定义词典、简写规则、习得短语、输入洞察与 KeyStats——同时将各显示器的基线校准保留在本地。后台更新检查会校验 Apple `Developer ID` 代码签名，并一键更新 `/Applications/WordTail.app`。
+- **无冲突多设备同步与签名一键更新：** 可选通过 **iCloud Drive** 或任意共享文件夹（Dropbox、Syncthing），利用按设备分片的 CRDT 机制在多台 Mac 间同步自定义词典、简写规则、习得短语、输入洞察与 KeyStats。后台更新检查会校验 Apple `Developer ID` 代码签名，并一键更新 `/Applications/WordTail.app`。
 
 ---
 
@@ -51,11 +51,11 @@ WordTail 会学习你的二元词搭配（`pull → request`、`feature → flag
   <img src="docs/images/insights-window.png" alt="WordTail 输入洞察窗口" width="800" />
 </p>
 
-### 亚视网膜像素级基线校准
-不同的 macOS 界面框架（Cocoa `NSTextView`、Chromium `contenteditable`、Electron、以及 Raycast 这类浮动 `NSPanel` 启动器）上报的光标边界略有差异。WordTail 采用 CoreText + `CGImage` 亚像素插值（`0.05 pt` 步进）与 60 fps 实时预览，让灰色幽灵文本稳稳贴合每款应用的基线。
+### 自动逐行亚像素基线锁定
+不同的 macOS 界面框架（Cocoa `NSTextView`、Chromium `contenteditable`、Electron、以及 Raycast 这类浮动 `NSPanel` 启动器）上报的光标边界存在细微量化误差。授予 **屏幕录制** 权限后，WordTail 会通过 `ScreenCaptureKit` 仅在内存中读取当前活跃应用光标旁的极小区域（截屏像素绝不落盘或上传），按 `0.05 pt` 步进逐行估计并对齐真实渲染基线，无需再手动拖动滑块。未授予屏幕录制权限（或位于密码框、非拉丁输入）时，WordTail 会自动回退到内置辅助功能光标几何计算。
 
 <p align="center">
-  <img src="docs/images/calibration-window.png" alt="WordTail 基线校准窗口" width="800" />
+  <img src="docs/images/preferences-window.png" alt="WordTail 偏好设置与自动亚像素基线锁定窗口" width="800" />
 </p>
 
 ---
@@ -123,7 +123,7 @@ swift test
 open /Applications/WordTail.app
 ```
 
-首次启动时，请在 **系统设置 → 隐私与安全性** 中授予 **辅助功能**（以及如有提示的 **输入监控**）权限。WordTail 会在 1.5 秒内自动检测到权限授权——无需重启应用。
+首次启动时，请在 **系统设置 → 隐私与安全性** 中授予 **辅助功能**（以及如有提示的 **输入监控**）权限。WordTail 会在 1.5 秒内自动检测到权限授权——无需重启应用。你也可以在菜单栏弹窗或 **偏好设置** 中授予 **屏幕录制** 权限以启用自动亚像素基线锁定；未授权时会自动回退到内置光标几何计算。
 
 ---
 
@@ -160,7 +160,7 @@ word-tail/
 
 ## Studio 工具箱（全部免费内置）
 
-`v0.8.3` 中的每一项功能——行内 Tab 补全、多词短语预测、行内易错词救援、自适应自动纠错与句首大写、KeyStats、按设备 iCloud/文件夹同步、基线校准——连同全新的 **Studio** 工具均保持 **MIT 开源且 100% 免费**：
+`v0.8.3` 中的每一项功能——行内 Tab 补全、多词短语预测、行内易错词救援、自适应自动纠错与句首大写、KeyStats、按设备 iCloud/文件夹同步、自动基线对齐——连同全新的 **Studio** 工具均保持 **MIT 开源且 100% 免费**：
 
 - **领域词库包：** 内置 6 个专业词库（AI/ML 与量化、系统与 DevOps、生物医药、法律/金融、产品/设计、学术研究），并支持便携的 `.wordtailpack` JSON 导入/导出。
 - **片段工作室与宏：** 基于触发词展开（`;date`、`;iso`、`;time`、`;meet`、`;pr`、`;clip`），支持 `{date}`、`{date:...}`、`{time}`、`{iso}`、`{weekday}`、`{clipboard}` 与 `{cursor}` 光标定位。

@@ -31,7 +31,7 @@ Most modern macOS autocomplete utilities wrap multi-gigabyte local or cloud LLMs
 - **Zero LLM, ~3 ms latency:** Combines macOS's grammar-aware `NSSpellChecker`, a curated **180+ CS/AI/quant lexicon**, **personal 2-word bigrams**, **per-app vocabulary**, and **typo-trap rescue**.
 - **Built for bilingual & technical typists:** Stays **100% silent** whenever you switch to a non-Roman input method (Chinese Pinyin, Rime, Doubao, Japanese, Korean), focus a password field (`SecureEventInput` / `AXSecureTextField`), or edit code files inside IDEs and terminals.
 - **Built-in KeyStats + Linguistic Insights (100% local, zero telemetry):** Includes a complete hardware & habit studio—daily/7D/30D/all-time keystrokes, peak KPS/CPS, Left/Right hand balance, Roman vs CJK ratio, mouse travel (`Marathons`), scroll distance (`Everests`), a 65-key MacBook ANSI heatmap, 14-week activity calendar, per-app breakdowns, top shortcuts, saved keystrokes, burst WPM, and personal typo traps—plus JSON export & `KeyStats` backup import.
-- **Conflict-Free Multi-Device Sync & Signed 1-Click Updates:** Optionally sync your custom dictionary, shorthand rules, learned phrases, Typing Insights, and KeyStats across all your Macs via **iCloud Drive** or any shared folder (Dropbox, Syncthing) using per-device CRDT shards—while keeping per-display baseline calibration local. Background update checks verify Apple `Developer ID` code signatures and update `/Applications/WordTail.app` in one click.
+- **Conflict-Free Multi-Device Sync & Signed 1-Click Updates:** Optionally sync your custom dictionary, shorthand rules, learned phrases, Typing Insights, and KeyStats across all your Macs via **iCloud Drive** or any shared folder (Dropbox, Syncthing) using per-device CRDT shards. Background update checks verify Apple `Developer ID` code signatures and update `/Applications/WordTail.app` in one click.
 
 ---
 
@@ -51,11 +51,11 @@ WordTail learns your 2-word collocations (`pull → request`, `feature → flag`
   <img src="docs/images/insights-window.png" alt="WordTail Typing Insights window" width="800" />
 </p>
 
-### Sub-Retina-Pixel Baseline Calibration
-Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electron, floating `NSPanel` launchers like Raycast) report slightly different caret bounds. WordTail uses CoreText + `CGImage` sub-pixel interpolation (`0.05 pt` steps) with live 60 fps preview so gray ghost text sits flush on every app's baseline.
+### Automatic Per-Line Sub-Pixel Baseline Lock
+Different macOS toolkits (Cocoa `NSTextView`, Chromium `contenteditable`, Electron, floating `NSPanel` launchers like Raycast) report slightly different integer-quantized caret bounds. When **Screen Recording** access is granted, WordTail reads a tiny area beside your cursor in the active app strictly in memory via `ScreenCaptureKit` (captured pixels are never saved or transmitted) to estimate each line's rendered baseline in `0.05 pt` steps—with zero manual sliders. If Screen Recording permission is not granted (or in secure/non-ASCII inputs), WordTail automatically falls back to built-in Accessibility caret geometry.
 
 <p align="center">
-  <img src="docs/images/calibration-window.png" alt="WordTail Baseline Calibration window" width="800" />
+  <img src="docs/images/preferences-window.png" alt="WordTail Preferences and Automatic Sub-Pixel Baseline Lock window" width="800" />
 </p>
 
 ---
@@ -123,7 +123,7 @@ swift test
 open /Applications/WordTail.app
 ```
 
-On first launch, grant **Accessibility** (and **Input Monitoring** if prompted) under **System Settings → Privacy & Security**. WordTail detects permission approval automatically within 1.5 seconds—no restart required.
+On first launch, grant **Accessibility** (and **Input Monitoring** if prompted) under **System Settings → Privacy & Security**. WordTail detects permission approval automatically within 1.5 seconds—no restart required. Optionally grant **Screen Recording** from the menu bar popover or **Preferences** to enable Automatic Sub-Pixel Baseline Lock; without it, WordTail falls back to built-in caret geometry.
 
 ---
 
@@ -160,7 +160,7 @@ word-tail/
 
 ## Studio Tools (Included Free)
 
-Every feature in `v0.8.3` — inline Tab completion, multi-word phrase prediction, inline typo rescue, adaptive auto-correct & sentence capitalization, KeyStats, per-device iCloud/folder sync, baseline calibration — plus the new **Studio** tools remain **MIT open source and 100% free**:
+Every feature in `v0.8.3` — inline Tab completion, multi-word phrase prediction, inline typo rescue, adaptive auto-correct & sentence capitalization, KeyStats, per-device iCloud/folder sync, automatic baseline alignment — plus the new **Studio** tools remain **MIT open source and 100% free**:
 
 - **Domain Vocabulary Packs:** 6 built-in specialized packs (AI/ML & Quant, Systems & DevOps, Biomedical, Legal/Finance, Product/Design, Academic Research) plus portable `.wordtailpack` JSON imports/exports.
 - **Snippet Studio & Macros:** Trigger-based expansion (`;date`, `;iso`, `;time`, `;meet`, `;pr`, `;clip`) supporting `{date}`, `{date:...}`, `{time}`, `{iso}`, `{weekday}`, `{clipboard}`, and `{cursor}` caret positioning.

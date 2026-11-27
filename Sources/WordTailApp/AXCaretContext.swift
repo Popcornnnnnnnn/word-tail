@@ -112,8 +112,7 @@ final class AXCaretContext {
         targetApp: NSRunningApplication? = nil,
         fallbackBuffer: String,
         enableChromiumBridge: Bool,
-        verticalAdjustment: CGFloat = ScreenGeometry.defaultVerticalOffset,
-        verticalAdjustmentProvider: ((String?) -> CGFloat)? = nil
+        verticalAdjustment: CGFloat = ScreenGeometry.defaultVerticalOffset
     ) -> CaretSnapshot? {
         guard AXIsProcessTrusted() else { return nil }
         guard let app = targetApp ?? effectiveFocusedApplication() else { return nil }
@@ -248,12 +247,11 @@ final class AXCaretContext {
                    isWebKit: isWebKit
                ) {
                 let display = ScreenGeometry.displayDescriptor(forAXRect: axRect, primaryScreenHeight: primaryHeight)
-                let resolvedOffset = verticalAdjustmentProvider?(display?.key) ?? verticalAdjustment
                 let placement = ScreenGeometry.baselinePlacement(
                     forAXCharRect: axRect,
                     primaryScreenHeight: primaryHeight,
                     font: font,
-                    verticalAdjustment: resolvedOffset,
+                    verticalAdjustment: verticalAdjustment,
                     lineSpacingBias: spacingBias
                 )
                 let endsWithLetter = textBefore.last.map { $0.isASCII && $0.isLetter } ?? false
@@ -290,7 +288,6 @@ final class AXCaretContext {
             fallbackBuffer: fallbackBuffer,
             primaryHeight: primaryHeight,
             verticalAdjustment: verticalAdjustment,
-            verticalAdjustmentProvider: verticalAdjustmentProvider,
             lineSpacingBias: spacingBias
         ) {
             recordStatus(String(
@@ -734,7 +731,6 @@ final class AXCaretContext {
         fallbackBuffer: String,
         primaryHeight: CGFloat,
         verticalAdjustment: CGFloat,
-        verticalAdjustmentProvider: ((String?) -> CGFloat)? = nil,
         lineSpacingBias: LineSpacingBias
     ) -> CaretSnapshot? {
         var markerRangeRef: CFTypeRef?
@@ -887,12 +883,11 @@ final class AXCaretContext {
 
         let font = resolveStableFont(element: element, axFont: resolvedFont, fontBoxHeight: axRect.height)
         let display = ScreenGeometry.displayDescriptor(forAXRect: axRect, primaryScreenHeight: primaryHeight)
-        let resolvedOffset = verticalAdjustmentProvider?(display?.key) ?? verticalAdjustment
         let placement = ScreenGeometry.baselinePlacement(
             forAXCharRect: axRect,
             primaryScreenHeight: primaryHeight,
             font: font,
-            verticalAdjustment: resolvedOffset,
+            verticalAdjustment: verticalAdjustment,
             lineSpacingBias: lineSpacingBias
         )
         let endsWithLetter = textBefore.last.map { $0.isASCII && $0.isLetter } ?? false

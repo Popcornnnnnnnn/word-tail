@@ -31,14 +31,10 @@ final class MenuBarPopoverViewModel: ObservableObject {
 
     @Published var activeAppName: String = ""
     @Published var activeAppBundleID: String = ""
-    @Published var activeAppDisplayKey: String? = nil
-    @Published var activeAppDisplayName: String? = nil
     @Published var activeAppIcon: NSImage = NSImage()
     @Published var activeAppDefaultExcluded: Bool = false
     @Published var activeAppUserDisabled: Bool = false
-    @Published var activeAppVerticalAdjustment: CGFloat = 0.70
-    @Published var isLiveVisualLockEnabled: Bool = false
-    @Published var isLiveVisualLockActive: Bool = false
+    @Published var hasScreenCapturePermission: Bool = false
     @Published var isLiveVisualLockPaused: Bool = false
     @Published var liveVisualLockTooltip: String = ""
 
@@ -62,9 +58,9 @@ final class MenuBarPopoverViewModel: ObservableObject {
 
     var onToggleEnabled: () -> Void = {}
     var onGrantAccessibility: () -> Void = {}
+    var onGrantScreenCapture: () -> Void = {}
     var onToggleAppDisabled: (String) -> Void = { _ in }
-    var onAdjustAppBaseline: (String, String?, CGFloat) -> Void = { _, _, _ in }
-    var onOpenSettingsSection: (SettingsSection?, StatsTimeRange?, String?) -> Void = { _, _, _ in }
+    var onOpenSettingsSection: (SettingsSection?, StatsTimeRange?) -> Void = { _, _ in }
     var onReviewUpdate: () -> Void = {}
     var onQuit: () -> Void = {}
 
@@ -96,13 +92,15 @@ final class MenuBarPopoverViewModel: ObservableObject {
         vm.rates = (0, 0, today.peakKPS, today.peakCPS)
         vm.isEnabled = true
         vm.hasAccessibility = true
+        vm.hasScreenCapturePermission = true
+        vm.isLiveVisualLockPaused = false
+        vm.liveVisualLockTooltip = "Automatic Sub-Pixel Baseline Lock active"
         vm.brandIcon = brandIcon
         vm.activeAppName = activeAppName
         vm.activeAppBundleID = activeAppBundleID
         vm.activeAppIcon = activeAppIcon
         vm.activeAppDefaultExcluded = false
         vm.activeAppUserDisabled = false
-        vm.activeAppVerticalAdjustment = 0.70
         return vm
     }
 
@@ -115,48 +113,34 @@ final class MenuBarPopoverViewModel: ObservableObject {
 
         isEnabled = engine.isEnabled
         hasAccessibility = AXIsProcessTrusted() && engine.isTapActive
-        isLiveVisualLockEnabled = engine.enableLiveVisualBaselineLock
         let vSnap = engine.visualCalibrator.statusSnapshot()
-        isLiveVisualLockActive = isLiveVisualLockEnabled && vSnap.hasPermission && vSnap.lastError == nil
-        isLiveVisualLockPaused = isLiveVisualLockEnabled && (!vSnap.hasPermission || vSnap.lastError != nil)
-        if isLiveVisualLockEnabled {
-            if !vSnap.hasPermission {
-                liveVisualLockTooltip = "Live Per-Line Lock needs Screen Recording permission. Click to open Calibration."
-            } else if let err = vSnap.lastError, !err.isEmpty {
-                liveVisualLockTooltip = "Live Per-Line Lock paused (\(err)). Manual fallback remains active."
-            } else if vSnap.lockedLineCount > 0, let delta = vSnap.lastDeltaPt {
-                liveVisualLockTooltip = String(
-                    format: "Live Per-Line Lock active (%+.2f pt · %d lines locked). Steppers adjust manual fallback.",
-                    delta, vSnap.lockedLineCount
-                )
-            } else {
-                liveVisualLockTooltip = "Live Per-Line Lock ready — locks on next typed line. Steppers adjust manual fallback."
-            }
+        hasScreenCapturePermission = vSnap.hasPermission
+        isLiveVisualLockPaused = vSnap.hasPermission && vSnap.lastError != nil
+        if !vSnap.hasPermission {
+            liveVisualLockTooltip = "Grant Screen Recording access to enable automatic per-line sub-pixel baseline lock."
+        } else if let err = vSnap.lastError, !err.isEmpty {
+            liveVisualLockTooltip = "Automatic baseline lock paused (\(err)). Click to open Preferences."
+        } else if vSnap.lockedLineCount > 0, let delta = vSnap.lastDeltaPt {
+            liveVisualLockTooltip = String(
+                format: "Automatic Sub-Pixel Baseline Lock active (%+.2f pt · %d lines locked). Click to open Preferences.",
+                delta, vSnap.lockedLineCount
+            )
         } else {
-            liveVisualLockTooltip = ""
+            liveVisualLockTooltip = "Automatic Sub-Pixel Baseline Lock ready — locks on each typed line."
         }
 
         if let activeApp, !activeApp.bundleID.isEmpty {
             activeAppName = activeApp.name
             activeAppBundleID = activeApp.bundleID
-            activeAppDisplayKey = activeApp.displayKey
-            activeAppDisplayName = activeApp.displayName
             activeAppIcon = SettingsViewModel.appIcon(forBundleID: activeApp.bundleID)
             activeAppDefaultExcluded = InputGuard.defaultExcludedBundleIDs.contains(activeApp.bundleID)
             activeAppUserDisabled = inputGuard?.userDisabledBundleIDs.contains(activeApp.bundleID) ?? false
-            activeAppVerticalAdjustment = engine.verticalAdjustment(
-                forBundleID: activeApp.bundleID,
-                displayKey: activeApp.displayKey
-            )
         } else {
             activeAppName = ""
             activeAppBundleID = ""
-            activeAppDisplayKey = nil
-            activeAppDisplayName = nil
             activeAppIcon = NSImage()
             activeAppDefaultExcluded = false
             activeAppUserDisabled = false
-            activeAppVerticalAdjustment = 0.70
         }
 
         if let autoUpdater {
@@ -189,9 +173,9 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
         activeAppProvider: @escaping () -> CalibrationAppInfo?,
         onToggleEnabled: @escaping () -> Void,
         onGrantAccessibility: @escaping () -> Void,
+        onGrantScreenCapture: @escaping () -> Void,
         onToggleAppDisabled: @escaping (String) -> Void,
-        onAdjustAppBaseline: @escaping (String, String?, CGFloat) -> Void,
-        onOpenSettingsSection: @escaping (SettingsSection?, StatsTimeRange?, String?) -> Void,
+        onOpenSettingsSection: @escaping (SettingsSection?, StatsTimeRange?) -> Void,
         onReviewUpdate: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
@@ -217,8 +201,8 @@ final class MenuBarPopoverController: NSObject, NSPopoverDelegate {
 
         vm.onToggleEnabled = onToggleEnabled
         vm.onGrantAccessibility = onGrantAccessibility
+        vm.onGrantScreenCapture = onGrantScreenCapture
         vm.onToggleAppDisabled = onToggleAppDisabled
-        vm.onAdjustAppBaseline = onAdjustAppBaseline
         vm.onOpenSettingsSection = onOpenSettingsSection
         vm.onReviewUpdate = onReviewUpdate
         vm.onQuit = onQuit
@@ -430,14 +414,11 @@ struct MenuBarPopoverView: View {
     // MARK: - Whisper-Quiet Active-App Strip
 
     private var activeAppBar: some View {
-        let multiDisplay = ScreenGeometry.connectedDisplays().count > 1
-        let activeDisplayKey = multiDisplay ? vm.activeAppDisplayKey : nil
-
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             if !vm.activeAppBundleID.isEmpty {
                 Button {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.calibration, nil, activeDisplayKey)
+                    vm.onOpenSettingsSection(.preferences, nil)
                 } label: {
                     HStack(spacing: 6) {
                         Image(nsImage: vm.activeAppIcon)
@@ -450,21 +431,12 @@ struct MenuBarPopoverView: View {
                             .foregroundStyle(hoveredAppRow ? systemBlue : Color.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                        if multiDisplay, let displayName = vm.activeAppDisplayName, !displayName.isEmpty {
-                            Text("· \(displayName)")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Color.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .onHover { hoveredAppRow = $0 }
-                .help(multiDisplay && vm.activeAppDisplayName != nil
-                    ? "Open Calibration for \(vm.activeAppName) on \(vm.activeAppDisplayName!)"
-                    : "Open Calibration & Per-App Settings")
+                .help("Open Preferences & Auto-Align Status")
             } else {
                 HStack(spacing: 5) {
                     Image(systemName: "macwindow")
@@ -478,49 +450,58 @@ struct MenuBarPopoverView: View {
 
             Spacer(minLength: 4)
 
-            if !vm.activeAppBundleID.isEmpty {
-                if vm.activeAppDefaultExcluded {
-                    Text("Excluded IDE")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(Color.secondary)
-                } else {
-                    HStack(spacing: 7) {
+            HStack(spacing: 7) {
+                if !vm.activeAppBundleID.isEmpty {
+                    if vm.activeAppDefaultExcluded {
+                        Text("Excluded IDE")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(Color.secondary)
+                    } else {
                         PopoverMiniSwitch(isOn: Binding(
                             get: { !vm.activeAppUserDisabled },
                             set: { _ in vm.onToggleAppDisabled(vm.activeAppBundleID) }
                         ), activeColor: systemBlue)
                         .help(vm.activeAppUserDisabled ? "Enable WordTail in \(vm.activeAppName)" : "Disable WordTail in \(vm.activeAppName)")
-
-                        if vm.isLiveVisualLockEnabled {
-                            let badgeColor: Color = vm.isLiveVisualLockPaused ? warmOrange : systemBlue
-                            Button {
-                                onClosePopover()
-                                vm.onOpenSettingsSection(.calibration, nil, activeDisplayKey)
-                            } label: {
-                                Image(systemName: vm.isLiveVisualLockPaused ? "exclamationmark.triangle.fill" : "viewfinder")
-                                    .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(badgeColor)
-                                    .frame(width: 19, height: 17)
-                                    .background(badgeColor.opacity(scheme == .dark ? 0.18 : 0.11), in: RoundedRectangle(cornerRadius: 4.5, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .help(vm.liveVisualLockTooltip)
-                        }
-
-                        HStack(spacing: 2) {
-                            PopoverStepperGlyphButton(symbol: "minus", help: "Nudge fallback baseline down (-0.05)", accent: systemBlue) {
-                                vm.onAdjustAppBaseline(vm.activeAppBundleID, activeDisplayKey, -0.05)
-                            }
-                            Text(String(format: "%+.2f", vm.activeAppVerticalAdjustment))
-                                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                .monospacedDigit()
-                                .foregroundStyle(Color.secondary)
-                                .frame(width: 38, alignment: .center)
-                            PopoverStepperGlyphButton(symbol: "plus", help: "Nudge fallback baseline up (+0.05)", accent: systemBlue) {
-                                vm.onAdjustAppBaseline(vm.activeAppBundleID, activeDisplayKey, +0.05)
-                            }
-                        }
                     }
+                }
+
+                if !vm.hasScreenCapturePermission {
+                    Button {
+                        onClosePopover()
+                        vm.onGrantScreenCapture()
+                    } label: {
+                        HStack(spacing: 3.5) {
+                            Image(systemName: "viewfinder")
+                                .font(.system(size: 9.5, weight: .semibold))
+                            Text("Auto-Align")
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .foregroundStyle(warmOrange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(warmOrange.opacity(scheme == .dark ? 0.20 : 0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(vm.liveVisualLockTooltip)
+                } else {
+                    let badgeColor: Color = vm.isLiveVisualLockPaused ? warmOrange : systemBlue
+                    Button {
+                        onClosePopover()
+                        vm.onOpenSettingsSection(.preferences, nil)
+                    } label: {
+                        HStack(spacing: 3.5) {
+                            Image(systemName: vm.isLiveVisualLockPaused ? "exclamationmark.triangle.fill" : "viewfinder")
+                                .font(.system(size: 9.5, weight: .semibold))
+                            Text(vm.isLiveVisualLockPaused ? "Paused" : "Auto")
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .foregroundStyle(badgeColor)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(badgeColor.opacity(scheme == .dark ? 0.18 : 0.11), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(vm.liveVisualLockTooltip)
                 }
             }
         }
@@ -640,7 +621,7 @@ struct MenuBarPopoverView: View {
                 Spacer()
                 PopoverGlassPillButton(title: "Heatmap") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.keyStats, nil, nil)
+                    vm.onOpenSettingsSection(.keyStats, nil)
                 }
             }
 
@@ -725,7 +706,7 @@ struct MenuBarPopoverView: View {
                 Spacer()
                 PopoverGlassPillButton(title: "Hourly Trends") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.keyStats, .today, nil)
+                    vm.onOpenSettingsSection(.keyStats, .today)
                 }
             }
 
@@ -786,15 +767,15 @@ struct MenuBarPopoverView: View {
             HStack(spacing: 8) {
                 PopoverBareIconButton(symbol: "gearshape", help: "Preferences") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.preferences, nil, nil)
+                    vm.onOpenSettingsSection(.preferences, nil)
                 }
                 PopoverBareIconButton(symbol: "square.grid.2x2", help: "App Statistics") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.appStats, .allTime, nil)
+                    vm.onOpenSettingsSection(.appStats, .allTime)
                 }
                 PopoverBareIconButton(symbol: "chart.bar.fill", help: "All-Time Stats") {
                     onClosePopover()
-                    vm.onOpenSettingsSection(.keyStats, .allTime, nil)
+                    vm.onOpenSettingsSection(.keyStats, .allTime)
                 }
 
                 Spacer(minLength: 4)
@@ -958,32 +939,6 @@ private struct PopoverPeakSpeedPill: View {
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .help("Today's peak KPS · CPS (click for live rate)")
-    }
-}
-
-private struct PopoverStepperGlyphButton: View {
-    @Environment(\.colorScheme) private var scheme
-    let symbol: String
-    let help: String
-    let accent: Color
-    let action: () -> Void
-    @State private var hovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 9.5, weight: .bold))
-                .foregroundStyle(hovered ? accent : Color.secondary)
-                .frame(width: 16, height: 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(hovered ? Color.primary.opacity(scheme == .dark ? 0.14 : 0.08) : Color.clear)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovered = $0 }
-        .help(help)
     }
 }
 

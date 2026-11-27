@@ -70,8 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.settingsWindowController?.refreshUpdateAndSyncStatus()
             self?.popoverController?.refreshIfShown()
         }
-        engine.onCalibrationChanged = { [weak self] in
-            self?.settingsWindowController?.refreshCalibrationOffsets()
+        engine.onVisualAlignmentChanged = { [weak self] in
+            self?.settingsWindowController?.refreshVisualAlignmentStatus()
             self?.popoverController?.refreshIfShown()
         }
         autoUpdater.onBeforeTerminateForUpdate = { [weak self] in
@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 self.updateStatusIcon()
                 self.settingsWindowController?.refreshUpdateAndSyncStatus()
-                self.settingsWindowController?.refreshCalibrationOffsets()
+                self.settingsWindowController?.refreshVisualAlignmentStatus()
             }
         }
         ensureLoginItemRegisteredOnFirstInstall()
@@ -606,52 +606,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 icon.size = NSSize(width: 16, height: 16)
                 appToggle.image = icon
                 menu.addItem(appToggle)
-
-                let multiDisplay = ScreenGeometry.connectedDisplays().count > 1
-                let activeDisplayKey = multiDisplay ? target.displayKey : nil
-                let curOffset = engine.verticalAdjustment(forBundleID: targetApp.bundleID, displayKey: activeDisplayKey)
-                let menuTarget = CalibrationMenuTarget(bundleID: targetApp.bundleID, displayKey: activeDisplayKey)
-
-                let nudgeMenu = NSMenu()
-                let autoLockItem = NSMenuItem(
-                    title: "Live Per-Line Auto-Lock",
-                    action: #selector(toggleLiveVisualBaselineLock),
-                    keyEquivalent: ""
-                )
-                autoLockItem.target = self
-                autoLockItem.state = engine.enableLiveVisualBaselineLock ? .on : .off
-                nudgeMenu.addItem(autoLockItem)
-                nudgeMenu.addItem(.separator())
-
-                let upItem = NSMenuItem(title: "Nudge Higher (+0.10 pt)", action: #selector(nudgeCurrentAppHigher(_:)), keyEquivalent: "")
-                upItem.target = self
-                upItem.representedObject = menuTarget
-                nudgeMenu.addItem(upItem)
-
-                let downItem = NSMenuItem(title: "Nudge Lower (-0.10 pt)", action: #selector(nudgeCurrentAppLower(_:)), keyEquivalent: "")
-                downItem.target = self
-                downItem.representedObject = menuTarget
-                nudgeMenu.addItem(downItem)
-
-                nudgeMenu.addItem(.separator())
-                let openAppSettings = NSMenuItem(title: "All App Heights…", action: #selector(openSettingsClicked), keyEquivalent: "")
-                openAppSettings.target = self
-                nudgeMenu.addItem(openAppSettings)
-
-                let heightTitle: String
-                if multiDisplay, let dName = target.displayName, !dName.isEmpty {
-                    heightTitle = String(format: "Height in %@ (%@): %+.2f pt", targetApp.name, dName, curOffset)
-                } else {
-                    heightTitle = String(format: "Height in %@: %+.2f pt", targetApp.name, curOffset)
-                }
-                let heightItem = NSMenuItem(
-                    title: heightTitle,
-                    action: nil,
-                    keyEquivalent: ""
-                )
-                heightItem.submenu = nudgeMenu
-                menu.addItem(heightItem)
             }
+        }
+
+        if !engine.visualCalibrator.hasScreenCapturePermission {
+            let grantAutoAlignItem = NSMenuItem(
+                title: "Enable Auto-Align (Screen Recording)…",
+                action: #selector(requestScreenCaptureClicked),
+                keyEquivalent: ""
+            )
+            grantAutoAlignItem.target = self
+            menu.addItem(grantAutoAlignItem)
         }
 
         menu.addItem(.separator())
@@ -715,23 +680,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private final class CalibrationMenuTarget: NSObject {
-        let bundleID: String
-        let displayKey: String?
-
-        init(bundleID: String, displayKey: String?) {
-            self.bundleID = bundleID
-            self.displayKey = displayKey
-        }
-    }
-
     private func runBackgroundSyncPass() {
         guard engine.syncEngine.statusSnapshot().isEnabled else { return }
         engine.syncEngine.syncAsync { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.updateStatusIcon()
                 self?.settingsWindowController?.refreshUpdateAndSyncStatus()
-                self?.settingsWindowController?.refreshCalibrationOffsets()
+                self?.settingsWindowController?.refreshVisualAlignmentStatus()
                 self?.popoverController?.refreshIfShown()
             }
         }
@@ -768,35 +723,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.appendSpaceOnAccept.toggle()
     }
 
-    @objc private func toggleLiveVisualBaselineLock() {
-        let next = !engine.enableLiveVisualBaselineLock
-        engine.enableLiveVisualBaselineLock = next
-        if next && !engine.visualCalibrator.hasScreenCapturePermission {
-            if !engine.visualCalibrator.requestScreenCapturePermission() {
-                engine.visualCalibrator.openScreenRecordingSettings()
-            }
+    @objc private func requestScreenCaptureClicked() {
+        if !engine.visualCalibrator.requestScreenCapturePermission() {
+            engine.visualCalibrator.openScreenRecordingSettings()
         }
+        settingsWindowController?.refreshVisualAlignmentStatus()
+        popoverController?.refreshIfShown()
     }
 
     @objc private func toggleCurrentApp(_ sender: NSMenuItem) {
         guard let bundleID = sender.representedObject as? String else { return }
         inputGuard.toggleUserDisabled(bundleID: bundleID)
-    }
-
-    @objc private func nudgeCurrentAppHigher(_ sender: NSMenuItem) {
-        if let target = sender.representedObject as? CalibrationMenuTarget {
-            engine.nudgeVerticalAdjustment(forBundleID: target.bundleID, delta: 0.10, displayKey: target.displayKey)
-        } else if let bundleID = sender.representedObject as? String {
-            engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: 0.10)
-        }
-    }
-
-    @objc private func nudgeCurrentAppLower(_ sender: NSMenuItem) {
-        if let target = sender.representedObject as? CalibrationMenuTarget {
-            engine.nudgeVerticalAdjustment(forBundleID: target.bundleID, delta: -0.10, displayKey: target.displayKey)
-        } else if let bundleID = sender.representedObject as? String {
-            engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: -0.10)
-        }
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
@@ -828,18 +765,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onGrantAccessibility: { [weak self] in
                 self?.requestPermissionsClicked()
             },
+            onGrantScreenCapture: { [weak self] in
+                self?.requestScreenCaptureClicked()
+            },
             onToggleAppDisabled: { [weak self] bundleID in
                 guard let self else { return }
                 self.inputGuard.toggleUserDisabled(bundleID: bundleID)
                 self.updateStatusIcon()
                 self.popoverController?.refreshIfShown()
             },
-            onAdjustAppBaseline: { [weak self] bundleID, displayKey, delta in
-                guard let self else { return }
-                self.engine.nudgeVerticalAdjustment(forBundleID: bundleID, delta: Double(delta), displayKey: displayKey)
-            },
-            onOpenSettingsSection: { [weak self] section, range, displayKey in
-                self?.presentMainWindow(section: section, keyStatsRange: range, selectDisplayKey: displayKey)
+            onOpenSettingsSection: { [weak self] section, range in
+                self?.presentMainWindow(section: section, keyStatsRange: range)
             },
             onReviewUpdate: { [weak self] in
                 self?.autoUpdater.reviewAvailableUpdate()
@@ -870,8 +806,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func presentMainWindow(
         section: SettingsSection?,
-        keyStatsRange: StatsTimeRange? = nil,
-        selectDisplayKey: String? = nil
+        keyStatsRange: StatsTimeRange? = nil
     ) {
         let target = currentTargetApp()
         if settingsWindowController == nil {
@@ -885,8 +820,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsWindowController?.present(
             for: target,
             selectSection: section,
-            keyStatsRange: keyStatsRange,
-            selectDisplayKey: selectDisplayKey
+            keyStatsRange: keyStatsRange
         )
     }
 

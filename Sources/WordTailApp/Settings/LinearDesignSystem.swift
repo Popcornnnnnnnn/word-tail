@@ -219,68 +219,6 @@ struct LinearSlider: View {
     }
 }
 
-struct LinearOffsetStepper: View {
-    @Environment(\.colorScheme) private var scheme
-    let value: Double
-    let onChange: (Double) -> Void
-
-    @State private var hoverMinus = false
-    @State private var hoverPlus = false
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Button {
-                let step = NSEvent.modifierFlags.contains(.option) ? 0.50 : 0.10
-                onChange(value - step)
-            } label: {
-                Image(systemName: "minus")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 23, height: 24)
-                    .background(hoverMinus ? LinearUI.hoverFill(scheme) : .clear)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .onHover { hoverMinus = $0 }
-            .help("Lower 0.10 pt (⌥ Option-click for 0.50 pt)")
-
-            Rectangle()
-                .fill(LinearUI.hairline(scheme))
-                .frame(width: 1, height: 14)
-
-            Text(String(format: "%+.2f", value))
-                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                .foregroundStyle(.primary.opacity(0.88))
-                .frame(width: 50, height: 24)
-
-            Rectangle()
-                .fill(LinearUI.hairline(scheme))
-                .frame(width: 1, height: 14)
-
-            Button {
-                let step = NSEvent.modifierFlags.contains(.option) ? 0.50 : 0.10
-                onChange(value + step)
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 23, height: 24)
-                    .background(hoverPlus ? LinearUI.hoverFill(scheme) : .clear)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .onHover { hoverPlus = $0 }
-            .help("Raise 0.10 pt (⌥ Option-click for 0.50 pt)")
-        }
-        .background(LinearUI.subtleFill(scheme), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(LinearUI.controlBorder(scheme), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-}
-
 struct LinearActionButton: View {
     @Environment(\.colorScheme) private var scheme
     let title: String

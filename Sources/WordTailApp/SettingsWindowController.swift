@@ -61,8 +61,8 @@ struct SettingsView: View {
                         symbol: section.symbol,
                         isSelected: vm.selectedSection == section
                     ) {
-                        if section == .calibration {
-                            vm.refreshCalibrationOffsets()
+                        if section == .preferences {
+                            vm.refreshVisualAlignmentStatus()
                         } else if section == .insights {
                             vm.refreshInsights()
                         } else if section == .keyStats || section == .appStats {
@@ -96,6 +96,25 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
+            } else if !vm.hasScreenCapturePermission {
+                Button {
+                    vm.requestScreenCapturePermissionAndOpenSettings()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "viewfinder")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Enable Auto-Align")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 27)
+                    .background(LinearUI.accent, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+                .help("Grant Screen Recording permission for automatic per-line sub-pixel alignment")
             }
 
             Rectangle()
@@ -155,8 +174,6 @@ struct SettingsView: View {
             }
 
             switch vm.selectedSection {
-            case .calibration:
-                CalibrationSettingsView(vm: vm)
             case .keyStats:
                 KeyStatsSettingsView(vm: vm)
             case .appStats:
@@ -248,12 +265,8 @@ final class SettingsWindowController: NSWindowController {
     func present(
         for currentApp: (name: String, bundleID: String)?,
         selectSection: SettingsSection? = nil,
-        keyStatsRange: StatsTimeRange? = nil,
-        selectDisplayKey: String? = nil
+        keyStatsRange: StatsTimeRange? = nil
     ) {
-        if let selectDisplayKey {
-            viewModel.selectedDisplayKey = selectDisplayKey
-        }
         viewModel.refresh(currentApp: currentApp)
         if let selectSection {
             viewModel.selectedSection = selectSection
@@ -271,7 +284,7 @@ final class SettingsWindowController: NSWindowController {
         viewModel.refreshUpdateAndSyncStatus()
     }
 
-    func refreshCalibrationOffsets() {
-        viewModel.refreshCalibrationOffsets()
+    func refreshVisualAlignmentStatus() {
+        viewModel.refreshVisualAlignmentStatus()
     }
 }

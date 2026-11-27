@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 import WordTailCore
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case calibration = "Calibration"
     case keyStats = "KeyStats"
     case appStats = "App Stats"
     case insights = "Insights"
@@ -16,7 +15,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var symbol: String {
         switch self {
-        case .calibration: return "slider.horizontal.3"
         case .keyStats: return "keyboard"
         case .appStats: return "square.grid.2x2"
         case .insights: return "chart.bar.xaxis"
@@ -27,37 +25,13 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     }
 }
 
-struct AppOffsetItem: Identifiable, Equatable {
-    var id: String { bundleID }
-    let bundleID: String
-    let displayName: String
-    let icon: NSImage
-    var offset: Double
-    var isDisplaySpecificOverride: Bool = false
-    var hasPerDisplayOverrides: Bool = false
-}
-
-struct RunningAppChoice: Identifiable, Hashable {
-    var id: String { bundleID }
-    let bundleID: String
-    let name: String
-    let icon: NSImage
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(bundleID)
-    }
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.bundleID == rhs.bundleID
-    }
-}
-
 final class SettingsViewModel: ObservableObject {
     private let engine: TypingEngine?
     private let autoUpdater: AutoUpdateManager?
     private let onStateChange: () -> Void
     let isStaticShowcase: Bool
 
-    @Published var selectedSection: SettingsSection = .calibration
+    @Published var selectedSection: SettingsSection = .keyStats
 
     @Published var isEnabled: Bool {
         didSet {
@@ -69,26 +43,8 @@ final class SettingsViewModel: ObservableObject {
 
     @Published var isTrusted: Bool = false
 
-    @Published var globalOffset: Double {
-        didSet {
-            guard !isRefreshing, !isStaticShowcase else { return }
-            engine?.globalVerticalAdjustment = CGFloat(globalOffset)
-        }
-    }
-
-    @Published var liveVisualBaselineLock: Bool {
-        didSet {
-            guard !isRefreshing, !isStaticShowcase else { return }
-            engine?.enableLiveVisualBaselineLock = liveVisualBaselineLock
-            if liveVisualBaselineLock && !(engine?.visualCalibrator.hasScreenCapturePermission ?? false) {
-                requestScreenCapturePermissionAndOpenSettings()
-            } else {
-                refreshCalibrationOffsets(forceReloadList: false)
-            }
-        }
-    }
     @Published var hasScreenCapturePermission: Bool = false
-    @Published var visualLockStatusText: String = "Off"
+    @Published var visualLockStatusText: String = "Ready — locks automatically on the next typed line"
     @Published var visualLockLockedLines: Int = 0
     @Published var visualLockError: String? = nil
 
@@ -223,16 +179,6 @@ final class SettingsViewModel: ObservableObject {
         didSet {
             guard !isRefreshing, !isStaticShowcase else { return }
             engine?.enableGlobalHotkey = enableGlobalHotkey
-        }
-    }
-
-    @Published var appOffsets: [AppOffsetItem] = []
-    @Published var availableAppsToAdd: [RunningAppChoice] = []
-    @Published var connectedDisplays: [DisplayDescriptor] = []
-    @Published var selectedDisplayKey: String? = nil {
-        didSet {
-            guard !isRefreshing, !isStaticShowcase, oldValue != selectedDisplayKey else { return }
-            refreshCalibrationOffsets(forceReloadList: true)
         }
     }
 
@@ -397,8 +343,6 @@ final class SettingsViewModel: ObservableObject {
         self.onStateChange = onStateChange
         self.isStaticShowcase = false
         self.isEnabled = engine.isEnabled
-        self.globalOffset = Double(engine.globalVerticalAdjustment)
-        self.liveVisualBaselineLock = engine.enableLiveVisualBaselineLock
         self.hasScreenCapturePermission = engine.visualCalibrator.hasScreenCapturePermission
         self.ghostOpacity = Double(engine.ghostOpacity)
         self.appendSpaceOnAccept = engine.appendSpaceOnAccept
@@ -452,7 +396,6 @@ final class SettingsViewModel: ObservableObject {
     /// Isolated showcase initializer for generating documentation screenshots without touching user defaults or live state.
     init(
         showcaseSection: SettingsSection,
-        appOffsets: [AppOffsetItem],
         insights: TypingInsightsSnapshot,
         bigrams: [BigramHabitEntry],
         vocabulary: [VocabularyEntry],
@@ -468,10 +411,9 @@ final class SettingsViewModel: ObservableObject {
         self.selectedSection = showcaseSection
         self.isEnabled = true
         self.isTrusted = true
-        self.globalOffset = 0.70
-        self.liveVisualBaselineLock = false
-        self.hasScreenCapturePermission = false
-        self.visualLockStatusText = "Off"
+        self.hasScreenCapturePermission = true
+        self.visualLockLockedLines = 18
+        self.visualLockStatusText = "Active · Codex (+0.05 pt) · 18 lines locked"
         self.ghostOpacity = 0.38
         self.appendSpaceOnAccept = true
         self.autoCorrectOnSpace = true
@@ -495,10 +437,6 @@ final class SettingsViewModel: ObservableObject {
         self.chromiumBridge = true
         self.showDockIcon = true
         self.launchAtLogin = true
-        self.appOffsets = appOffsets
-        self.availableAppsToAdd = [
-            RunningAppChoice(bundleID: "com.apple.mail", name: "Mail", icon: NSImage(size: NSSize(width: 18, height: 18)))
-        ]
         self.insights = insights
         self.learnedBigrams = bigrams
         self.vocabularyEntries = vocabulary
@@ -577,44 +515,24 @@ final class SettingsViewModel: ObservableObject {
             }
         }
 
-        syncCalibrationOffsetsLocked(forceReloadList: true, currentApp: currentApp)
+        if let currentApp,
+           currentApp.bundleID != Bundle.main.bundleIdentifier,
+           !InputGuard.defaultExcludedBundleIDs.contains(currentApp.bundleID) {
+            lastTargetApp = currentApp
+        }
+        syncVisualAlignmentStatusLocked()
         refreshProUI()
     }
 
-    func refreshCalibrationOffsets(forceReloadList: Bool = false) {
+    func refreshVisualAlignmentStatus() {
         guard !isStaticShowcase, !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
-        syncCalibrationOffsetsLocked(forceReloadList: forceReloadList)
+        syncVisualAlignmentStatusLocked()
     }
 
-    private func syncCalibrationOffsetsLocked(
-        forceReloadList: Bool,
-        currentApp: (name: String, bundleID: String)? = nil
-    ) {
+    private func syncVisualAlignmentStatusLocked() {
         guard let engine, !isStaticShowcase else { return }
-
-        var displays = ScreenGeometry.connectedDisplays()
-        let activeDisplayKeys = Set(displays.map(\.key))
-        for savedKey in engine.verticalOffsetStore.allSavedDisplayKeys().sorted() where !activeDisplayKeys.contains(savedKey) {
-            displays.append(DisplayDescriptor(key: savedKey, name: Self.friendlyDisplayName(forKey: savedKey)))
-        }
-        if connectedDisplays != displays {
-            connectedDisplays = displays
-        }
-        if let sel = selectedDisplayKey, !displays.contains(where: { $0.key == sel }) {
-            selectedDisplayKey = nil
-        }
-
-        let nextGlobal = engine.verticalOffsetStore.globalOffset
-        if abs(globalOffset - nextGlobal) > 0.0001 {
-            globalOffset = nextGlobal
-        }
-
-        let nextLiveLock = engine.enableLiveVisualBaselineLock
-        if liveVisualBaselineLock != nextLiveLock {
-            liveVisualBaselineLock = nextLiveLock
-        }
         let vSnap = engine.visualCalibrator.statusSnapshot()
         if hasScreenCapturePermission != vSnap.hasPermission {
             hasScreenCapturePermission = vSnap.hasPermission
@@ -625,93 +543,10 @@ final class SettingsViewModel: ObservableObject {
         if visualLockError != vSnap.lastError {
             visualLockError = vSnap.lastError
         }
-        let nextStatus = Self.formatVisualLockStatus(enabled: nextLiveLock, snapshot: vSnap)
+        let nextStatus = Self.formatVisualLockStatus(snapshot: vSnap)
         if visualLockStatusText != nextStatus {
             visualLockStatusText = nextStatus
         }
-
-        let merged = engine.verticalOffsetStore.mergedAppOffsets(forDisplayKey: selectedDisplayKey)
-        if !forceReloadList,
-           currentApp == nil,
-           Set(appOffsets.map(\.bundleID)) == Set(merged.keys) {
-            for idx in appOffsets.indices {
-                let bid = appOffsets[idx].bundleID
-                if let nextVal = merged[bid], abs(appOffsets[idx].offset - nextVal) > 0.0001 {
-                    appOffsets[idx].offset = nextVal
-                }
-                let isSpecific = selectedDisplayKey.map {
-                    engine.verticalOffsetStore.hasDisplaySpecificOverride(forBundleID: bid, displayKey: $0)
-                } ?? false
-                if appOffsets[idx].isDisplaySpecificOverride != isSpecific {
-                    appOffsets[idx].isDisplaySpecificOverride = isSpecific
-                }
-                let hasAnyDisplay = engine.verticalOffsetStore.hasAnyDisplayOverride(forBundleID: bid)
-                if appOffsets[idx].hasPerDisplayOverrides != hasAnyDisplay {
-                    appOffsets[idx].hasPerDisplayOverrides = hasAnyDisplay
-                }
-            }
-            return
-        }
-
-        reloadCalibrationAppsLocked(merged: merged, currentApp: currentApp)
-    }
-
-    private func reloadCalibrationAppsLocked(
-        merged: [String: Double],
-        currentApp: (name: String, bundleID: String)?
-    ) {
-        guard let engine else { return }
-        var runningNames: [String: String] = [:]
-        for app in NSWorkspace.shared.runningApplications where Self.isUserFacingRunningApp(app) {
-            guard let bid = app.bundleIdentifier,
-                  bid != Bundle.main.bundleIdentifier,
-                  !InputGuard.defaultExcludedBundleIDs.contains(bid) else {
-                continue
-            }
-            runningNames[bid] = app.localizedName ?? Self.appName(forBundleID: bid)
-        }
-        if let currentApp,
-           currentApp.bundleID != Bundle.main.bundleIdentifier,
-           !InputGuard.defaultExcludedBundleIDs.contains(currentApp.bundleID) {
-            runningNames[currentApp.bundleID] = currentApp.name
-            lastTargetApp = currentApp
-        }
-
-        appOffsets = merged.map { bid, val in
-            AppOffsetItem(
-                bundleID: bid,
-                displayName: Self.friendlyAppTitle(bundleID: bid, rawName: runningNames[bid] ?? Self.appName(forBundleID: bid)),
-                icon: Self.appIcon(forBundleID: bid),
-                offset: val,
-                isDisplaySpecificOverride: selectedDisplayKey.map {
-                    engine.verticalOffsetStore.hasDisplaySpecificOverride(forBundleID: bid, displayKey: $0)
-                } ?? false,
-                hasPerDisplayOverrides: engine.verticalOffsetStore.hasAnyDisplayOverride(forBundleID: bid)
-            )
-        }
-        .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-
-        let existingIDs = Set(appOffsets.map(\.bundleID))
-        availableAppsToAdd = runningNames
-            .filter { !existingIDs.contains($0.key) }
-            .map {
-                RunningAppChoice(
-                    bundleID: $0.key,
-                    name: Self.friendlyAppTitle(bundleID: $0.key, rawName: $0.value),
-                    icon: Self.appIcon(forBundleID: $0.key)
-                )
-            }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    private static func friendlyDisplayName(forKey key: String) -> String {
-        if key.hasPrefix("builtin") {
-            return "Built-in Display"
-        }
-        if key.hasPrefix("ext:") {
-            return "External Display"
-        }
-        return key
     }
 
     func refreshInsights() {
@@ -905,75 +740,26 @@ final class SettingsViewModel: ObservableObject {
         return Self.appIcon(forBundleID: bundleID)
     }
 
-    func updateOffset(for bundleID: String, to newValue: Double) {
-        let sanitized = VerticalOffsetStore.sanitize(newValue)
-        if let idx = appOffsets.firstIndex(where: { $0.bundleID == bundleID }) {
-            appOffsets[idx].offset = sanitized
-            if selectedDisplayKey != nil {
-                appOffsets[idx].isDisplaySpecificOverride = true
-                appOffsets[idx].hasPerDisplayOverrides = true
-            }
-        }
-        engine?.setVerticalAdjustment(CGFloat(sanitized), forBundleID: bundleID, displayKey: selectedDisplayKey)
-    }
-
-    func setGlobalOffsetClamped(_ newValue: Double) {
-        globalOffset = VerticalOffsetStore.sanitize(newValue)
-    }
-
-    func addAppOverride(bundleID: String) {
-        guard let engine else { return }
-        let startOffset = Double(engine.verticalAdjustment(forBundleID: bundleID, displayKey: selectedDisplayKey))
-        engine.setVerticalAdjustment(CGFloat(startOffset), forBundleID: bundleID, displayKey: selectedDisplayKey)
-        refreshCalibrationOffsets(forceReloadList: true)
-    }
-
-    func chooseApplicationFromDisk() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Application"
-        panel.directoryURL = URL(fileURLWithPath: "/Applications")
-        panel.allowedContentTypes = [.applicationBundle]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        if panel.runModal() == .OK,
-           let url = panel.url,
-           let bundle = Bundle(url: url),
-           let bid = bundle.bundleIdentifier {
-            addAppOverride(bundleID: bid)
-        }
-    }
-
-    func removeOrResetApp(bundleID: String) {
-        engine?.setVerticalAdjustment(nil, forBundleID: bundleID, displayKey: selectedDisplayKey)
-        refreshCalibrationOffsets(forceReloadList: true)
-    }
-
-    func resetGlobalOffset() {
-        globalOffset = VerticalOffsetStore.sanitize(Double(ScreenGeometry.defaultVerticalOffset))
-    }
-
     func requestScreenCapturePermissionAndOpenSettings() {
         guard let engine, !isStaticShowcase else { return }
         let granted = engine.visualCalibrator.requestScreenCapturePermission()
         if !granted {
             engine.visualCalibrator.openScreenRecordingSettings()
         }
-        refreshCalibrationOffsets(forceReloadList: false)
+        refreshVisualAlignmentStatus()
     }
 
     func resetVisualBaselineCalibration() {
         guard let engine, !isStaticShowcase else { return }
         engine.resetVisualBaselineCalibration()
-        refreshCalibrationOffsets(forceReloadList: false)
+        refreshVisualAlignmentStatus()
     }
 
     private static func formatVisualLockStatus(
-        enabled: Bool,
         snapshot: VisualLockStatusSnapshot
     ) -> String {
-        guard enabled else { return "Off" }
         guard snapshot.hasPermission else {
-            return "Screen Recording permission required"
+            return "Screen Recording permission required for pixel-exact lock"
         }
         if let err = snapshot.lastError, !err.isEmpty {
             return "Capture paused — \(err)"
@@ -1155,7 +941,7 @@ final class SettingsViewModel: ObservableObject {
             isInstallingUpdate = autoUpdater.isInstalling
             updateStatusText = autoUpdater.statusMessage
         }
-        syncCalibrationOffsetsLocked(forceReloadList: false)
+        syncVisualAlignmentStatusLocked()
         refreshProUI()
     }
 
@@ -1198,7 +984,7 @@ final class SettingsViewModel: ObservableObject {
         hourlyTrendBuckets = hourly.buckets
         busiestKeyHour = hourly.busiestKeyHour
         busiestClickHour = hourly.busiestClickHour
-        syncCalibrationOffsetsLocked(forceReloadList: false)
+        syncVisualAlignmentStatusLocked()
         isRefreshing = false
         refreshProUI()
         onStateChange()
@@ -1647,21 +1433,6 @@ final class SettingsViewModel: ObservableObject {
             return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
         }
         return bundleID
-    }
-
-    static func isUserFacingRunningApp(_ app: NSRunningApplication) -> Bool {
-        if app.activationPolicy == .regular {
-            return true
-        }
-        guard app.activationPolicy == .accessory,
-              let url = app.bundleURL,
-              url.pathExtension == "app" else {
-            return false
-        }
-        let path = url.path
-        let inAppsFolder = path.hasPrefix("/Applications/")
-            || path.hasPrefix(NSHomeDirectory() + "/Applications/")
-        return inAppsFolder && !path.contains(".app/Contents/") && !path.contains(".framework/")
     }
 
     static func appIcon(forBundleID bundleID: String) -> NSImage {
