@@ -19,7 +19,15 @@ final class AutoUpdateManager: ObservableObject {
     static let autoCheckDefaultsKey = "WordTailAutoCheckUpdates"
     static let lastPromptedTagDefaultsKey = "WordTailLastPromptedReleaseTag"
     static let latestReleaseEndpoint = URL(string: "https://api.github.com/repos/Popcornnnnnnnn/word-tail/releases/latest")!
-    nonisolated static let expectedBundleID = "app.wordtail.macos"
+    nonisolated static let expectedBundleID = AppLaunchGuard.expectedBundleIdentifier
+
+    nonisolated static var isBundledApp: Bool {
+        AppLaunchGuard.isBundledApp(
+            bundleURL: Bundle.main.bundleURL,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            shortVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        )
+    }
 
     @Published var autoCheckEnabled: Bool {
         didSet {
@@ -58,7 +66,11 @@ final class AutoUpdateManager: ObservableObject {
         } else {
             self.autoCheckEnabled = UserDefaults.standard.bool(forKey: Self.autoCheckDefaultsKey)
         }
-        self.statusMessage = "Current version v\(Self.currentAppVersion())"
+        if Self.isBundledApp {
+            self.statusMessage = "Current version v\(Self.currentAppVersion())"
+        } else {
+            self.statusMessage = "Auto-updates disabled in development binary"
+        }
     }
 
     var currentVersion: String {
@@ -66,10 +78,17 @@ final class AutoUpdateManager: ObservableObject {
     }
 
     static func currentAppVersion() -> String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.6.0"
+        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+            let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return "dev"
     }
 
     func startLifecycle() {
+        guard Self.isBundledApp else { return }
         rescheduleBackgroundTimer()
         guard autoCheckEnabled, !initialCheckScheduled else { return }
         initialCheckScheduled = true
@@ -82,7 +101,7 @@ final class AutoUpdateManager: ObservableObject {
     private func rescheduleBackgroundTimer() {
         periodicTimer?.invalidate()
         periodicTimer = nil
-        guard autoCheckEnabled else { return }
+        guard Self.isBundledApp, autoCheckEnabled else { return }
         periodicTimer = Timer.scheduledTimer(withTimeInterval: 6.0 * 3600.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.autoCheckEnabled else { return }
@@ -92,6 +111,17 @@ final class AutoUpdateManager: ObservableObject {
     }
 
     func checkForUpdates(userInitiated: Bool) {
+        guard Self.isBundledApp else {
+            statusMessage = "Auto-updates disabled in development binary"
+            onUpdateStateChanged?()
+            if userInitiated {
+                showInfoAlert(
+                    title: "Updates Unavailable in Development Binary",
+                    message: "Run WordTail from a signed WordTail.app bundle in /Applications to check for or install updates."
+                )
+            }
+            return
+        }
         if isInstalling {
             if userInitiated {
                 showUpdateWindow()
@@ -340,15 +370,11 @@ final class AutoUpdateManager: ObservableObject {
     }
 
     private nonisolated static func resolveTargetAppBundleURL() -> URL? {
-        let mainURL = Bundle.main.bundleURL.standardizedFileURL
-        if mainURL.pathExtension == "app" {
-            return mainURL
-        }
-        let standardApps = URL(fileURLWithPath: "/Applications/WordTail.app")
-        if FileManager.default.fileExists(atPath: standardApps.path) {
-            return standardApps
-        }
-        return nil
+        AppLaunchGuard.resolveAutoUpdateTargetBundleURL(
+            bundleURL: Bundle.main.bundleURL,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            shortVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        )
     }
 
     private nonisolated static func unpackAndVerifySignedApp(
@@ -455,43 +481,11 @@ final class AutoUpdateManager: ObservableObject {
         targetAppURL: URL,
         stageRoot: URL
     ) throws {
-        let script = """
-        PID="$1"
-        SRC="$2"
-        DST="$3"
-        STAGE="$4"
-        i=0
-        while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 60 ]; do
-            sleep 0.2
-            i=$((i + 1))
-        done
-        BACKUP="${DST}.backup"
-        rm -rf "$BACKUP"
-        if [ -d "$DST" ]; then
-            if ! mv "$DST" "$BACKUP"; then
-                rm -rf "$STAGE"
-                exit 1
-            fi
-        fi
-        if mv "$SRC" "$DST"; then
-            rm -rf "$BACKUP" "$STAGE"
-            sleep 0.25
-            open -n "$DST" --args --open-settings
-            exit 0
-        else
-            if [ -d "$BACKUP" ]; then
-                mv "$BACKUP" "$DST"
-            fi
-            rm -rf "$STAGE"
-            exit 1
-        fi
-        """
-
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/sh")
         proc.arguments = [
             "-c",
-            script,
+            AppLaunchGuard.swapAndRelaunchScript,
             "wordtail-updater",
             String(currentPID),
             stagedAppURL.path,

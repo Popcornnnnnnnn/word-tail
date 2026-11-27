@@ -44,8 +44,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settingsWindowController: SettingsWindowController?
     private var statusBarContextMenu: NSMenu?
     private var popoverController: MenuBarPopoverController?
+    private let instanceLock: SingleInstanceLock?
+    private var reopenObserver: NSObjectProtocol?
+
+    init(instanceLock: SingleInstanceLock? = nil) {
+        self.instanceLock = instanceLock
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        reopenObserver = DistributedNotificationCenter.default().addObserver(
+            forName: AppLaunchGuard.reopenSettingsNotificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.openSettingsClicked()
+            }
+        }
         applyDockVisibilityPreference()
         setupMainMenu()
 
@@ -140,6 +156,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let reopenObserver {
+            DistributedNotificationCenter.default().removeObserver(reopenObserver)
+            self.reopenObserver = nil
+        }
         engine.flushAllTelemetry()
     }
 

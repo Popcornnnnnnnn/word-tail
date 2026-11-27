@@ -1,8 +1,29 @@
 import AppKit
+import Darwin
 import Foundation
 import WordTailCore
 
-if CommandLine.arguments.contains("--import-keystats") {
+switch AppLaunchGuard.parseCLIAction(arguments: CommandLine.arguments) {
+case .showHelp:
+    print(AppLaunchGuard.helpText)
+    exit(0)
+
+case .showVersion:
+    print(
+        AppLaunchGuard.formatVersionLine(
+            bundleURL: Bundle.main.bundleURL,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            shortVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+            buildVersion: Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        )
+    )
+    exit(0)
+
+case .invalidUsage(let message):
+    fputs("\(message)\n\n\(AppLaunchGuard.helpText)\n", stderr)
+    exit(2)
+
+case .importKeyStats:
     let store = KeyStatsStore()
     do {
         let report = try store.importFromInstalledKeyStats(includeSyncedPeers: true)
@@ -22,11 +43,8 @@ if CommandLine.arguments.contains("--import-keystats") {
         fputs("KeyStats import failed: \(error.localizedDescription)\n", stderr)
         exit(1)
     }
-}
 
-if let flagIdx = CommandLine.arguments.firstIndex(of: "--export-showcase-images"),
-   flagIdx + 1 < CommandLine.arguments.count {
-    let targetDir = CommandLine.arguments[flagIdx + 1]
+case .exportShowcaseImages(let targetDir):
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
     MainActor.assumeIsolated {
@@ -38,9 +56,47 @@ if let flagIdx = CommandLine.arguments.firstIndex(of: "--export-showcase-images"
             exit(1)
         }
     }
-}
 
-let app = NSApplication.shared
-let delegate = MainActor.assumeIsolated { AppDelegate() }
-app.delegate = delegate
-app.run()
+case .launchGUI(let openSettings, let background):
+    let currentPID = ProcessInfo.processInfo.processIdentifier
+
+    func liveOtherRunningApps() -> [NSRunningApplication] {
+        NSRunningApplication.runningApplications(withBundleIdentifier: AppLaunchGuard.expectedBundleIdentifier)
+            .filter { $0.processIdentifier != currentPID && !$0.isTerminated && Darwin.kill($0.processIdentifier, 0) == 0 }
+    }
+
+    func notifyExistingInstance(_ runningApps: [NSRunningApplication]) {
+        guard !background || openSettings else { return }
+        if let existing = runningApps.first {
+            existing.activate()
+        }
+        DistributedNotificationCenter.default().postNotificationName(
+            AppLaunchGuard.reopenSettingsNotificationName,
+            object: nil,
+            userInfo: nil,
+            deliverImmediately: true
+        )
+    }
+
+    let otherRunningApps = liveOtherRunningApps()
+    if !otherRunningApps.isEmpty {
+        notifyExistingInstance(otherRunningApps)
+        exit(0)
+    }
+
+    let instanceLock: SingleInstanceLock?
+    switch SingleInstanceLock.acquire() {
+    case .acquired(let lock):
+        instanceLock = lock
+    case .alreadyRunning:
+        notifyExistingInstance(liveOtherRunningApps())
+        exit(0)
+    case .unavailable:
+        instanceLock = nil
+    }
+
+    let app = NSApplication.shared
+    let delegate = MainActor.assumeIsolated { AppDelegate(instanceLock: instanceLock) }
+    app.delegate = delegate
+    app.run()
+}

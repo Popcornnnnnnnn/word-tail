@@ -414,7 +414,9 @@ final class SettingsViewModel: ObservableObject {
             self.isInstallingUpdate = autoUpdater.isInstalling
             self.updateStatusText = autoUpdater.statusMessage
         } else {
-            self.updateStatusText = "Current version v\(AutoUpdateManager.currentAppVersion())"
+            self.updateStatusText = AutoUpdateManager.isBundledApp
+                ? "Current version v\(AutoUpdateManager.currentAppVersion())"
+                : "Development build"
         }
         self.proCallbacks = makeProCallbacks()
         refresh(currentApp: currentApp)
