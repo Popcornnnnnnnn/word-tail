@@ -165,6 +165,7 @@ final class AXCaretContext {
         // Path 1: Standard character-range AX API (NSTextView, NSTextField, standard inputs).
         if let selectedRange = copySelectedRange(element) {
             guard selectedRange.length == 0 else { return nil }
+            let boundaryWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: fallbackBuffer)
 
             var textBefore = fallbackBuffer
             var usedFallbackText = true
@@ -181,7 +182,12 @@ final class AXCaretContext {
             // so 50,000-character Notes/Mail/TextEdit drafts never copy the entire document on every keystroke!
             if beforeLen == 0 || probedBefore != nil {
                 if let rawSlice = probedBefore {
-                    let slice = ObviousTypoCorrector.cleanAccessibilityText(rawSlice)
+                    let slice = reconcileRangeSliceIfNeeded(
+                        ObviousTypoCorrector.cleanAccessibilityText(rawSlice),
+                        element: element,
+                        expectedTrailingWord: boundaryWord,
+                        allowMarkerProbe: isChromium || isWebKit
+                    )
                     if slice.contains(where: { $0.isASCII && $0.isLetter }) {
                         textBefore = slice
                         usedFallbackText = false
@@ -213,10 +219,17 @@ final class AXCaretContext {
                       !fullValue.isEmpty {
                 let ns = fullValue as NSString
                 if selectedRange.location <= ns.length {
+                    var reconciledPrefix: String?
                     if beforeLen > 0 {
-                        let candidate = ObviousTypoCorrector.cleanAccessibilityText(
-                            ns.substring(with: NSRange(location: windowStart, length: beforeLen))
+                        let candidate = reconcileRangeSliceIfNeeded(
+                            ObviousTypoCorrector.cleanAccessibilityText(
+                                ns.substring(with: NSRange(location: windowStart, length: beforeLen))
+                            ),
+                            element: element,
+                            expectedTrailingWord: boundaryWord,
+                            allowMarkerProbe: isChromium || isWebKit
                         )
+                        reconciledPrefix = candidate
                         if candidate.contains(where: { $0.isASCII && $0.isLetter }) {
                             textBefore = candidate
                             usedFallbackText = false
@@ -224,7 +237,7 @@ final class AXCaretContext {
                     }
 
                     if windowStart == 0 {
-                        let fullPrefix = ObviousTypoCorrector.cleanAccessibilityText(
+                        let fullPrefix = reconciledPrefix ?? ObviousTypoCorrector.cleanAccessibilityText(
                             ns.substring(with: NSRange(location: 0, length: selectedRange.location))
                         )
                         isAtDocumentStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: fullPrefix)
@@ -804,7 +817,12 @@ final class AXCaretContext {
         var isAtDocumentStart = false
 
         // 1. O(1) bounded prefix + document-start check across soft-wrapped lines (never copies giant documents):
-        if let resolved = readBoundedMarkerContext(element: element, endMarker: endMarker) {
+        let boundaryWord = ObviousTypoCorrector.extractTrailingStandaloneWord(from: fallbackBuffer)
+        if let resolved = readBoundedMarkerContext(
+            element: element,
+            endMarker: endMarker,
+            sentenceBoundaryWord: boundaryWord
+        ) {
             if resolved.prefix.contains(where: { $0.isASCII && $0.isLetter }) {
                 textBefore = resolved.prefix
                 usedFallbackText = false
@@ -1067,6 +1085,42 @@ final class AXCaretContext {
         return .applied
     }
 
+    private func copySelectedTextMarkerRange(_ element: AXUIElement) -> AXTextMarkerRange? {
+        var markerRangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            "AXSelectedTextMarkerRange" as CFString,
+            &markerRangeRef
+        ) == .success, let markerRangeRef,
+              CFGetTypeID(markerRangeRef) == AXTextMarkerRangeGetTypeID() else {
+            return nil
+        }
+        return (markerRangeRef as! AXTextMarkerRange)
+    }
+
+    private func reconcileRangeSliceIfNeeded(
+        _ slice: String,
+        element: AXUIElement,
+        expectedTrailingWord: String?,
+        allowMarkerProbe: Bool = true
+    ) -> String {
+        guard allowMarkerProbe,
+              ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(
+                  inFullSlice: slice,
+                  forWord: expectedTrailingWord
+              ),
+              let markerRange = copySelectedTextMarkerRange(element) else {
+            return slice
+        }
+        let endMarker = AXTextMarkerRangeCopyEndMarker(markerRange)
+        let paraPrefix = currentParagraphPrefix(element: element, endMarker: endMarker)
+        return ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+            fullSlice: slice,
+            paragraphSlice: paraPrefix,
+            firstWord: expectedTrailingWord
+        )
+    }
+
     /// Live lightweight inspection called on `Space` so even 1- or 2-letter sentence starters ("do ", "in ", "we ")
     /// typed faster than 16ms have exact ground-truth document-start & period context without race conditions.
     func inspectLiveSentenceContext(
@@ -1088,7 +1142,11 @@ final class AXCaretContext {
             let beforeLen = selectedRange.location - windowStart
             if beforeLen > 0,
                let rawSlice = stringForRange(element, location: windowStart, length: beforeLen) {
-                let slice = ObviousTypoCorrector.cleanAccessibilityText(rawSlice)
+                let slice = reconcileRangeSliceIfNeeded(
+                    ObviousTypoCorrector.cleanAccessibilityText(rawSlice),
+                    element: element,
+                    expectedTrailingWord: expectedTrailingWord
+                )
                 if ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
                     let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
                     return (slice, docStart, windowStart == 0)
@@ -1097,8 +1155,12 @@ final class AXCaretContext {
             if let fullValue = copyStringAttribute(element, attribute: kAXValueAttribute as String), !fullValue.isEmpty {
                 let ns = fullValue as NSString
                 if selectedRange.location <= ns.length {
-                    let slice = ObviousTypoCorrector.cleanAccessibilityText(
-                        ns.substring(with: NSRange(location: windowStart, length: beforeLen))
+                    let slice = reconcileRangeSliceIfNeeded(
+                        ObviousTypoCorrector.cleanAccessibilityText(
+                            ns.substring(with: NSRange(location: windowStart, length: beforeLen))
+                        ),
+                        element: element,
+                        expectedTrailingWord: expectedTrailingWord
                     )
                     if ObviousTypoCorrector.normalizeApostrophes(slice).lowercased().hasSuffix(expectedNorm) {
                         let docStart = (windowStart == 0) && Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: slice)
@@ -1109,10 +1171,8 @@ final class AXCaretContext {
         }
 
         // 2. WebKit / Chromium / Electron O(1) bounded AXTextMarker read
-        var markerRangeRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, "AXSelectedTextMarkerRange" as CFString, &markerRangeRef) == .success,
-           let markerRangeRef {
-            let endMarker = AXTextMarkerRangeCopyEndMarker(markerRangeRef as! AXTextMarkerRange)
+        if let markerRange = copySelectedTextMarkerRange(element) {
+            let endMarker = AXTextMarkerRangeCopyEndMarker(markerRange)
             if let resolved = readBoundedMarkerContext(
                 element: element, endMarker: endMarker, sentenceBoundaryWord: expectedTrailingWord
             ),
@@ -1234,19 +1294,18 @@ final class AXCaretContext {
                         if let raw = stringForTextMarkerRange(element: container, markerRange: fullRange) {
                             var cleaned = ObviousTypoCorrector.cleanAccessibilityText(raw)
                             if cleaned.count <= 300 {
-                                // When a rich `contenteditable` editor (`<p>All done.</p><p>also</p>`) omits `\n` in `fullRange`
-                                // (`"All done.also"`), verify against `AXParagraphTextMarkerRangeForTextMarker` so paragraph breaks stay intact!
-                                if let sentenceBoundaryWord,
-                                   cleaned.count > sentenceBoundaryWord.count {
-                                    let before = cleaned.dropLast(min(cleaned.count, sentenceBoundaryWord.count))
-                                    if before.last?.isWhitespace != true {
-                                        let paraPrefix = currentParagraphPrefix(element: element, endMarker: endMarker)
-                                        cleaned = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
-                                            fullSlice: cleaned,
-                                            paragraphSlice: paraPrefix,
-                                            firstWord: sentenceBoundaryWord
-                                        )
-                                    }
+                                // When a rich `contenteditable` editor (`<p>All done.</p><p>also</p>` or `<p>...suggestions.</p><ol><li>there</li></ol>`)
+                                // omits `\n` in `fullRange`, verify against `AXParagraphTextMarkerRangeForTextMarker` so paragraph breaks stay intact!
+                                if ObviousTypoCorrector.mayNeedParagraphBoundaryReconciliation(
+                                    inFullSlice: cleaned,
+                                    forWord: sentenceBoundaryWord
+                                ) {
+                                    let paraPrefix = currentParagraphPrefix(element: element, endMarker: endMarker)
+                                    cleaned = ObviousTypoCorrector.reconcileParagraphBoundaryInFullSlice(
+                                        fullSlice: cleaned,
+                                        paragraphSlice: paraPrefix,
+                                        firstWord: sentenceBoundaryWord
+                                    )
                                 }
                                 let docStart = Self.isCurrentWordAtVeryStartOfDocument(fullTextBeforeCursor: cleaned)
                                 return (String(cleaned.suffix(120)), docStart, cleaned.count <= 120)
