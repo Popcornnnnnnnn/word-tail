@@ -897,20 +897,16 @@ final class TypingEngine {
         }
 
         if type != .keyDown {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Bundle.main.bundleIdentifier {
-                    return
-                }
+            if NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Bundle.main.bundleIdentifier {
                 let isClick = (type != .scrollWheel)
+                lastLiveSample = nil
+                dismissOverlay(clearBuffer: isClick)
                 if isClick {
-                    self.habitTracker.resetSessionContext()
-                    self.phrasePredictor.resetSentenceWindow()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.habitTracker.resetSessionContext()
+                        self?.phrasePredictor.resetSentenceWindow()
+                    }
                 }
-                self.stateLock.lock()
-                self.lastLiveSample = nil
-                self.stateLock.unlock()
-                self.dismissOverlay(clearBuffer: isClick)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -972,9 +968,9 @@ final class TypingEngine {
                 rollingBuffer = String(rollingBuffer.suffix(80))
             }
 
+            injectUnicodeString(acceptedChunk, proxy: proxy)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.injectUnicodeString(acceptedChunk)
                 if self.enableKeyStatsTracking {
                     self.keyStatsStore.recordWordTailCompletion(
                         charsSaved: max(1, acceptedChunk.count),
@@ -989,11 +985,9 @@ final class TypingEngine {
         }
 
         let hasCommandOrCtrlOrOption = flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate)
-        if hasCommandOrCtrlOrOption {
+        if hasCommandOrCtrlOrOption && keyCode != kVK_Delete {
             pendingSpaceUndo = nil
-            DispatchQueue.main.async { [weak self] in
-                self?.dismissOverlay(clearBuffer: true)
-            }
+            dismissOverlay(clearBuffer: true)
             return Unmanaged.passUnretained(event)
         }
 
@@ -1194,12 +1188,12 @@ final class TypingEngine {
             if rollingBuffer.count > 80 {
                 rollingBuffer = String(rollingBuffer.suffix(80))
             }
+            if deleteCount > 0 {
+                injectBackspaces(count: deleteCount, proxy: proxy)
+            }
+            injectUnicodeString(textToInsert, proxy: proxy)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if deleteCount > 0 {
-                    self.injectBackspaces(count: deleteCount)
-                }
-                self.injectUnicodeString(textToInsert)
                 if self.enableKeyStatsTracking {
                     self.keyStatsStore.recordWordTailCompletion(
                         charsSaved: max(1, textToInsert.count - deleteCount),
@@ -1288,6 +1282,12 @@ final class TypingEngine {
                 if rollingBuffer.count > 80 {
                     rollingBuffer = String(rollingBuffer.suffix(80))
                 }
+                if diff.deleteCount > 0 {
+                    injectBackspaces(count: diff.deleteCount, proxy: proxy)
+                }
+                if !diff.insertText.isEmpty {
+                    injectUnicodeString(diff.insertText, proxy: proxy)
+                }
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     let origNorm = ObviousTypoCorrector.normalizeApostrophes(baseTrigger).lowercased()
@@ -1299,12 +1299,6 @@ final class TypingEngine {
                         || ObviousTypoCorrector.dictionaryProperNounCasing(forLowerWord: origNorm) != nil
                     if self.enableHabitLearning && isSubstantiveWordOrBrandRule {
                         self.adaptiveStore.recordUndo(forTrigger: baseTrigger)
-                    }
-                    if diff.deleteCount > 0 {
-                        self.injectBackspaces(count: diff.deleteCount)
-                    }
-                    if !diff.insertText.isEmpty {
-                        self.injectUnicodeString(diff.insertText)
                     }
                     self.schedulePredictionQuery()
                 }
@@ -1355,10 +1349,10 @@ final class TypingEngine {
                 }
                 return Unmanaged.passUnretained(event)
             }
+            dismissOverlay(clearBuffer: true)
             DispatchQueue.main.async { [weak self] in
                 self?.habitTracker.resetSessionContext()
                 self?.phrasePredictor.resetSentenceWindow()
-                self?.dismissOverlay(clearBuffer: true)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -1474,12 +1468,13 @@ final class TypingEngine {
                             delimiter: outDelim
                         )
 
+                        if diff.deleteCount > 0 {
+                            injectBackspaces(count: diff.deleteCount, proxy: proxy)
+                        }
+                        injectUnicodeString(diff.insertText + outDelim, proxy: proxy)
+
                         DispatchQueue.main.async { [weak self] in
                             guard let self else { return }
-                            if diff.deleteCount > 0 {
-                                self.injectBackspaces(count: diff.deleteCount)
-                            }
-                            self.injectUnicodeString(diff.insertText + outDelim)
                             if self.enableHabitLearning {
                                 if let completed = self.habitTracker.recordTypedCharacters(outDelim, bundleID: bid) {
                                     self.historyStore.recordNaturalWordUsage(
@@ -1580,9 +1575,7 @@ final class TypingEngine {
                 activeSnapshot = nil
                 schedulePredictionQuery()
             } else {
-                DispatchQueue.main.async { [weak self] in
-                    self?.dismissOverlay(clearBuffer: false)
-                }
+                dismissOverlay(clearBuffer: false)
             }
         }
 
@@ -1852,7 +1845,7 @@ final class TypingEngine {
         return nil
     }
 
-    private func injectBackspaces(count: Int) {
+    private func injectBackspaces(count: Int, proxy: CGEventTapProxy? = nil) {
         guard count > 0, let src = CGEventSource(stateID: .hidSystemState) else { return }
         let vkDelete = CGKeyCode(kVK_Delete)
         for _ in 0..<count {
@@ -1864,12 +1857,17 @@ final class TypingEngine {
             up.flags = []
             down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
             up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
+            if let proxy {
+                down.tapPostEvent(proxy)
+                up.tapPostEvent(proxy)
+            } else {
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
         }
     }
 
-    private func injectUnicodeString(_ text: String) {
+    private func injectUnicodeString(_ text: String, proxy: CGEventTapProxy? = nil) {
         let utf16 = Array(text.utf16)
         guard !utf16.isEmpty,
               let src = CGEventSource(stateID: .hidSystemState) else {
@@ -1900,12 +1898,17 @@ final class TypingEngine {
                 down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
                 up.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: base)
             }
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
+            if let proxy {
+                down.tapPostEvent(proxy)
+                up.tapPostEvent(proxy)
+            } else {
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
         }
     }
 
-    private func injectLeftArrows(count: Int) {
+    private func injectLeftArrows(count: Int, proxy: CGEventTapProxy? = nil) {
         guard count > 0, let src = CGEventSource(stateID: .hidSystemState) else { return }
         let vkLeft = CGKeyCode(kVK_LeftArrow)
         for _ in 0..<count {
@@ -1917,8 +1920,13 @@ final class TypingEngine {
             up.flags = []
             down.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
             up.setIntegerValueField(.eventSourceUserData, value: Self.injectedEventTag)
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
+            if let proxy {
+                down.tapPostEvent(proxy)
+                up.tapPostEvent(proxy)
+            } else {
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
         }
     }
 

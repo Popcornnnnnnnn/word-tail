@@ -236,8 +236,11 @@ public final class AdaptiveCorrectionStore {
     private func isMutedLocked(_ key: String) -> Bool {
         if state.mutedTriggers.contains(key) { return true }
         if state.customRules[key] != nil { return false }
-        if state.syncRecords?[key]?.isDeleted == true { return false }
-        var totalUndos = state.undoCounts[key, default: 0]
+        let localUndos = state.undoCounts[key, default: 0]
+        if state.syncRecords?[key]?.isDeleted == true {
+            return localUndos >= Self.muteUndoThreshold
+        }
+        var totalUndos = localUndos
         for shard in remoteShards.values {
             totalUndos += shard.undoCounts[key, default: 0]
         }
